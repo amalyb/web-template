@@ -189,12 +189,13 @@ const EditListingAvailabilityPanel = props => {
   const useFullDays = isFullDay(unitType);
   const useMultipleSeats = listingTypeConfig?.availabilityType === AVAILABILITY_MULTIPLE_SEATS;
 
-  const hasAvailabilityPlan = !!listingAttributes?.availabilityPlan;
   const isPublished = listing?.id && listingAttributes?.state !== LISTING_STATE_DRAFT;
   // If new listing, auto-fill all days in current month as available
   const isNewListing = !listing?.id;
+  // For new listings, we should consider the default availability plan as valid
+  const hasAvailabilityPlan = isNewListing ? true : !!listingAttributes?.availabilityPlan;
   const defaultAvailabilityPlan = isNewListing
-    ? getAllDaysInCurrentMonth()
+    ? getAllDaysInCurrentMonth(defaultTimeZone())
     : {
         type: 'availability-plan/time',
         timezone: defaultTimeZone(),
@@ -239,7 +240,7 @@ const EditListingAvailabilityPanel = props => {
         };
 
     const params = {
-      listingId: listing.id,
+      listingId: listing.id || null,
       seats: seatCount,
       ...range,
     };
@@ -316,7 +317,7 @@ const EditListingAvailabilityPanel = props => {
           <MonthlyCalendar
             className={css.section}
             headerClassName={css.sectionHeader}
-            listingId={listing.id}
+            listingId={listing.id || null}
             availabilityPlan={availabilityPlan}
             availabilityExceptions={sortedAvailabilityExceptions}
             weeklyExceptionQueries={weeklyExceptionQueries}
@@ -398,7 +399,7 @@ const EditListingAvailabilityPanel = props => {
         >
           <EditListingAvailabilityExceptionForm
             formId="EditListingAvailabilityExceptionForm"
-            listingId={listing.id}
+            listingId={listing.id || null}
             allExceptions={allExceptions}
             monthlyExceptionQueries={monthlyExceptionQueries}
             fetchErrors={errors}
