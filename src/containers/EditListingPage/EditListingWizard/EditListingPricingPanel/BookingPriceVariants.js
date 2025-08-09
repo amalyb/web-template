@@ -26,10 +26,10 @@ const pricingTiers = [
   { nights: 8, discount: 0.4 },
   { nights: 9, discount: 0.4 },
   { nights: 10, discount: 0.4 },
-  { nights: 11, discount: 0.4 },
-  { nights: 12, discount: 0.4 },
-  { nights: 13, discount: 0.4 },
-  { nights: 14, discount: 0.4 },
+  { nights: 11, discount: 0.5 },
+  { nights: 12, discount: 0.5 },
+  { nights: 13, discount: 0.5 },
+  { nights: 14, discount: 0.5 },
 ];
 
 export const getInitialValuesForPriceVariants = params => {

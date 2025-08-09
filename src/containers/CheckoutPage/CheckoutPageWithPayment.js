@@ -345,14 +345,14 @@ const handleSubmit = (values, process, props, stripe, submitting, setSubmitting)
     discountPercent = 0.25;
     discountCode = 'line-item/discount-25';
   } else if (nights >= 6 && nights <= 7) {
+    discountPercent = 0.30;
+    discountCode = 'line-item/discount-30';
+  } else if (nights >= 8 && nights <= 10) {
     discountPercent = 0.40;
     discountCode = 'line-item/discount-40';
-  } else if (nights >= 8 && nights <= 9) {
+  } else if (nights >= 11) {
     discountPercent = 0.50;
     discountCode = 'line-item/discount-50';
-  } else if (nights >= 10) {
-    discountPercent = 0.60;
-    discountCode = 'line-item/discount-60';
   }
 
   const preDiscountTotal = baseNightlyPrice * nights;
