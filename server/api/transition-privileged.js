@@ -833,118 +833,74 @@ module.exports = async (req, res) => {
         try {
           const transaction = response?.data?.data;
           
-          // 🔧 FIXED: Resolve provider ID from transaction/listing (normalized)
-          const txProviderId = (transaction?.relationships?.provider?.data?.id) || 
-                              (transaction?.attributes?.providerId) || 
-                              (transaction?.attributes?.publicData?.providerId);
-          const listingAuthorId = listing?.relationships?.author?.data?.id;
-          
-          // Helper for ID equality checks
-          const eq = (a, b) => (a && b) ? String(a) === String(b) : false;
-          
-          console.log('[INVEST] match provider?', eq(txProviderId, listingAuthorId));
-          console.log('[INVEST] txProviderId:', txProviderId);
-          console.log('[INVEST] listingAuthorId:', listingAuthorId);
-          
-          // 🔧 FIXED: Fetch provider user/profile by ID (do not use currentUser or transaction.protectedData)
-          const providerId = txProviderId || listingAuthorId;
+          // Helpers for ID and phone resolution
+          const asId = v => (v && v.uuid) ? v.uuid : (typeof v === 'string' ? v : null);
+          const getPhone = u =>
+            u?.attributes?.profile?.protectedData?.phone ??
+            u?.attributes?.profile?.protectedData?.phoneNumber ??
+            u?.attributes?.profile?.publicData?.phone ??
+            u?.attributes?.profile?.publicData?.phoneNumber ?? null;
+
+          // Resolve provider (lender) and customer (borrower) IDs defensively
+          const providerId =
+            asId(transaction?.provider?.id) ||
+            asId(transaction?.relationships?.provider?.data?.id) ||
+            asId(listing?.relationships?.author?.data?.id);
+
+          const customerId =
+            asId(transaction?.customer?.id) ||
+            asId(transaction?.relationships?.customer?.data?.id);
+
           if (!providerId) {
             console.warn('[SMS][booking-request] No provider ID found; not sending SMS');
             return;
           }
-            // Fetch provider profile to get phone number
-            console.log('🔍 [INVESTIGATION] About to fetch provider profile for ID:', providerId);
-            try {
-              const providerProfile = await sdk.users.show({
-                id: providerId,
-                include: ['profile'],
-                'fields.user': ['profile', 'protectedData'],
-                'fields.profile': ['protectedData', 'publicData'],
-              });
-              
-              console.log('✅ [INVESTIGATION] Provider profile fetch SUCCESSFUL');
-              console.log('🔍 [INVESTIGATION] Provider response status:', providerProfile?.status);
-              console.log('🔍 [INVESTIGATION] Provider response has data:', !!providerProfile?.data);
-              
-              // 🔍 INVESTIGATION: Log the full providerProfile response
-              console.log('🔍 [INVESTIGATION] Full providerProfile response structure:', {
-                hasData: !!providerProfile?.data,
-                hasDataData: !!providerProfile?.data?.data,
-                hasAttributes: !!providerProfile?.data?.data?.attributes,
-                hasProfile: !!providerProfile?.data?.data?.attributes?.profile,
-                hasProtectedData: !!providerProfile?.data?.data?.attributes?.profile?.protectedData,
-                profileKeys: providerProfile?.data?.data?.attributes?.profile ? Object.keys(providerProfile.data.data.attributes.profile) : 'No profile',
-                protectedDataKeys: providerProfile?.data?.data?.attributes?.profile?.protectedData ? Object.keys(providerProfile.data.data.attributes.profile.protectedData) : 'No protectedData'
-              });
-              
-              console.log('🔍 [INVESTIGATION] Full providerProfile response:', JSON.stringify(providerProfile, null, 2));
-              
-              const protectedData = providerProfile?.data?.data?.attributes?.profile?.protectedData || {};
-              const publicData = providerProfile?.data?.data?.attributes?.profile?.publicData || {};
-              console.log('🔍 [INVESTIGATION] Extracted protectedData:', protectedData);
-              console.log('🔍 [INVESTIGATION] Extracted publicData:', publicData);
-              console.log('🔍 [INVESTIGATION] protectedData.phoneNumber:', protectedData.phoneNumber);
-              console.log('🔍 [INVESTIGATION] publicData.phoneNumber:', publicData.phoneNumber);
-              
-              // Try to get phone number from publicData first (accessible), then protectedData as fallback
-              const lenderPhone = publicData.phoneNumber || protectedData.phoneNumber;
-              console.log('🔍 [INVESTIGATION] Final lenderPhone value:', lenderPhone);
 
-              // 🔍 INVESTIGATION: Log transaction details to verify we're targeting the right party
-              const transaction = response?.data?.data;
-              console.log('🔍 [INVESTIGATION] Transaction ID:', transaction?.id);
-              console.log('🔍 [INVESTIGATION] Transaction customer ID:', transaction?.relationships?.customer?.data?.id);
-              console.log('🔍 [INVESTIGATION] Transaction provider ID:', transaction?.relationships?.provider?.data?.id);
-              console.log('🔍 [INVESTIGATION] Transaction protectedData:', transaction?.attributes?.protectedData);
+          // Fetch provider user explicitly (never from currentUser or transaction.protectedData)
+          const providerRes = await sdk.users.show({ id: providerId });
+          const providerUser = providerRes?.data?.data;
+          const providerPhone = getPhone(providerUser);
 
-              if (sendSMS && lenderPhone) {
-                const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
-                console.log('🔍 [INVESTIGATION] About to send SMS with message:', message);
-                console.log('🔍 [INVESTIGATION] SMS recipient phone:', lenderPhone);
-                
-                // 🔍 CRITICAL INVESTIGATION: Log all the data right before SMS send
-                console.log('🔍 [CRITICAL] === TRANSITION-PRIVILEGED SMS SEND ===');
-                console.log('🔍 [CRITICAL] Function: transition-privileged.js');
-                console.log('🔍 [CRITICAL] Provider ID from listing:', providerId);
-                console.log('🔍 [CRITICAL] Transaction ID:', transaction?.id);
-                console.log('🔍 [CRITIGATION] Transaction customer ID:', transaction?.relationships?.customer?.data?.id);
-                console.log('🔍 [CRITICAL] Transaction provider ID:', transaction?.relationships?.provider?.data?.id);
-                console.log('🔍 [CRITICAL] Provider ID matches transaction provider?', providerId === transaction?.relationships?.provider?.data?.id);
-                console.log('🔍 [CRITICAL] Provider ID matches transaction customer?', providerId === transaction?.relationships?.customer?.data?.id);
-                console.log('🔍 [CRITICAL] Final recipient phone:', lenderPhone);
-                console.log('🔍 [CRITICAL] Phone source - publicData:', publicData.phoneNumber);
-                console.log('🔍 [CRITICAL] Phone source - protectedData:', protectedData.phoneNumber);
-                console.log('🔍 [CRITICAL] ======================================');
-                
-                await sendSMS(lenderPhone, message);
-                console.log(`✅ [INVESTIGATION] SMS sent to ${lenderPhone}`);
-              } else {
-                console.warn('⚠️ [INVESTIGATION] Missing lenderPhone or sendSMS unavailable');
-                console.log('🔍 [INVESTIGATION] sendSMS available:', !!sendSMS);
-                console.log('🔍 [INVESTIGATION] lenderPhone value:', lenderPhone);
-              }
-            } catch (userError) {
-              console.error('❌ [INVESTIGATION] Provider profile fetch FAILED:', {
-                error: userError.message,
-                status: userError.status,
-                statusText: userError.statusText,
-                errorCode: userError.data?.errors?.[0]?.code,
-                errorTitle: userError.data?.errors?.[0]?.title,
-                errorDetail: userError.data?.errors?.[0]?.detail,
-                fullError: JSON.stringify(userError, null, 2)
-              });
-              
-              // Check for specific permission errors
-              if (userError.status === 403) {
-                console.error('🚫 [INVESTIGATION] PERMISSION DENIED - 403 error detected');
-                if (userError.data?.errors?.[0]?.code === 'permission-denied-read') {
-                  console.error('🚫 [INVESTIGATION] READ PERMISSION DENIED - Cannot read user data');
-                }
-              }
-            }
+          // Borrower phone only for safety comparison (not as fallback recipient)
+          let borrowerPhone = null;
+          if (customerId) {
+            const customerRes = await sdk.users.show({ id: customerId });
+            borrowerPhone = getPhone(customerRes?.data?.data);
+          }
+
+          console.log('[SMS][booking-request]', { 
+            txId: transaction?.id?.uuid || transaction?.id, 
+            providerId, 
+            customerId, 
+            providerPhone, 
+            borrowerPhone 
+          });
+
+          if (!providerPhone) {
+            console.warn('[SMS][booking-request] Provider missing phone; not sending', { 
+              txId: transaction?.id?.uuid || transaction?.id, 
+              providerId 
+            });
+            return;
+          }
+
+          if (borrowerPhone && providerPhone === borrowerPhone) {
+            console.error('[SMS][booking-request] Borrower phone detected for lender notice; aborting', { 
+              txId: transaction?.id?.uuid || transaction?.id 
+            });
+            return;
+          }
+
+          if (sendSMS) {
+            const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
+            
+            await sendSMS(providerPhone, message);
+            console.log(`✅ [SMS][booking-request] SMS sent to provider ${providerPhone}`);
+          } else {
+            console.warn('⚠️ [SMS][booking-request] sendSMS unavailable');
           }
         } catch (err) {
-          console.error('❌ [INVESTIGATION] SMS send error:', err.message);
+          console.error('❌ [SMS][booking-request] Error in lender notification logic:', err.message);
         }
       }
       
