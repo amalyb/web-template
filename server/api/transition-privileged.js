@@ -836,11 +836,14 @@ module.exports = async (req, res) => {
           const provider = listing?.relationships?.author?.data;
           const providerId = provider?.id;
 
+          console.log('🔍 [INVESTIGATION] Provider ID from listing:', providerId);
+          console.log('🔍 [INVESTIGATION] Listing relationships:', JSON.stringify(listing?.relationships, null, 2));
+
           if (!providerId) {
             console.warn('⚠️ Provider ID not found — skipping SMS');
           } else {
             // Fetch provider profile to get phone number
-            console.log('🔍 [DEBUG] About to fetch provider profile for ID:', providerId);
+            console.log('🔍 [INVESTIGATION] About to fetch provider profile for ID:', providerId);
             try {
               const providerProfile = await sdk.users.show({
                 id: providerId,
@@ -849,12 +852,12 @@ module.exports = async (req, res) => {
                 'fields.profile': ['protectedData', 'publicData'],
               });
               
-              console.log('✅ [DEBUG] Provider profile fetch SUCCESSFUL');
-              console.log('🔍 [DEBUG] Provider response status:', providerProfile?.status);
-              console.log('🔍 [DEBUG] Provider response has data:', !!providerProfile?.data);
+              console.log('✅ [INVESTIGATION] Provider profile fetch SUCCESSFUL');
+              console.log('🔍 [INVESTIGATION] Provider response status:', providerProfile?.status);
+              console.log('🔍 [INVESTIGATION] Provider response has data:', !!providerProfile?.data);
               
-              // 🔍 DETAILED DEBUGGING: Log the full providerProfile response
-              console.log('🔍 [DEBUG] Full providerProfile response structure:', {
+              // 🔍 INVESTIGATION: Log the full providerProfile response
+              console.log('🔍 [INVESTIGATION] Full providerProfile response structure:', {
                 hasData: !!providerProfile?.data,
                 hasDataData: !!providerProfile?.data?.data,
                 hasAttributes: !!providerProfile?.data?.data?.attributes,
@@ -864,30 +867,39 @@ module.exports = async (req, res) => {
                 protectedDataKeys: providerProfile?.data?.data?.attributes?.profile?.protectedData ? Object.keys(providerProfile.data.data.attributes.profile.protectedData) : 'No protectedData'
               });
               
-              console.log('🔍 [DEBUG] Full providerProfile response:', JSON.stringify(providerProfile, null, 2));
+              console.log('🔍 [INVESTIGATION] Full providerProfile response:', JSON.stringify(providerProfile, null, 2));
               
               const protectedData = providerProfile?.data?.data?.attributes?.profile?.protectedData || {};
               const publicData = providerProfile?.data?.data?.attributes?.profile?.publicData || {};
-              console.log('🔍 [DEBUG] Extracted protectedData:', protectedData);
-              console.log('🔍 [DEBUG] Extracted publicData:', publicData);
-              console.log('🔍 [DEBUG] protectedData.phoneNumber:', protectedData.phoneNumber);
-              console.log('🔍 [DEBUG] publicData.phoneNumber:', publicData.phoneNumber);
+              console.log('🔍 [INVESTIGATION] Extracted protectedData:', protectedData);
+              console.log('🔍 [INVESTIGATION] Extracted publicData:', publicData);
+              console.log('🔍 [INVESTIGATION] protectedData.phoneNumber:', protectedData.phoneNumber);
+              console.log('🔍 [INVESTIGATION] publicData.phoneNumber:', publicData.phoneNumber);
               
               // Try to get phone number from publicData first (accessible), then protectedData as fallback
               const lenderPhone = publicData.phoneNumber || protectedData.phoneNumber;
-              console.log('🔍 [DEBUG] Final lenderPhone value:', lenderPhone);
+              console.log('🔍 [INVESTIGATION] Final lenderPhone value:', lenderPhone);
+
+              // 🔍 INVESTIGATION: Log transaction details to verify we're targeting the right party
+              const transaction = response?.data?.data;
+              console.log('🔍 [INVESTIGATION] Transaction ID:', transaction?.id);
+              console.log('🔍 [INVESTIGATION] Transaction customer ID:', transaction?.relationships?.customer?.data?.id);
+              console.log('🔍 [INVESTIGATION] Transaction provider ID:', transaction?.relationships?.provider?.data?.id);
+              console.log('🔍 [INVESTIGATION] Transaction protectedData:', transaction?.attributes?.protectedData);
 
               if (sendSMS && lenderPhone) {
                 const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
+                console.log('🔍 [INVESTIGATION] About to send SMS with message:', message);
+                console.log('🔍 [INVESTIGATION] SMS recipient phone:', lenderPhone);
                 await sendSMS(lenderPhone, message);
-                console.log(`✅ SMS sent to ${lenderPhone}`);
+                console.log(`✅ [INVESTIGATION] SMS sent to ${lenderPhone}`);
               } else {
-                console.warn('⚠️ Missing lenderPhone or sendSMS unavailable');
-                console.log('🔍 [DEBUG] sendSMS available:', !!sendSMS);
-                console.log('🔍 [DEBUG] lenderPhone value:', lenderPhone);
+                console.warn('⚠️ [INVESTIGATION] Missing lenderPhone or sendSMS unavailable');
+                console.log('🔍 [INVESTIGATION] sendSMS available:', !!sendSMS);
+                console.log('🔍 [INVESTIGATION] lenderPhone value:', lenderPhone);
               }
             } catch (userError) {
-              console.error('❌ [DEBUG] Provider profile fetch FAILED:', {
+              console.error('❌ [INVESTIGATION] Provider profile fetch FAILED:', {
                 error: userError.message,
                 status: userError.status,
                 statusText: userError.statusText,
@@ -899,15 +911,15 @@ module.exports = async (req, res) => {
               
               // Check for specific permission errors
               if (userError.status === 403) {
-                console.error('🚫 [DEBUG] PERMISSION DENIED - 403 error detected');
+                console.error('🚫 [INVESTIGATION] PERMISSION DENIED - 403 error detected');
                 if (userError.data?.errors?.[0]?.code === 'permission-denied-read') {
-                  console.error('🚫 [DEBUG] READ PERMISSION DENIED - Cannot read user data');
+                  console.error('🚫 [INVESTIGATION] READ PERMISSION DENIED - Cannot read user data');
                 }
               }
             }
           }
         } catch (err) {
-          console.error('❌ SMS send error:', err.message);
+          console.error('❌ [INVESTIGATION] SMS send error:', err.message);
         }
       }
       

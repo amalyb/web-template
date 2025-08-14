@@ -299,17 +299,17 @@ module.exports = (req, res) => {
         !isSpeculative &&
         data?.data
       ) {
-        console.log('📨 Preparing to send SMS for initial booking request');
-        console.log('🔍 listingData available:', !!listingData);
-        console.log('🔍 providerData available:', !!providerData);
+        console.log('📨 [INVESTIGATION] Preparing to send SMS for initial booking request');
+        console.log('🔍 [INVESTIGATION] listingData available:', !!listingData);
+        console.log('🔍 [INVESTIGATION] providerData available:', !!providerData);
 
         try {
           // Get phone number from transaction protectedData first (most secure)
           const transactionProtectedData = data?.data?.attributes?.protectedData || {};
           const transactionPhoneNumber = transactionProtectedData.providerPhone;
           
-          console.log('🔍 [DEBUG] Transaction protectedData:', transactionProtectedData);
-          console.log('🔍 [DEBUG] Transaction providerPhone:', transactionPhoneNumber);
+          console.log('🔍 [INVESTIGATION] Transaction protectedData:', transactionProtectedData);
+          console.log('🔍 [INVESTIGATION] Transaction providerPhone:', transactionPhoneNumber);
           
           // If not in transaction, try to get from provider profile (less secure)
           let lenderPhone = transactionPhoneNumber;
@@ -318,7 +318,7 @@ module.exports = (req, res) => {
             const protectedData = providerData?.attributes?.profile?.protectedData || {};
             const publicData = providerData?.attributes?.profile?.publicData || {};
             
-            console.log('🔍 [DEBUG] providerData structure:', {
+            console.log('🔍 [INVESTIGATION] providerData structure:', {
               hasAttributes: !!providerData?.attributes,
               hasProfile: !!providerData?.attributes?.profile,
               hasProtectedData: !!providerData?.attributes?.profile?.protectedData,
@@ -330,31 +330,41 @@ module.exports = (req, res) => {
             
             // Only use publicData as absolute last resort
             lenderPhone = protectedData.phoneNumber || publicData.phoneNumber;
-            console.log('🔍 [DEBUG] Fallback to profile data - protectedData.phoneNumber:', protectedData.phoneNumber);
-            console.log('🔍 [DEBUG] Fallback to profile data - publicData.phoneNumber:', publicData.phoneNumber);
+            console.log('🔍 [INVESTIGATION] Fallback to profile data - protectedData.phoneNumber:', protectedData.phoneNumber);
+            console.log('🔍 [INVESTIGATION] Fallback to profile data - publicData.phoneNumber:', publicData.phoneNumber);
           }
           
-          console.log('🔍 [DEBUG] Final lenderPhone value:', lenderPhone);
+          console.log('🔍 [INVESTIGATION] Final lenderPhone value:', lenderPhone);
+
+          // 🔍 INVESTIGATION: Log transaction details to verify we're targeting the right party
+          const transaction = data?.data;
+          console.log('🔍 [INVESTIGATION] Transaction ID:', transaction?.id);
+          console.log('🔍 [INVESTIGATION] Transaction customer ID:', transaction?.relationships?.customer?.data?.id);
+          console.log('🔍 [INVESTIGATION] Transaction provider ID:', transaction?.relationships?.provider?.data?.id);
+          console.log('🔍 [INVESTIGATION] Transaction protectedData:', transaction?.attributes?.protectedData);
 
           if (sendSMS && lenderPhone) {
             const listingTitle = listingData?.attributes?.title || 'your listing';
             const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listingTitle}". Tap your dashboard to respond.`;
+            
+            console.log('🔍 [INVESTIGATION] About to send SMS with message:', message);
+            console.log('🔍 [INVESTIGATION] SMS recipient phone:', lenderPhone);
 
             sendSMS(lenderPhone, message)
               .then(() => {
-                console.log(`✅ SMS sent to ${lenderPhone}`);
+                console.log(`✅ [INVESTIGATION] SMS sent to ${lenderPhone}`);
               })
               .catch(err => {
-                console.error('❌ SMS send error:', err.message);
+                console.error('❌ [INVESTIGATION] SMS send error:', err.message);
               });
           } else {
-            console.warn('⚠️ Missing lenderPhone or sendSMS unavailable');
-            console.log('🔍 [DEBUG] sendSMS available:', !!sendSMS);
-            console.log('🔍 [DEBUG] lenderPhone value:', lenderPhone);
-            console.log('🔍 Transaction protectedData contents:', transactionProtectedData);
+            console.warn('⚠️ [INVESTIGATION] Missing lenderPhone or sendSMS unavailable');
+            console.log('🔍 [INVESTIGATION] sendSMS available:', !!sendSMS);
+            console.log('🔍 [INVESTIGATION] lenderPhone value:', lenderPhone);
+            console.log('🔍 [INVESTIGATION] Transaction protectedData contents:', transactionProtectedData);
           }
         } catch (err) {
-          console.error('❌ SMS send error:', err.message);
+          console.error('❌ [INVESTIGATION] SMS send error:', err.message);
         }
       }
       

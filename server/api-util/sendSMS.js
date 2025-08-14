@@ -65,7 +65,8 @@ function sendSMS(to, message) {
     return Promise.resolve();
   }
 
-  console.log(`📱 Sending SMS to ${formattedPhone} (original: ${to})`);
+  console.log(`📱 [INVESTIGATION] Sending SMS to ${formattedPhone} (original: ${to})`);
+  console.log(`📱 [INVESTIGATION] SMS message: ${message}`);
 
   return client.messages
     .create({
@@ -74,11 +75,12 @@ function sendSMS(to, message) {
       to: formattedPhone,
     })
     .then(msg => {
-      console.log(`📤 Sent SMS to ${formattedPhone}: ${message}`);
+      console.log(`📤 [INVESTIGATION] Sent SMS to ${formattedPhone}: ${message}`);
+      console.log(`📤 [INVESTIGATION] Twilio message SID: ${msg.sid}`);
       return msg;
     })
     .catch(err => {
-      console.error(`❌ Failed to send SMS to ${formattedPhone}:`, err);
+      console.error(`❌ [INVESTIGATION] Failed to send SMS to ${formattedPhone}:`, err);
     });
 }
 
