@@ -92,12 +92,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       address_to: customerAddress,
       parcels: [parcel],
       extra: { qr_code_requested: true },
-      async: false,
-      metadata: {
-        transactionId: transactionId,
-        direction: 'outbound',
-        listingId: listing?.id
-      }
+      async: false
     };
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
 
@@ -147,12 +142,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       {
         rate: selectedRate.object_id,
         label_file_type: 'PNG',
-        async: false,
-        metadata: {
-          transactionId: transactionId,
-          direction: 'outbound',
-          listingId: listing?.id
-        }
+        async: false
       },
       {
         headers: {
@@ -169,40 +159,13 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     console.log('   🚚 Provider:', selectedRate.provider);
     console.log('   🚚 Service:', selectedRate.servicelevel);
     
-    // Save outbound tracking data to transaction protectedData
-    try {
-      const currentProtectedData = transaction?.data?.data?.attributes?.protectedData || {};
-      const updatedProtectedData = {
-        ...currentProtectedData,
-        outboundTrackingNumber: labelRes.data.tracking_number,
-        outboundCarrier: selectedRate.provider,
-        outboundLabelId: labelRes.data.object_id,
-        outboundTrackingUrl: labelRes.data.tracking_url_provider,
-        outboundService: selectedRate.servicelevel
-      };
-      
-      await sdk.transactions.update({
-        id: transactionId,
-        protectedData: updatedProtectedData
-      });
-      
-      console.log('💾 Outbound tracking data saved to transaction protectedData');
-    } catch (updateError) {
-      console.error('❌ Failed to save outbound tracking data to transaction:', updateError.message);
-    }
-    
     // Return shipment payload
     const returnPayload = {
       address_from: customerAddress,
       address_to: providerAddress,
       parcels: [parcel],
       extra: { qr_code_requested: true },
-      async: false,
-      metadata: {
-        transactionId: transactionId,
-        direction: 'return',
-        listingId: listing?.id
-      }
+      async: false
     };
     console.log('📦 [SHIPPO] Return shipment payload:', JSON.stringify(returnPayload, null, 2));
 
@@ -249,12 +212,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         {
           rate: returnSelectedRate.object_id,
           label_file_type: 'PNG',
-          async: false,
-          metadata: {
-            transactionId: transactionId,
-            direction: 'return',
-            listingId: listing?.id
-          }
+          async: false
         },
         {
           headers: {
@@ -270,28 +228,6 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       console.log('   🚚 Return Tracking URL:', returnLabelRes.data.tracking_url_provider);
       console.log('   🚚 Return Provider:', returnSelectedRate.provider);
       console.log('   🚚 Return Service:', returnSelectedRate.servicelevel);
-      
-      // Save return tracking data to transaction protectedData
-      try {
-        const currentProtectedData = transaction?.data?.data?.attributes?.protectedData || {};
-        const updatedProtectedData = {
-          ...currentProtectedData,
-          returnTrackingNumber: returnLabelRes.data.tracking_number,
-          returnCarrier: returnSelectedRate.provider,
-          returnLabelId: returnLabelRes.data.object_id,
-          returnTrackingUrl: returnLabelRes.data.tracking_url_provider,
-          returnService: returnSelectedRate.servicelevel
-        };
-        
-        await sdk.transactions.update({
-          id: transactionId,
-          protectedData: updatedProtectedData
-        });
-        
-        console.log('💾 Return tracking data saved to transaction protectedData');
-      } catch (updateError) {
-        console.error('❌ Failed to save return tracking data to transaction:', updateError.message);
-      }
     } else {
       console.warn('⚠️ [SHIPPO] No shipping rates found for return shipment');
     }
