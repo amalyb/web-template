@@ -822,26 +822,36 @@ module.exports = async (req, res) => {
           });
       }
       
-      // 📩 --- SMS Notification for Booking Request --- //
+      // 🔧 FIXED: Lender notification SMS for booking requests - ensure provider phone only
       if (
         bodyParams?.transition === 'transition/request-payment' &&
         !isSpeculative &&
         response?.data?.data
       ) {
-        console.log('📨 Preparing to send SMS for initial booking request');
-        console.log('🔍 listing available:', !!listing);
+        console.log('📨 [SMS][booking-request] Preparing to send lender notification SMS');
 
         try {
-          // Get provider data from listing relationship
-          const provider = listing?.relationships?.author?.data;
-          const providerId = provider?.id;
-
-          console.log('🔍 [INVESTIGATION] Provider ID from listing:', providerId);
-          console.log('🔍 [INVESTIGATION] Listing relationships:', JSON.stringify(listing?.relationships, null, 2));
-
+          const transaction = response?.data?.data;
+          
+          // 🔧 FIXED: Resolve provider ID from transaction/listing (normalized)
+          const txProviderId = (transaction?.relationships?.provider?.data?.id) || 
+                              (transaction?.attributes?.providerId) || 
+                              (transaction?.attributes?.publicData?.providerId);
+          const listingAuthorId = listing?.relationships?.author?.data?.id;
+          
+          // Helper for ID equality checks
+          const eq = (a, b) => (a && b) ? String(a) === String(b) : false;
+          
+          console.log('[INVEST] match provider?', eq(txProviderId, listingAuthorId));
+          console.log('[INVEST] txProviderId:', txProviderId);
+          console.log('[INVEST] listingAuthorId:', listingAuthorId);
+          
+          // 🔧 FIXED: Fetch provider user/profile by ID (do not use currentUser or transaction.protectedData)
+          const providerId = txProviderId || listingAuthorId;
           if (!providerId) {
-            console.warn('⚠️ Provider ID not found — skipping SMS');
-          } else {
+            console.warn('[SMS][booking-request] No provider ID found; not sending SMS');
+            return;
+          }
             // Fetch provider profile to get phone number
             console.log('🔍 [INVESTIGATION] About to fetch provider profile for ID:', providerId);
             try {
