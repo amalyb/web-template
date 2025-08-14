@@ -7,6 +7,9 @@ const {
   fetchCommission,
 } = require('../api-util/sdk');
 const { getIntegrationSdk } = require('../api-util/integrationSdk');
+const { maskPhone } = require('../api-util/phone');
+const { alreadySent } = require('../api-util/idempotency');
+const { attempt, sent, failed } = require('../api-util/metrics');
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -22,7 +25,12 @@ console.log('🚦 initiate-privileged endpoint is wired up');
 
 // Helper function to build lender SMS message
 function buildLenderMsg(tx, listingTitle) {
-  return `👗 New Sherbrt booking request! Someone wants to borrow your item "${listingTitle}". Tap your dashboard to respond.`;
+  const lenderInboxUrl = 'https://sherbrt.com/inbox/sales';
+  const lenderMsg =
+    `👗 New Sherbrt booking request! ` +
+    `Someone wants to borrow your listing "${listingTitle}". ` +
+    `Check your inbox to respond: ${lenderInboxUrl}`;
+  return lenderMsg;
 }
 
 module.exports = (req, res) => {
@@ -138,7 +146,7 @@ module.exports = (req, res) => {
               null;
 
             console.log('[SMS][booking-request] Provider phone (raw, masked):',
-              provPhone ? `***${String(provPhone).slice(-4)}` : null
+              maskPhone(provPhone)
             );
 
             // Optional: safety — don't accidentally send to borrower's phone
@@ -148,8 +156,22 @@ module.exports = (req, res) => {
             } else if (provPhone) {
               // Your sendSMS util should normalize to E.164 and log the final +1… number
               const listingTitle = listing?.attributes?.title || 'your listing';
-              await sendSMS(provPhone, buildLenderMsg(tx, listingTitle));
-              console.log('📱 [SMS][booking-request] Lender notification sent');
+              
+              const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:lender`;
+              if (alreadySent(key)) {
+                console.log('[SMS] duplicate suppressed (lender):', key);
+              } else {
+                attempt('lender');
+                try {
+                  await sendSMS(provPhone, buildLenderMsg(tx, listingTitle));
+                  sent('lender');
+                  console.log(`📱 [SMS][booking-request] Lender notification sent to ${maskPhone(provPhone)}`);
+                } catch (e) {
+                  const code = e?.code || e?.status || 'unknown';
+                  failed('lender', code);
+                  console.error('[SMS][booking-request] Lender SMS failed:', e.message);
+                }
+              }
             } else {
               console.warn('[SMS][booking-request] Provider missing phone; skipping lender SMS');
             }
@@ -182,10 +204,26 @@ module.exports = (req, res) => {
               console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
               
               const listingTitle = listing?.attributes?.title || 'your listing';
-              const customerMessage = `✅ Your booking request for "${listingTitle}" has been sent! The lender will review and respond soon.`;
+              const borrowerInboxUrl = 'https://sherbrt.com/inbox/orders';
+              const borrowerMsg =
+                `✅ Request sent! Your booking request for "${listingTitle}" was delivered. ` +
+                `Track and reply in your inbox: ${borrowerInboxUrl}`;
               
-              await sendSMS(borrowerPhone, customerMessage);
-              console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${borrowerPhone}`);
+              const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:borrower`;
+              if (alreadySent(key)) {
+                console.log('[SMS] duplicate suppressed (borrower):', key);
+              } else {
+                attempt('borrower');
+                try {
+                  await sendSMS(borrowerPhone, borrowerMsg);
+                  sent('borrower');
+                  console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${maskPhone(borrowerPhone)}`);
+                } catch (e) {
+                  const code = e?.code || e?.status || 'unknown';
+                  failed('borrower', code);
+                  console.error('[SMS][customer-confirmation] Customer SMS failed:', e.message);
+                }
+              }
               
             } catch (customerSmsErr) {
               console.error('[SMS][customer-confirmation] Customer SMS failed:', customerSmsErr.message);

@@ -7,6 +7,7 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
+const { maskPhone } = require('../api-util/phone');
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -275,7 +276,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
           lenderPhone,
           `📬 Your Sherbrt shipping label is ready! Please package and ship the item using the QR code link provided.`
         );
-        console.log(`📱 SMS sent to lender (${lenderPhone}) for shipping label ready`);
+        console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready`);
       } else {
         console.warn('⚠️ Lender phone number not found for shipping label notification');
       }
@@ -287,7 +288,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
           borrowerPhone,
           `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`
         );
-        console.log(`📱 SMS sent to borrower (${borrowerPhone}) for item shipped with tracking: ${trackingUrl}`);
+        console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for item shipped with tracking: ${trackingUrl}`);
       } else if (borrowerPhone) {
         console.warn('⚠️ Borrower phone found but no tracking URL available');
       } else {
@@ -736,7 +737,7 @@ module.exports = async (req, res) => {
             const borrowerPhone = customer.attributes.profile.protectedData.phone;
             
             // STEP 6: Add logs for borrower and lender phone numbers
-            console.log('📱 Borrower phone:', borrowerPhone);
+            console.log('📱 Borrower phone:', maskPhone(borrowerPhone));
             
             if (borrowerPhone) {
               // STEP 7: Wrap sendSMS in try/catch with logs
@@ -745,8 +746,8 @@ module.exports = async (req, res) => {
                   borrowerPhone,
                   `🎉 Your Sherbrt request was accepted! You'll get your tracking label details once shipped.`
                 );
-                console.log('✅ SMS sent to', borrowerPhone);
-                console.log(`📱 SMS sent to borrower (${borrowerPhone}) for accepted request`);
+                console.log('✅ SMS sent to', maskPhone(borrowerPhone));
+                console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for accepted request`);
               } catch (err) {
                 console.error('❌ SMS send error:', err.message);
               }
@@ -774,7 +775,7 @@ module.exports = async (req, res) => {
             const borrowerPhone = customer.attributes.profile.protectedData.phone;
             
             // STEP 6: Add logs for borrower and lender phone numbers
-            console.log('📱 Borrower phone:', borrowerPhone);
+            console.log('📱 Borrower phone:', maskPhone(borrowerPhone));
             
             if (borrowerPhone) {
               // STEP 7: Wrap sendSMS in try/catch with logs
@@ -783,8 +784,8 @@ module.exports = async (req, res) => {
                   borrowerPhone,
                   `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed!`
                 );
-                console.log('✅ SMS sent to', borrowerPhone);
-                console.log(`📱 SMS sent to borrower (${borrowerPhone}) for declined request`);
+                console.log('✅ SMS sent to', maskPhone(borrowerPhone));
+                console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for declined request`);
               } catch (err) {
                 console.error('❌ SMS send error:', err.message);
               }
@@ -895,7 +896,7 @@ module.exports = async (req, res) => {
             const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
             
             await sendSMS(providerPhone, message);
-            console.log(`✅ [SMS][booking-request] SMS sent to provider ${providerPhone}`);
+            console.log(`✅ [SMS][booking-request] SMS sent to provider ${maskPhone(providerPhone)}`);
           } else {
             console.warn('⚠️ [SMS][booking-request] sendSMS unavailable');
           }
