@@ -891,6 +891,21 @@ module.exports = async (req, res) => {
                 const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
                 console.log('🔍 [INVESTIGATION] About to send SMS with message:', message);
                 console.log('🔍 [INVESTIGATION] SMS recipient phone:', lenderPhone);
+                
+                // 🔍 CRITICAL INVESTIGATION: Log all the data right before SMS send
+                console.log('🔍 [CRITICAL] === TRANSITION-PRIVILEGED SMS SEND ===');
+                console.log('🔍 [CRITICAL] Function: transition-privileged.js');
+                console.log('🔍 [CRITICAL] Provider ID from listing:', providerId);
+                console.log('🔍 [CRITICAL] Transaction ID:', transaction?.id);
+                console.log('🔍 [CRITIGATION] Transaction customer ID:', transaction?.relationships?.customer?.data?.id);
+                console.log('🔍 [CRITICAL] Transaction provider ID:', transaction?.relationships?.provider?.data?.id);
+                console.log('🔍 [CRITICAL] Provider ID matches transaction provider?', providerId === transaction?.relationships?.provider?.data?.id);
+                console.log('🔍 [CRITICAL] Provider ID matches transaction customer?', providerId === transaction?.relationships?.customer?.data?.id);
+                console.log('🔍 [CRITICAL] Final recipient phone:', lenderPhone);
+                console.log('🔍 [CRITICAL] Phone source - publicData:', publicData.phoneNumber);
+                console.log('🔍 [CRITICAL] Phone source - protectedData:', protectedData.phoneNumber);
+                console.log('🔍 [CRITICAL] ======================================');
+                
                 await sendSMS(lenderPhone, message);
                 console.log(`✅ [INVESTIGATION] SMS sent to ${lenderPhone}`);
               } else {

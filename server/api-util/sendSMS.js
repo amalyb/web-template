@@ -65,8 +65,15 @@ function sendSMS(to, message) {
     return Promise.resolve();
   }
 
-  console.log(`📱 [INVESTIGATION] Sending SMS to ${formattedPhone} (original: ${to})`);
-  console.log(`📱 [INVESTIGATION] SMS message: ${message}`);
+  // 🔍 CRITICAL INVESTIGATION: Get call stack to identify which function called sendSMS
+  const stack = new Error().stack;
+  const caller = stack.split('\n')[2]?.trim() || 'Unknown caller';
+  
+  console.log(`📱 [CRITICAL] === SEND SMS CALLED ===`);
+  console.log(`📱 [CRITICAL] Caller function: ${caller}`);
+  console.log(`📱 [CRITICAL] Recipient phone: ${formattedPhone} (original: ${to})`);
+  console.log(`📱 [CRITICAL] SMS message: ${message}`);
+  console.log(`📱 [CRITICAL] ========================`);
 
   return client.messages
     .create({
@@ -75,12 +82,12 @@ function sendSMS(to, message) {
       to: formattedPhone,
     })
     .then(msg => {
-      console.log(`📤 [INVESTIGATION] Sent SMS to ${formattedPhone}: ${message}`);
-      console.log(`📤 [INVESTIGATION] Twilio message SID: ${msg.sid}`);
+      console.log(`📤 [CRITICAL] SMS sent successfully to ${formattedPhone}`);
+      console.log(`📤 [CRITICAL] Twilio message SID: ${msg.sid}`);
       return msg;
     })
     .catch(err => {
-      console.error(`❌ [INVESTIGATION] Failed to send SMS to ${formattedPhone}:`, err);
+      console.error(`❌ [CRITICAL] Failed to send SMS to ${formattedPhone}:`, err);
     });
 }
 

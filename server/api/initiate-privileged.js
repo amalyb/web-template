@@ -350,6 +350,22 @@ module.exports = (req, res) => {
             console.log('🔍 [INVESTIGATION] About to send SMS with message:', message);
             console.log('🔍 [INVESTIGATION] SMS recipient phone:', lenderPhone);
 
+            // 🔍 CRITICAL INVESTIGATION: Log all the data right before SMS send
+            console.log('🔍 [CRITICAL] === INITIATE-PRIVILEGED SMS SEND ===');
+            console.log('🔍 [CRITICAL] Function: initiate-privileged.js');
+            console.log('🔍 [CRITICAL] Transaction ID:', transaction?.id);
+            console.log('🔍 [CRITICAL] Transaction customer ID:', transaction?.relationships?.customer?.data?.id);
+            console.log('🔍 [CRITICAL] Transaction provider ID:', transaction?.relationships?.provider?.data?.id);
+            console.log('🔍 [CRITICAL] Provider data available:', !!providerData);
+            console.log('🔍 [CRITICAL] Provider data ID:', providerData?.id);
+            console.log('🔍 [CRITICAL] Provider ID matches transaction provider?', providerData?.id === transaction?.relationships?.provider?.data?.id);
+            console.log('🔍 [CRITICAL] Provider ID matches transaction customer?', providerData?.id === transaction?.relationships?.customer?.data?.id);
+            console.log('🔍 [CRITICAL] Final recipient phone:', lenderPhone);
+            console.log('🔍 [CRITICAL] Phone source - transaction protectedData:', transactionProtectedData.providerPhone);
+            console.log('🔍 [CRITICAL] Phone source - provider profile protectedData:', providerData?.attributes?.profile?.protectedData?.phoneNumber);
+            console.log('🔍 [CRITICAL] Phone source - provider profile publicData:', providerData?.attributes?.profile?.publicData?.phoneNumber);
+            console.log('🔍 [CRITICAL] ======================================');
+
             sendSMS(lenderPhone, message)
               .then(() => {
                 console.log(`✅ [INVESTIGATION] SMS sent to ${lenderPhone}`);
