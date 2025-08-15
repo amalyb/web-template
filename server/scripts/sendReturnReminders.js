@@ -111,7 +111,7 @@ async function sendReturnReminders() {
         
         // Send SMS
         console.log(`📤 Sending SMS to ${borrowerPhone} for ${isDueToday ? 'today' : 'tomorrow'} return`);
-        await sendSMS(borrowerPhone, message);
+        await sendSMS(borrowerPhone, message, { role: 'borrower' });
         
         console.log(`✅ SMS sent successfully to ${borrowerPhone}`);
         smsSent++;

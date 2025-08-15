@@ -274,7 +274,8 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       if (lenderPhone) {
         await sendSMS(
           lenderPhone,
-          `📬 Your Sherbrt shipping label is ready! Please package and ship the item using the QR code link provided.`
+          `📬 Your Sherbrt shipping label is ready! Please package and ship the item using the QR code link provided.`,
+          { role: 'lender' }
         );
         console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready`);
       } else {
@@ -286,7 +287,8 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         const trackingUrl = labelRes.data.tracking_url_provider;
         await sendSMS(
           borrowerPhone,
-          `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`
+          `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`,
+          { role: 'borrower' }
         );
         console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for item shipped with tracking: ${trackingUrl}`);
       } else if (borrowerPhone) {
@@ -744,7 +746,8 @@ module.exports = async (req, res) => {
               try {
                 await sendSMS(
                   borrowerPhone,
-                  `🎉 Your Sherbrt request was accepted! You'll get your tracking label details once shipped.`
+                  `🎉 Your Sherbrt request was accepted! You'll get your tracking label details once shipped.`,
+                  { role: 'borrower' }
                 );
                 console.log('✅ SMS sent to', maskPhone(borrowerPhone));
                 console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for accepted request`);
@@ -782,7 +785,8 @@ module.exports = async (req, res) => {
               try {
                 await sendSMS(
                   borrowerPhone,
-                  `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed!`
+                  `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed!`,
+                  { role: 'borrower' }
                 );
                 console.log('✅ SMS sent to', maskPhone(borrowerPhone));
                 console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for declined request`);
@@ -895,7 +899,7 @@ module.exports = async (req, res) => {
           if (sendSMS) {
             const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
             
-            await sendSMS(providerPhone, message);
+            await sendSMS(providerPhone, message, { role: 'lender' });
             console.log(`✅ [SMS][booking-request] SMS sent to provider ${maskPhone(providerPhone)}`);
           } else {
             console.warn('⚠️ [SMS][booking-request] sendSMS unavailable');

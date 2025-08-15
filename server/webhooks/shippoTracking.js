@@ -211,7 +211,7 @@ router.post('/shippo', async (req, res) => {
     console.log(`📤 Sending delivery SMS to ${borrowerPhone}: ${message}`);
     
     try {
-      await sendSMS(borrowerPhone, message);
+      await sendSMS(borrowerPhone, message, { role: 'borrower' });
       console.log(`✅ SMS sent successfully to ${borrowerPhone}`);
       
       // Mark SMS as sent in transaction protectedData

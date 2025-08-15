@@ -57,7 +57,16 @@ function isE164(num) {
 // Optional in-memory STOP list (resets on restart)
 const stopList = new Set();
 
-function sendSMS(to, message) {
+/**
+ * sendSMS(phone, message, opts?)
+ * opts: { role?: 'lender' | 'borrower' }
+ */
+async function sendSMS(to, message, opts = {}) {
+  const role = typeof opts.role === 'string' ? opts.role : null;
+  if (!role && process.env.METRICS_LOG === '1') {
+    console.warn('[metrics] skipped: no role provided to sendSMS');
+  }
+
   if (!to || !message) {
     console.warn('📭 Missing phone number or message');
     return Promise.resolve();
@@ -72,12 +81,14 @@ function sendSMS(to, message) {
   const formattedPhone = formatPhoneNumber(to);
   if (!formattedPhone) {
     console.warn(`📱 Invalid phone number format: ${to}`);
+    if (role) failed(role, 'invalid_format');
     return Promise.resolve();
   }
 
   // E.164 validation
   if (!isE164(formattedPhone)) {
     console.warn('[SMS] invalid phone, aborting:', to ? maskPhone(to) : 'null');
+    if (role) failed(role, 'invalid_e164');
     throw new Error('Invalid E.164 phone');
   }
 
@@ -94,8 +105,8 @@ function sendSMS(to, message) {
   // Gate full-number logs for local debugging only
   const devFullLogs = process.env.SMS_DEBUG_FULL === '1' && process.env.NODE_ENV !== 'production';
   
-  // Log attempt (caller should pass role-based metrics; if not possible, use 'unknown')
-  attempt('unknown');
+  // Metrics: attempt only if role provided
+  if (role) attempt(role);
   
   console.log(`📱 [CRITICAL] === SEND SMS CALLED ===`);
   console.log(`📱 [CRITICAL] Caller function: ${caller}`);
@@ -111,14 +122,16 @@ function sendSMS(to, message) {
       to: formattedPhone,
     })
     .then(msg => {
-      sent('unknown');
+      // Success
+      if (role) sent(role);
       console.log(`📤 [CRITICAL] SMS sent successfully to ${maskPhone(formattedPhone)}`);
       console.log(`📤 [CRITICAL] Twilio message SID: ${msg.sid}`);
       return msg;
     })
     .catch(err => {
+      // Optional: map Twilio error codes as before (21610 etc.)
       const code = err?.code || err?.status || 'unknown';
-      failed('unknown', code);
+      if (role) failed(role, code);
       console.warn('[SMS] failed', { code, to: maskPhone(formattedPhone) });
 
       // 21610: STOP. Avoid future sends in this process.
