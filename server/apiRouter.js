@@ -16,6 +16,7 @@ const transactionLineItems = require('./api/transaction-line-items');
 const initiatePrivileged = require('./api/initiate-privileged');
 const transitionPrivileged = require('./api/transition-privileged');
 const shippoWebhook = require('./webhooks/shippoTracking');
+const qrRouter = require('./api/qr');
 
 const createUserWithIdp = require('./api/auth/createUserWithIdp');
 const loginWithIdp = require('./api/auth/loginWithIdp');
@@ -60,6 +61,18 @@ router.post('/transition-privileged', transitionPrivileged);
 
 // Shippo webhook endpoint
 router.use('/webhooks', shippoWebhook);
+
+// QR code redirect endpoint
+router.use('/', qrRouter({ 
+  sharetribeSdk: require('./api-util/sdk').getTrustedSdk,
+  shippo: require('axios').create({
+    baseURL: 'https://api.goshippo.com',
+    headers: {
+      'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  })
+}));
 
 // Create user with identity provider (e.g. Facebook or Google)
 // This endpoint is called to create a new user after user has confirmed

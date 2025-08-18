@@ -9,6 +9,17 @@ const {
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
 
+// Helper function to mask sensitive parts of URLs in logs
+function maskUrl(url) {
+  if (!url) return 'null';
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}${u.pathname}...`;
+  } catch {
+    return '[invalid-url]';
+  }
+}
+
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
 try {
@@ -179,6 +190,20 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     console.log('📦 [SHIPPO] QR Code URL:', qrCodeUrl);
     console.log('📦 [SHIPPO] Tracking URL:', trackingUrl);
     console.log('📦 [SHIPPO] Transaction ID:', transactionRes.data.object_id);
+    
+    // Parse expiry from QR code URL
+    function parseExpiresParam(url) {
+      try {
+        const u = new URL(url);
+        const exp = u.searchParams.get('Expires');
+        return exp ? Number(exp) : null;
+      } catch {
+        return null;
+      }
+    }
+    
+    const qrExpiry = parseExpiresParam(qrCodeUrl);
+    console.log('📦 [SHIPPO] QR code expiry:', qrExpiry ? new Date(qrExpiry * 1000).toISOString() : 'unknown');
 
     // Create return shipment (customer → provider) if we have return address
     let returnLabelRes = null;
@@ -255,20 +280,37 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       }
     }
 
-    // Try to persist URLs to Flex transaction (skip if not available)
+    // Try to persist URLs to Flex transaction via privileged transition
     try {
-      // Note: We'll skip persistence for now to avoid the SDK error
-      // TODO: Implement transition/store-shipping-urls when available
-      console.log('💾 [SHIPPO] Skipping URL persistence - transition not yet implemented');
-      console.log('💾 [SHIPPO] URLs available for this session:', {
+      console.log('💾 [SHIPPO] Attempting to save URLs to Flex transaction...');
+      
+      await sharetribeSdk.transactions.transition({
+        id: transactionId,
+        transition: 'transition/store-shipping-urls',
+        params: {
+          protectedData: {
+            outboundShippoTxId: transactionRes.data.object_id,
+            outboundQrCodeUrl: qrCodeUrl,
+            outboundQrCodeExpiry: qrExpiry,
+            outboundLabelUrl: labelUrl,
+            outboundTrackingUrl: trackingUrl,
+            returnQrCodeUrl: returnQrCodeUrl,
+            returnTrackingUrl: returnTrackingUrl
+          }
+        }
+      });
+      
+      console.log('💾 [SHIPPO] URLs successfully saved to Flex transaction');
+    } catch (persistError) {
+      console.warn('⚠️ [SHIPPO] Failed to save URLs to Flex transaction:', persistError.message);
+      console.warn('⚠️ [SHIPPO] This may be due to missing transition/store-shipping-urls');
+      console.log('💾 [SHIPPO] URLs available for this session only:', {
         outboundLabelUrl: labelUrl,
         outboundQrCodeUrl: qrCodeUrl,
         outboundTrackingUrl: trackingUrl,
         returnQrCodeUrl: returnQrCodeUrl,
         returnTrackingUrl: returnTrackingUrl
       });
-    } catch (persistError) {
-      console.warn('⚠️ [SHIPPO] URL persistence not available:', persistError.message);
     }
     
     // Send SMS notifications for shipping labels
@@ -280,7 +322,9 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       // Trigger 4: Lender receives text when QR code/shipping label is sent to them
       if (lenderPhone) {
         if (qrCodeUrl) {
-          const message = `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${qrCodeUrl}`;
+          // Use branded short URL instead of raw Shippo URL
+          const shortUrl = `https://sherbrt.com/qr/${transactionId}`;
+          const message = `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${shortUrl}`;
           
           await sendSMS(
             lenderPhone,
@@ -291,7 +335,8 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
               transition: 'transition/accept'
             }
           );
-          console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready with QR code: ${qrCodeUrl}`);
+          console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready with short URL: ${shortUrl}`);
+          console.log(`📱 [DEBUG] Raw Shippo QR URL: ${maskUrl(qrCodeUrl)}`);
         } else {
           // Fallback message if no QR code URL is available
           const fallbackMessage = `📬 Your Sherbrt shipping label is ready! 🍧 Please package and ship the item using the QR code link provided.`;
