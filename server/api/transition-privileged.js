@@ -323,7 +323,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       if (lenderPhone) {
         if (qrCodeUrl) {
           // Use branded short URL instead of raw Shippo URL
-          const shortUrl = `https://sherbrt.com/qr/${transactionId}`;
+          const shortUrl = `https://sherbrt.com/api/qr/${transactionId}`;
           const message = `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${shortUrl}`;
           
           await sendSMS(
