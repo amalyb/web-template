@@ -181,16 +181,37 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       
       // Trigger 4: Lender receives text when QR code/shipping label is sent to them
       if (lenderPhone) {
-        await sendSMS(
-          lenderPhone,
-          `📬 Your Sherbrt shipping label is ready! Please package and ship the item using the QR code link provided.`,
-          { 
-            role: 'lender',
-            transactionId: transactionId,
-            transition: 'transition/accept'
-          }
-        );
-        console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready`);
+        const qrCodeUrl = labelRes.data.qr_code_url;
+        
+        if (qrCodeUrl) {
+          const message = `📬 Your Sherbrt shipping label is ready! 🍧 Please package and ship the item using the QR code link provided: ${qrCodeUrl}`;
+          
+          await sendSMS(
+            lenderPhone,
+            message,
+            { 
+              role: 'lender',
+              transactionId: transactionId,
+              transition: 'transition/accept'
+            }
+          );
+          console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready with QR code: ${qrCodeUrl}`);
+        } else {
+          // Fallback message if no QR code URL is available
+          const fallbackMessage = `📬 Your Sherbrt shipping label is ready! 🍧 Please package and ship the item using the QR code link provided.`;
+          
+          await sendSMS(
+            lenderPhone,
+            fallbackMessage,
+            { 
+              role: 'lender',
+              transactionId: transactionId,
+              transition: 'transition/accept'
+            }
+          );
+          console.warn('⚠️ QR code URL not available - sent fallback message without URL');
+          console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready (fallback message)`);
+        }
       } else {
         console.warn('⚠️ Lender phone number not found for shipping label notification');
       }
@@ -667,9 +688,9 @@ module.exports = async (req, res) => {
           const listingTitle = listing?.attributes?.title || 'your item';
           const providerName = params?.protectedData?.providerName || 'the lender';
           
-          const message = `👗 Your Sherbrt request was accepted! 
-"${listingTitle}" is confirmed by ${providerName}. 
-Check your inbox for next steps: https://sherbrt.com/inbox/purchases`;
+          const message = `🎉 Your Sherbrt request was accepted! 🍧
+"${listingTitle}" from ${providerName} is confirmed. 
+You'll receive tracking info once it ships! ✈️👗 https://sherbrt.com/inbox/purchases`;
           
           // Wrap sendSMS in try/catch with logs
           try {
