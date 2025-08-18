@@ -184,7 +184,11 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         await sendSMS(
           lenderPhone,
           `📬 Your Sherbrt shipping label is ready! Please package and ship the item using the QR code link provided.`,
-          { role: 'lender' }
+          { 
+            role: 'lender',
+            transactionId: transactionId,
+            transition: 'transition/accept'
+          }
         );
         console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready`);
       } else {
@@ -197,7 +201,11 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         await sendSMS(
           borrowerPhone,
           `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`,
-          { role: 'borrower' }
+          { 
+            role: 'borrower',
+            transactionId: transactionId,
+            transition: 'transition/accept'
+          }
         );
         console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for item shipped with tracking: ${trackingUrl}`);
       } else if (borrowerPhone) {
@@ -665,7 +673,11 @@ Check your inbox for next steps: https://sherbrt.com/inbox/purchases`;
           
           // Wrap sendSMS in try/catch with logs
           try {
-            await sendSMS(borrowerPhone, message, { role: 'customer' });
+            await sendSMS(borrowerPhone, message, { 
+              role: 'customer',
+              transactionId: transactionId,
+              transition: 'transition/accept'
+            });
             console.log('✅ SMS sent successfully to borrower');
             console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for accepted request`);
           } catch (err) {
@@ -706,7 +718,11 @@ Check your inbox for next steps: https://sherbrt.com/inbox/purchases`;
             
             // Wrap sendSMS in try/catch with logs
             try {
-              await sendSMS(borrowerPhone, message, { role: 'customer' });
+              await sendSMS(borrowerPhone, message, { 
+                role: 'customer',
+                transactionId: transactionId,
+                transition: 'transition/decline'
+              });
               console.log('✅ SMS sent successfully to borrower');
               console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for declined request`);
             } catch (err) {
@@ -818,7 +834,11 @@ Check your inbox for next steps: https://sherbrt.com/inbox/purchases`;
           if (sendSMS) {
             const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
             
-            await sendSMS(providerPhone, message, { role: 'lender' });
+            await sendSMS(providerPhone, message, { 
+              role: 'lender',
+              transactionId: transaction?.id?.uuid || transaction?.id,
+              transition: 'transition/request-payment'
+            });
             console.log(`✅ [SMS][booking-request] SMS sent to provider ${maskPhone(providerPhone)}`);
           } else {
             console.warn('⚠️ [SMS][booking-request] sendSMS unavailable');
