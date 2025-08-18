@@ -117,40 +117,53 @@ function getBorrowerPhone(transaction) {
   }
 }
 
-// Main webhook handler
-router.post('/shippo', async (req, res) => {
-  console.log('🚀 Shippo webhook received!');
-  console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
-  
-  try {
-    const payload = req.body;
+  // Main webhook handler
+  router.post('/shippo', async (req, res) => {
+    console.log('🚀 Shippo webhook received!');
+    console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
     
-    // Validate payload structure
-    if (!payload || !payload.data) {
-      console.warn('⚠️ Invalid payload structure - missing data field');
-      return res.status(400).json({ error: 'Invalid payload structure' });
-    }
-    
-    const { data } = payload;
-    
-    // Extract tracking information
-    const trackingNumber = data.tracking_number;
-    const carrier = data.carrier;
-    const trackingStatus = data.tracking_status?.status;
-    const metadata = data.metadata || {};
-    
-    console.log(`📦 Tracking Number: ${trackingNumber}`);
-    console.log(`🚚 Carrier: ${carrier}`);
-    console.log(`📊 Status: ${trackingStatus}`);
-    console.log(`🏷️ Metadata:`, metadata);
-    
-    // Check if status is DELIVERED (case-insensitive)
-    if (!trackingStatus || trackingStatus.toUpperCase() !== 'DELIVERED') {
-      console.log(`ℹ️ Status '${trackingStatus}' is not DELIVERED - ignoring webhook`);
-      return res.status(200).json({ message: 'Status not DELIVERED - ignored' });
-    }
-    
-    console.log('✅ Status is DELIVERED - processing webhook');
+    try {
+      const payload = req.body;
+      
+      // Validate payload structure
+      if (!payload || !payload.data) {
+        console.warn('⚠️ Invalid payload structure - missing data field');
+        return res.status(400).json({ error: 'Invalid payload structure' });
+      }
+      
+      const { data, event } = payload;
+      
+      // Extract tracking information
+      const trackingNumber = data.tracking_number;
+      const carrier = data.carrier;
+      const trackingStatus = data.tracking_status?.status;
+      const metadata = data.metadata || {};
+      
+      console.log(`📦 Tracking Number: ${trackingNumber}`);
+      console.log(`🚚 Carrier: ${carrier}`);
+      console.log(`📊 Status: ${trackingStatus}`);
+      console.log(`🏷️ Metadata:`, metadata);
+      
+      // Gate by Shippo mode - ignore events whose event.mode doesn't match our SHIPPO_MODE
+      const expectedMode = process.env.SHIPPO_MODE; // 'test' or 'live'
+      if (expectedMode && event?.mode && event.mode.toLowerCase() !== expectedMode.toLowerCase()) {
+        console.warn('[SHIPPO][WEBHOOK] Mode mismatch', { eventMode: event.mode, expectedMode });
+        return res.status(200).json({ ok: true }); // ignore silently
+      }
+      
+      console.log(`✅ Shippo mode check passed: event.mode=${event?.mode || 'none'}, expected=${expectedMode || 'any'}`);
+      
+      // Check if status is DELIVERED or TRANSIT (first scan)
+      const upperStatus = trackingStatus?.toUpperCase();
+      if (!upperStatus || (upperStatus !== 'DELIVERED' && upperStatus !== 'TRANSIT')) {
+        console.log(`ℹ️ Status '${trackingStatus}' is not DELIVERED or TRANSIT - ignoring webhook`);
+        return res.status(200).json({ message: 'Status not DELIVERED or TRANSIT - ignored' });
+      }
+      
+      const isDelivery = upperStatus === 'DELIVERED';
+      const isFirstScan = upperStatus === 'TRANSIT';
+      
+      console.log(`✅ Status is ${upperStatus} - processing ${isDelivery ? 'delivery' : 'first scan'} webhook`);
     
     // Find transaction
     let transaction = null;
@@ -189,11 +202,17 @@ router.post('/shippo', async (req, res) => {
     
     console.log(`✅ Transaction found via ${matchStrategy}: ${transaction.id}`);
     
-    // Check if SMS already sent (idempotency)
+    // Check if SMS already sent (idempotency) based on event type
     const protectedData = transaction.attributes.protectedData || {};
-    if (protectedData.deliveredSmsSent === true) {
-      console.log('ℹ️ SMS already sent for this delivery - skipping (idempotent)');
-      return res.status(200).json({ message: 'SMS already sent - idempotent' });
+    
+    if (isDelivery && protectedData.shippingNotification?.delivered?.sent === true) {
+      console.log('ℹ️ Delivery SMS already sent - skipping (idempotent)');
+      return res.status(200).json({ message: 'Delivery SMS already sent - idempotent' });
+    }
+    
+    if (isFirstScan && protectedData.shippingNotification?.firstScan?.sent === true) {
+      console.log('ℹ️ First scan SMS already sent - skipping (idempotent)');
+      return res.status(200).json({ message: 'First scan SMS already sent - idempotent' });
     }
     
     // Get borrower phone number
@@ -205,49 +224,100 @@ router.post('/shippo', async (req, res) => {
     
     console.log(`📱 Borrower phone: ${borrowerPhone}`);
     
-    // Send delivery SMS
-    const message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
+    let message, smsType, protectedDataUpdate;
     
-    console.log(`📤 Sending delivery SMS to ${borrowerPhone}: ${message}`);
+            if (isDelivery) {
+          // Send delivery SMS
+          message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
+          smsType = 'delivery';
+          protectedDataUpdate = {
+            ...protectedData,
+            lastTrackingStatus: {
+              status: trackingStatus,
+              substatus: substatus,
+              timestamp: new Date().toISOString(),
+              event: 'delivered'
+            },
+            shippingNotification: {
+              ...protectedData.shippingNotification,
+              delivered: { sent: true, sentAt: new Date().toISOString() }
+            }
+          };
+        } else if (isFirstScan) {
+          // Send first scan SMS
+          const trackingUrl = protectedData.outboundTrackingUrl;
+          if (!trackingUrl) {
+            console.warn('⚠️ No tracking URL found for first scan notification');
+            return res.status(400).json({ error: 'No tracking URL found for first scan notification' });
+          }
+          
+          message = `🚚 Your Sherbrt item is on the way!\nTrack it here: ${trackingUrl}`;
+          smsType = 'first scan';
+          protectedDataUpdate = {
+            ...protectedData,
+            lastTrackingStatus: {
+              status: trackingStatus,
+              substatus: substatus,
+              timestamp: new Date().toISOString(),
+              event: 'first_scan'
+            },
+            shippingNotification: {
+              ...protectedData.shippingNotification,
+              firstScan: { sent: true, sentAt: new Date().toISOString() }
+            }
+          };
+        }
+    
+    console.log(`📤 Sending ${smsType} SMS to ${borrowerPhone}: ${message}`);
     
     try {
-      await sendSMS(borrowerPhone, message, { role: 'borrower' });
-      console.log(`✅ SMS sent successfully to ${borrowerPhone}`);
+      await sendSMS(borrowerPhone, message, { 
+        role: 'customer',
+        transactionId: transaction.id,
+        transition: `webhook/shippo-${smsType.replace(' ', '-')}`
+      });
+      console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
       
       // Mark SMS as sent in transaction protectedData
       try {
         const sdk = await getTrustedSdk();
-        const updatedProtectedData = {
-          ...protectedData,
-          deliveredSmsSent: true,
-          deliveredSmsSentAt: new Date().toISOString(),
-          deliveredSmsPhone: borrowerPhone
-        };
         
-        await sdk.transactions.update({
-          id: transaction.id,
-          protectedData: updatedProtectedData
-        });
+        if (isFirstScan) {
+          // Use privileged transition for first scan updates
+          await sdk.transactions.transition({
+            id: transaction.id,
+            transition: 'transition/store-shipping-urls',
+            params: { protectedData: protectedDataUpdate }
+          });
+        } else {
+          // Use privileged transition for delivery updates (consistent approach)
+          await sdk.transactions.transition({
+            id: transaction.id,
+            transition: 'transition/store-shipping-urls',
+            params: { protectedData: protectedDataUpdate }
+          });
+        }
         
-        console.log('💾 Updated transaction protectedData: deliveredSmsSent = true');
+        console.log(`💾 Updated transaction protectedData: ${smsType} SMS sent = true`);
         
       } catch (updateError) {
-        console.error('❌ Failed to update transaction protectedData:', updateError.message);
+        console.error(`❌ Failed to update transaction protectedData for ${smsType}:`, updateError.message);
         // Don't fail the webhook if we can't update the flag
       }
       
     } catch (smsError) {
-      console.error(`❌ Failed to send SMS to ${borrowerPhone}:`, smsError.message);
-      return res.status(500).json({ error: 'Failed to send SMS' });
+      console.error(`❌ Failed to send ${smsType} SMS to ${borrowerPhone}:`, smsError.message);
+      return res.status(500).json({ error: `Failed to send ${smsType} SMS` });
     }
     
-    console.log('🎉 Webhook processed successfully!');
+    console.log(`🎉 ${smsType} webhook processed successfully!`);
     res.status(200).json({ 
       success: true, 
-      message: 'Delivery SMS sent successfully',
+      message: `${smsType} SMS sent successfully`,
       transactionId: transaction.id,
       matchStrategy,
-      borrowerPhone
+      borrowerPhone,
+      smsType
     });
     
   } catch (error) {

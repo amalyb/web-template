@@ -180,15 +180,31 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       return { success: false, reason: 'label_purchase_failed', status: transactionRes.data.status };
     }
     
+    // One-time debug log after label purchase - safe structured logging of key fields
+    if (process.env.SHIPPO_DEBUG === 'true') {
+      const pick = (o, ks) => ks.reduce((acc,k)=> (acc[k] = o?.[k], acc), {});
+      const maskUrl = u => {
+        try { const { origin, pathname } = new URL(u); return `${origin}${pathname.slice(0, 20)}…`; }
+        catch { return u ? u.slice(0, 24) + '…' : u; }
+      };
+      const logTx = tx => ({
+        object_id: tx?.object_id,
+        status: tx?.status,
+        tracking_number: tx?.tracking_number,
+        tracking_url_provider: maskUrl(tx?.tracking_url_provider),
+        label_url: maskUrl(tx?.label_url),
+        qr_code_url: maskUrl(tx?.qr_code_url),
+      });
+      console.log('[SHIPPO][TX]', logTx(transactionRes.data));
+      console.log('[SHIPPO][RATE]', pick(selectedRate || {}, ['provider', 'servicelevel', 'object_id']));
+    }
+    
     // Extract URLs from the successful transaction response
     const labelUrl = transactionRes.data.label_url;
     const qrCodeUrl = transactionRes.data.qr_code_url;
     const trackingUrl = transactionRes.data.tracking_url_provider || transactionRes.data.tracking_url;
     
     console.log('📦 [SHIPPO] Label purchased successfully!');
-    console.log('📦 [SHIPPO] Label URL:', labelUrl);
-    console.log('📦 [SHIPPO] QR Code URL:', qrCodeUrl);
-    console.log('📦 [SHIPPO] Tracking URL:', trackingUrl);
     console.log('📦 [SHIPPO] Transaction ID:', transactionRes.data.object_id);
     
     // Parse expiry from QR code URL
@@ -268,50 +284,90 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         );
         
         if (returnTransactionRes.data.status === 'SUCCESS') {
+          // One-time debug log for return label purchase
+          if (process.env.SHIPPO_DEBUG === 'true') {
+            const logTx = tx => ({
+              object_id: tx?.object_id,
+              status: tx?.status,
+              tracking_number: tx?.tracking_number,
+              tracking_url_provider: maskUrl(tx?.tracking_url_provider),
+              label_url: maskUrl(tx?.label_url),
+              qr_code_url: maskUrl(tx?.qr_code_url),
+            });
+            console.log('[SHIPPO][RETURN_TX]', logTx(returnTransactionRes.data));
+            console.log('[SHIPPO][RETURN_RATE]', pick(returnSelectedRate || {}, ['provider', 'servicelevel', 'object_id']));
+          }
+          
           returnQrCodeUrl = returnTransactionRes.data.qr_code_url;
           returnTrackingUrl = returnTransactionRes.data.tracking_url_provider || returnTransactionRes.data.tracking_url;
           
           console.log('📦 [SHIPPO] Return label purchased successfully!');
-          console.log('📦 [SHIPPO] Return QR Code URL:', returnQrCodeUrl);
-          console.log('📦 [SHIPPO] Return Tracking URL:', returnTrackingUrl);
+          console.log('📦 [SHIPPO] Return Transaction ID:', returnTransactionRes.data.object_id);
         } else {
           console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
         }
       }
     }
 
-    // Try to persist URLs to Flex transaction via privileged transition
-    try {
-      console.log('💾 [SHIPPO] Attempting to save URLs to Flex transaction...');
-      
-      await sharetribeSdk.transactions.transition({
-        id: transactionId,
-        transition: 'transition/store-shipping-urls',
-        params: {
-          protectedData: {
-            outboundShippoTxId: transactionRes.data.object_id,
-            outboundQrCodeUrl: qrCodeUrl,
-            outboundQrCodeExpiry: qrExpiry,
-            outboundLabelUrl: labelUrl,
-            outboundTrackingUrl: trackingUrl,
-            returnQrCodeUrl: returnQrCodeUrl,
-            returnTrackingUrl: returnTrackingUrl
-          }
+          // Try to persist URLs and tracking data to Flex transaction via privileged transition
+      try {
+        console.log('💾 [SHIPPO] Attempting to save URLs and tracking data to Flex transaction...');
+        
+        // Extract tracking data from the transaction response
+        const trackingNumber = transactionRes.data.tracking_number;
+        let trackingUrl = transactionRes.data.tracking_url_provider || transactionRes.data.tracking_url;
+        
+        // Construct tracking URL if missing for USPS
+        if (!trackingUrl && selectedRate.provider === 'usps' && trackingNumber) {
+          trackingUrl = `https://tools.usps.com/go/TrackConfirmAction_input?origTrackNum=${trackingNumber}`;
+          console.log('📦 [SHIPPO] Constructed USPS tracking URL fallback');
         }
-      });
-      
-      console.log('💾 [SHIPPO] URLs successfully saved to Flex transaction');
-    } catch (persistError) {
-      console.warn('⚠️ [SHIPPO] Failed to save URLs to Flex transaction:', persistError.message);
-      console.warn('⚠️ [SHIPPO] This may be due to missing transition/store-shipping-urls');
-      console.log('💾 [SHIPPO] URLs available for this session only:', {
-        outboundLabelUrl: labelUrl,
-        outboundQrCodeUrl: qrCodeUrl,
-        outboundTrackingUrl: trackingUrl,
-        returnQrCodeUrl: returnQrCodeUrl,
-        returnTrackingUrl: returnTrackingUrl
-      });
-    }
+        
+        console.log('📦 [SHIPPO] Extracted tracking data:', {
+          trackingNumber: trackingNumber ? `${trackingNumber.substring(0, 4)}...` : 'none',
+          carrier: selectedRate.provider,
+          hasTrackingUrl: !!trackingUrl,
+          trackingUrlFallback: !transactionRes.data.tracking_url_provider && !transactionRes.data.tracking_url
+        });
+        
+        await sharetribeSdk.transactions.transition({
+          id: transactionId,
+          transition: 'transition/store-shipping-urls',
+          params: {
+            protectedData: {
+              outboundShippoTxId: transactionRes.data.object_id,
+              outboundQrCodeUrl: qrCodeUrl,
+              outboundQrCodeExpiry: qrExpiry,
+              outboundLabelUrl: labelUrl,
+              outboundTrackingUrl: trackingUrl,
+              outboundTrackingNumber: trackingNumber,
+              outboundCarrier: selectedRate.provider,
+              returnQrCodeUrl: returnQrCodeUrl,
+              returnTrackingUrl: returnTrackingUrl,
+              lastTrackingStatus: null,
+              shippingNotification: {
+                labelCreated: { sent: false, sentAt: null },
+                firstScan: { sent: false, sentAt: null },
+                delivered: { sent: false, sentAt: null }
+              }
+            }
+          }
+        });
+        
+        console.log('💾 [SHIPPO] URLs and tracking data successfully saved to Flex transaction');
+      } catch (persistError) {
+        console.warn('⚠️ [SHIPPO] Failed to save URLs and tracking data to Flex transaction:', persistError.message);
+        console.warn('⚠️ [SHIPPO] This may be due to missing transition/store-shipping-urls');
+        console.log('💾 [SHIPPO] Data available for this session only:', {
+          outboundLabelUrl: labelUrl,
+          outboundQrCodeUrl: qrCodeUrl,
+          outboundTrackingUrl: trackingUrl,
+          outboundTrackingNumber: transactionRes.data.tracking_number,
+          outboundCarrier: selectedRate.provider,
+          returnQrCodeUrl: returnQrCodeUrl,
+          returnTrackingUrl: returnTrackingUrl
+        });
+      }
     
     // Send SMS notifications for shipping labels
     try {
@@ -357,22 +413,46 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         console.warn('⚠️ Lender phone number not found for shipping label notification');
       }
       
-      // Trigger 5: Borrower receives text when item is shipped (include tracking link)
+      // Optional: Send borrower "Label created" message (idempotent)
       if (borrowerPhone && trackingUrl) {
-        await sendSMS(
-          borrowerPhone,
-          `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`,
-          { 
-            role: 'borrower',
-            transactionId: transactionId,
-            transition: 'transition/accept'
+        // Check if we've already sent this notification
+        const existingNotification = protectedData.shippingNotification?.labelCreated;
+        if (existingNotification?.sent === true) {
+          console.log(`📱 Label created SMS already sent to borrower (${maskPhone(borrowerPhone)}) - skipping`);
+        } else {
+          await sendSMS(
+            borrowerPhone,
+            `📦 Label created! Your item will ship soon.\nTrack status here: ${trackingUrl}`,
+            { 
+              role: 'customer',
+              transactionId: transactionId,
+              transition: 'transition/accept'
+            }
+          );
+          console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for label created with tracking: ${maskUrl(trackingUrl)}`);
+          
+          // Mark as sent in protectedData
+          try {
+            await sharetribeSdk.transactions.transition({
+              id: transactionId,
+              transition: 'transition/store-shipping-urls',
+              params: {
+                protectedData: {
+                  shippingNotification: {
+                    labelCreated: { sent: true, sentAt: new Date().toISOString() }
+                  }
+                }
+              }
+            });
+            console.log(`💾 Updated shippingNotification.labelCreated for transaction: ${transactionId}`);
+          } catch (updateError) {
+            console.warn(`⚠️ Failed to update labelCreated notification state:`, updateError.message);
           }
-        );
-        console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for item shipped with tracking: ${trackingUrl}`);
+        }
       } else if (borrowerPhone) {
-        console.warn('⚠️ Borrower phone found but no tracking URL available');
+        console.log(`📱 Borrower phone found but no tracking URL available - no immediate notification sent`);
       } else {
-        console.warn('⚠️ Borrower phone number not found for shipping notification');
+        console.log(`📱 Borrower phone number not found - no immediate notification sent`);
       }
       
     } catch (smsError) {

@@ -70,6 +70,24 @@ module.exports = ({ sharetribeSdk, shippo }) => {
           // Re-retrieve Shippo transaction to get fresh signed URLs
           const shippoTx = await shippo.transaction.retrieve(outboundShippoTxId);
           
+          // One-time debug log after transaction retrieve - safe structured logging
+          if (process.env.SHIPPO_DEBUG === 'true') {
+            const pick = (o, ks) => ks.reduce((acc,k)=> (acc[k] = o?.[k], acc), {});
+            const maskUrl = u => {
+              try { const { origin, pathname } = new URL(u); return `${origin}${pathname.slice(0, 20)}…`; }
+              catch { return u ? u.slice(0, 24) + '…' : u; }
+            };
+            const logTx = tx => ({
+              object_id: tx?.object_id,
+              status: tx?.status,
+              tracking_number: tx?.tracking_number,
+              tracking_url_provider: maskUrl(tx?.tracking_url_provider),
+              label_url: maskUrl(tx?.label_url),
+              qr_code_url: maskUrl(tx?.qr_code_url),
+            });
+            console.log('[SHIPPO][RETRIEVE]', logTx(shippoTx));
+          }
+          
           if (shippoTx?.qr_code_url) {
             outboundQrCodeUrl = shippoTx.qr_code_url;
             outboundQrCodeExpiry = parseExpiresParam(outboundQrCodeUrl);
