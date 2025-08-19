@@ -60,7 +60,7 @@ const getBorrowerPhone = (params, tx) =>
   null;
 
 // --- Shippo label creation logic extracted to a function ---
-async function createShippingLabels(protectedData, transactionId, listing, sendSMS, sharetribeSdk) {
+async function createShippingLabels(protectedData, transactionId, listing, sendSMS, sharetribeSdk, req) {
   console.log('🚀 [SHIPPO] Starting label creation for transaction:', transactionId);
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
   
@@ -241,7 +241,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
 
     // Build short URL from live host (no hardcoding)
     const txIdStr = String(transactionId);
-    const base = process.env.ROOT_URL || 'https://sherbrt.com';
+    const base = process.env.ROOT_URL || `${req.protocol}://${req.get('host')}`;
     const shortUrl = `${base}/api/qr/${txIdStr}`;
 
     // Resolve lender phone
@@ -1018,7 +1018,7 @@ You'll receive tracking info once it ships! ✈️👗 https://sherbrt.com/inbox
         console.log('📋 [SHIPPO] Final protectedData for label creation:', finalProtectedData);
         
         // Trigger Shippo label creation asynchronously (don't await to avoid blocking response)
-        createShippingLabels(finalProtectedData, transactionId, listing, sendSMS, sdk)
+        createShippingLabels(finalProtectedData, transactionId, listing, sendSMS, sdk, req)
           .then(result => {
             if (result.success) {
               console.log('✅ [SHIPPO] Label creation completed successfully');
