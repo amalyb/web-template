@@ -356,8 +356,15 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         
         console.log('💾 [SHIPPO] URLs and tracking data successfully saved to Flex transaction');
       } catch (persistError) {
-        console.warn('⚠️ [SHIPPO] Failed to save URLs and tracking data to Flex transaction:', persistError.message);
-        console.warn('⚠️ [SHIPPO] This may be due to missing transition/store-shipping-urls');
+        console.error('❌ [SHIPPO] Failed to save URLs and tracking data to Flex transaction:', persistError.message);
+        console.error('❌ [SHIPPO] Error details:', {
+          status: persistError.response?.status,
+          statusText: persistError.response?.statusText,
+          data: persistError.response?.data,
+          transactionId: transactionId,
+          transition: 'transition/store-shipping-urls'
+        });
+        console.warn('⚠️ [SHIPPO] This may be due to missing transition/store-shipping-urls or deployment issues');
         console.log('💾 [SHIPPO] Data available for this session only:', {
           outboundLabelUrl: labelUrl,
           outboundQrCodeUrl: qrCodeUrl,
@@ -375,12 +382,13 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       const lenderPhone = protectedData.providerPhone;
       const borrowerPhone = protectedData.customerPhone;
       
-      // Trigger 4: Lender receives text when QR code/shipping label is sent to them
-      if (lenderPhone) {
-        if (qrCodeUrl) {
-          // Use branded short URL instead of raw Shippo URL
-          const shortUrl = `https://sherbrt.com/api/qr/${transactionId}`;
-          const message = `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${shortUrl}`;
+              // Trigger 4: Lender receives text when QR code/shipping label is sent to them
+        if (lenderPhone) {
+          if (qrCodeUrl) {
+            // Use branded short URL instead of raw Shippo URL
+            const qrBaseUrl = process.env.PUBLIC_QR_BASE_URL || 'https://sherbrt.com/api/qr';
+            const shortUrl = `${qrBaseUrl}/${transactionId}`;
+            const message = `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${shortUrl}`;
           
           await sendSMS(
             lenderPhone,
