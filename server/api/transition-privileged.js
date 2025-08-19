@@ -9,15 +9,37 @@ const {
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
 
+// Helper function to safely pick specific keys from an object
+const pick = (obj, keys = []) => {
+  if (!obj || typeof obj !== 'object') return {};
+  return keys.reduce((acc, k) => {
+    if (k in obj) acc[k] = obj[k];
+    return acc;
+  }, {});
+};
+
 // Helper function to mask sensitive parts of URLs in logs
 function maskUrl(url) {
   if (!url) return 'null';
   try {
     const u = new URL(url);
-    return `${u.protocol}//${u.host}${u.pathname}...`;
-  } catch {
-    return '[invalid-url]';
+    u.search = ''; // strip query
+    return u.toString();
+  } catch { 
+    return String(url).split('?')[0]; 
   }
+}
+
+// Helper function to log transaction data safely for debugging
+function logTx(tx) {
+  return {
+    object_id: tx?.object_id,
+    status: tx?.status,
+    tracking_number: tx?.tracking_number,
+    tracking_url_provider: maskUrl(tx?.tracking_url_provider),
+    label_url: maskUrl(tx?.label_url),
+    qr_code_url: maskUrl(tx?.qr_code_url),
+  };
 }
 
 // Conditional import of sendSMS to prevent module loading errors
@@ -182,11 +204,6 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     
     // One-time debug log after label purchase - safe structured logging of key fields
     if (process.env.SHIPPO_DEBUG === 'true') {
-      const pick = (o, ks) => ks.reduce((acc,k)=> (acc[k] = o?.[k], acc), {});
-      const maskUrl = u => {
-        try { const { origin, pathname } = new URL(u); return `${origin}${pathname.slice(0, 20)}…`; }
-        catch { return u ? u.slice(0, 24) + '…' : u; }
-      };
       const logTx = tx => ({
         object_id: tx?.object_id,
         status: tx?.status,
@@ -220,6 +237,29 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     
     const qrExpiry = parseExpiresParam(qrCodeUrl);
     console.log('📦 [SHIPPO] QR code expiry:', qrExpiry ? new Date(qrExpiry * 1000).toISOString() : 'unknown');
+
+    // IMPORTANT: Send lender SMS immediately after outbound label success
+    // This ensures the SMS is sent even if subsequent steps fail
+    try {
+      const lenderPhone = protectedData.providerPhone;
+      if (lenderPhone && qrCodeUrl) {
+        const shortUrl = `${process.env.ROOT_URL || 'https://sherbrt.com'}/api/qr/${transactionId}`;
+        await sendSMS({
+          to: lenderPhone,
+          role: 'lender',
+          message: `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${shortUrl}`
+        });
+        console.log(`📱 [CRITICAL] Lender SMS sent immediately after outbound label success to ${maskPhone(lenderPhone)}`);
+        console.log(`📱 [CRITICAL] Short URL: ${shortUrl}`);
+      } else if (lenderPhone) {
+        console.warn('⚠️ [CRITICAL] Lender phone found but no QR code URL available for immediate SMS');
+      } else {
+        console.warn('⚠️ [CRITICAL] Lender phone number not found for immediate SMS');
+      }
+    } catch (smsError) {
+      console.error('❌ [CRITICAL] Failed to send immediate lender SMS:', smsError.message);
+      // Don't fail the label creation if SMS fails
+    }
 
     // Create return shipment (customer → provider) if we have return address
     let returnLabelRes = null;
@@ -286,14 +326,6 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         if (returnTransactionRes.data.status === 'SUCCESS') {
           // One-time debug log for return label purchase
           if (process.env.SHIPPO_DEBUG === 'true') {
-            const logTx = tx => ({
-              object_id: tx?.object_id,
-              status: tx?.status,
-              tracking_number: tx?.tracking_number,
-              tracking_url_provider: maskUrl(tx?.tracking_url_provider),
-              label_url: maskUrl(tx?.label_url),
-              qr_code_url: maskUrl(tx?.qr_code_url),
-            });
             console.log('[SHIPPO][RETURN_TX]', logTx(returnTransactionRes.data));
             console.log('[SHIPPO][RETURN_RATE]', pick(returnSelectedRate || {}, ['provider', 'servicelevel', 'object_id']));
           }
@@ -376,50 +408,10 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         });
       }
     
-    // Send SMS notifications for shipping labels
+    // Send borrower SMS notification (lender SMS already sent immediately after outbound label success)
     try {
       // Extract phone numbers from protectedData (more reliable than nested objects)
-      const lenderPhone = protectedData.providerPhone;
       const borrowerPhone = protectedData.customerPhone;
-      
-              // Trigger 4: Lender receives text when QR code/shipping label is sent to them
-        if (lenderPhone) {
-          if (qrCodeUrl) {
-            // Use branded short URL instead of raw Shippo URL
-            const qrBaseUrl = process.env.PUBLIC_QR_BASE_URL || 'https://sherbrt.com/api/qr';
-            const shortUrl = `${qrBaseUrl}/${transactionId}`;
-            const message = `📬 Your Sherbrt shipping label is ready! 🍧 Use this QR to ship: ${shortUrl}`;
-          
-          await sendSMS(
-            lenderPhone,
-            message,
-            { 
-              role: 'lender',
-              transactionId: transactionId,
-              transition: 'transition/accept'
-            }
-          );
-          console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready with short URL: ${shortUrl}`);
-          console.log(`📱 [DEBUG] Raw Shippo QR URL: ${maskUrl(qrCodeUrl)}`);
-        } else {
-          // Fallback message if no QR code URL is available
-          const fallbackMessage = `📬 Your Sherbrt shipping label is ready! 🍧 Please package and ship the item using the QR code link provided.`;
-          
-          await sendSMS(
-            lenderPhone,
-            fallbackMessage,
-            { 
-              role: 'lender',
-              transactionId: transactionId,
-              transition: 'transition/accept'
-            }
-          );
-          console.warn('⚠️ QR code URL not available - sent fallback message without URL');
-          console.log(`📱 SMS sent to lender (${maskPhone(lenderPhone)}) for shipping label ready (fallback message)`);
-        }
-      } else {
-        console.warn('⚠️ Lender phone number not found for shipping label notification');
-      }
       
       // Optional: Send borrower "Label created" message (idempotent)
       if (borrowerPhone && trackingUrl) {
@@ -464,7 +456,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       }
       
     } catch (smsError) {
-      console.error('❌ Failed to send shipping SMS notifications:', smsError.message);
+      console.error('❌ Failed to send borrower SMS notification:', smsError.message);
       // Don't fail the label creation if SMS fails
     }
     
@@ -482,10 +474,19 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     };
     
   } catch (err) {
-    console.error('❌ [SHIPPO] Label creation failed:', err.message);
-    if (err.response?.data) {
-      console.error('❌ [SHIPPO] Shippo API error details:', err.response.data);
-    }
+    const details = {
+      name: err?.name,
+      message: err?.message,
+      status: err?.status || err?.response?.status,
+      statusText: err?.statusText || err?.response?.statusText,
+      data: err?.response?.data ? pick(err.response.data, ['error', 'message', 'code']) : undefined,
+      labelUrl: err?.label_url ? maskUrl(err.label_url) : undefined,
+      qrUrl: err?.qr_code_url ? maskUrl(err.qr_code_url) : undefined,
+    };
+    console.error('[SHIPPO] Label creation failed', details);
+
+    // IMPORTANT: don't throw here if outbound label succeeded.
+    // Continue to send the lender SMS with the outbound QR even if saving/return label fails.
     return { success: false, reason: 'api_error', error: err.message };
   }
 }
@@ -1092,7 +1093,7 @@ You'll receive tracking info once it ships! ✈️👗 https://sherbrt.com/inbox
           }
 
           if (sendSMS) {
-            const message = `👗 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
+            const message = `👗🍧 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
             
             await sendSMS(providerPhone, message, { 
               role: 'lender',
