@@ -124,6 +124,8 @@ const defaultDirectives = {
     // Plausible analytics
     'plausible.io',
   ],
+  "script-src-elem": ["'self'", "blob:", "https://api.mapbox.com", "https://*.mapbox.com"],
+  "manifest-src": ["'self'"],
   styleSrc: [self, unsafeInline, 'fonts.googleapis.com', 'api.mapbox.com'],
 };
 
