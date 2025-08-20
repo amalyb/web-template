@@ -264,6 +264,76 @@ app.use(passport.initialize());
 // Server-side routes that do not render the application
 app.use('/api', apiRouter);
 
+// Redis smoke test endpoint - standalone test for Redis connection and QR functionality
+const { getRedis } = require('./redis');
+
+// util to mask secrets in logs/responses
+function mask(str, keep = 4) {
+  if (!str || typeof str !== 'string') return '';
+  const s = str.replace(/[\r\n\t]/g, '');
+  return s.length <= keep ? s : `${s.slice(0, keep)}…`;
+}
+
+// GET /api/qr/test — writes and reads a dummy Redis key and returns status
+app.get('/api/qr/test', async (req, res) => {
+  const redis = getRedis();
+
+  const env = {
+    PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || '',
+    REDIS_URL: process.env.REDIS_URL || '',
+  };
+
+  const txId = req.query.tx || 'qr-test-tx';
+  const key = `qr:${txId}`;
+  const now = new Date().toISOString();
+  const payload = {
+    smoke: true,
+    savedAt: now,
+    qrCodeUrl: 'https://example.com/fake-qr.png',
+  };
+
+  const result = {
+    ok: true,
+    mode: redis.status === 'mock' ? 'in-memory (mock)' : 'redis',
+    env: {
+      PUBLIC_BASE_URL: mask(env.PUBLIC_BASE_URL, 20),
+      REDIS_URL: env.REDIS_URL ? '(set)' : '(missing)',
+    },
+    actions: [],
+    readback: null,
+  };
+
+  try {
+    // write with short TTL (60s)
+    await redis.set(key, JSON.stringify(payload), 'EX', 60);
+    result.actions.push({ action: 'SET', key, ttl: 60, status: 'ok' });
+  } catch (e) {
+    result.ok = false;
+    result.actions.push({ action: 'SET', key, status: 'error', error: String(e) });
+  }
+
+  try {
+    const raw = await redis.get(key);
+    result.actions.push({ action: 'GET', key, status: raw ? 'ok' : 'miss' });
+    result.readback = raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    result.ok = false;
+    result.actions.push({ action: 'GET', key, status: 'error', error: String(e) });
+  }
+
+  // Optional: quickly exercise the QR redirect handler if present
+  // e.g. curl -i "$PUBLIC_BASE_URL/api/qr/$TXID" separately; here we just return helpful next steps
+  result.nextSteps = {
+    curlQr: env.PUBLIC_BASE_URL
+      ? `curl -i "${env.PUBLIC_BASE_URL}/api/qr/${txId}"    # expect 302 if you seed Redis for this txId"`
+      : 'Set PUBLIC_BASE_URL to test QR shortlinks.',
+    seedNote: `To test redirect, set a real payload at key ${key} with a valid Shippo qrCodeUrl, then hit /api/qr/${txId}`,
+  };
+
+  res.set('Cache-Control', 'no-store');
+  return res.status(result.ok ? 200 : 500).json(result);
+});
+
 const noCacheHeaders = {
   'Cache-control': 'no-cache, no-store, must-revalidate',
 };
