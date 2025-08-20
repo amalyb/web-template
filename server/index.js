@@ -147,12 +147,20 @@ if (cspEnabled) {
   // policy is violated, but doesn't block any requests. In block
   // mode, the browser also blocks the requests.
 
-  // In Helmet 4,supplying functions as directive values is not supported.
-  // That's why we need to create own middleware function that calls the Helmet's middleware function
-  const isReportOnly = CSP_MODE !== 'block';
-  app.use((req, res, next) => {
-    csp(cspReportUrl, isReportOnly)(req, res, next);
-  });
+  // Build CSP policies
+  const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
+  
+  // Log CSP mode at startup
+  console.log(`🔐 CSP mode: ${CSP_MODE}`);
+
+  if (CSP_MODE === 'block') {
+    // Apply both enforce and reportOnly middlewares (enforce first)
+    app.use(cspPolicies.enforce);
+    app.use(cspPolicies.reportOnly);
+  } else {
+    // Apply only reportOnly middleware
+    app.use(cspPolicies.reportOnly);
+  }
 }
 
 // Redirect HTTP to HTTPS if REDIRECT_SSL is `true`.

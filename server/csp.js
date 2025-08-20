@@ -132,15 +132,14 @@ const defaultDirectives = {
 };
 
 /**
- * Middleware for creating a Content Security Policy
+ * Middleware for creating Content Security Policy
  *
- * @param {String} reportUri URL where the browser will POST the
- * policy violation reports
- *
- * @param {Boolean} reportOnly In the report mode, requests are only
- * reported to the report URL instead of blocked
+ * @param {Object} options Configuration options
+ * @param {string} options.mode CSP mode: 'report' (default) or 'block'
+ * @param {string} options.reportUri URL where the browser will POST policy violation reports
+ * @returns {Object} Object containing enforce and reportOnly middleware configurations
  */
-exports.csp = (reportUri, reportOnly) => {
+exports.csp = ({ mode = 'report', reportUri }) => {
   // ================ START CUSTOM CSP URLs ================ //
 
   // Add custom CSP whitelisted URLs here. See commented example
@@ -166,41 +165,69 @@ exports.csp = (reportUri, reportOnly) => {
   // See Helmet's default directives:
   // https://github.com/helmetjs/helmet/blob/bdb09348c17c78698b0c94f0f6cc6b3968cd43f9/middlewares/content-security-policy/index.ts#L51
 
-  // Extend relevant directives with extra hosts
-  const directives = Object.assign({ reportUri: [reportUri] }, defaultDirectives, customDirectives);
+  // Build base directives with extra hosts
+  const baseDirectives = Object.assign({}, defaultDirectives, customDirectives);
   
   if (EXTRA_HOSTS.length > 0) {
     // Add extra hosts to relevant directives
-    if (directives.scriptSrc) {
-      directives.scriptSrc = [...directives.scriptSrc, ...EXTRA_HOSTS];
+    if (baseDirectives.scriptSrc) {
+      baseDirectives.scriptSrc = [...baseDirectives.scriptSrc, ...EXTRA_HOSTS];
     }
-    if (directives.scriptSrcElem) {
-      directives.scriptSrcElem = [...directives.scriptSrcElem, ...EXTRA_HOSTS];
+    if (baseDirectives.scriptSrcElem) {
+      baseDirectives.scriptSrcElem = [...baseDirectives.scriptSrcElem, ...EXTRA_HOSTS];
     }
-    if (directives.connectSrc) {
-      directives.connectSrc = [...directives.connectSrc, ...EXTRA_HOSTS];
+    if (baseDirectives.connectSrc) {
+      baseDirectives.connectSrc = [...baseDirectives.connectSrc, ...EXTRA_HOSTS];
     }
-    if (directives.styleSrc) {
-      directives.styleSrc = [...directives.styleSrc, ...EXTRA_HOSTS];
+    if (baseDirectives.styleSrc) {
+      baseDirectives.styleSrc = [...baseDirectives.styleSrc, ...EXTRA_HOSTS];
     }
-    if (directives.imgSrc) {
-      directives.imgSrc = [...directives.imgSrc, ...EXTRA_HOSTS];
+    if (baseDirectives.imgSrc) {
+      baseDirectives.imgSrc = [...baseDirectives.imgSrc, ...EXTRA_HOSTS];
     }
-    if (directives.manifestSrc) {
-      directives.manifestSrc = [...directives.manifestSrc, ...EXTRA_HOSTS];
+    if (baseDirectives.manifestSrc) {
+      baseDirectives.manifestSrc = [...baseDirectives.manifestSrc, ...EXTRA_HOSTS];
     } else {
-      directives.manifestSrc = [self, ...EXTRA_HOSTS];
+      baseDirectives.manifestSrc = [self, ...EXTRA_HOSTS];
     }
-  }
-  
-  if (!reportOnly && !dev) {
-    directives.upgradeInsecureRequests = [];
   }
 
-  // See: https://helmetjs.github.io/docs/csp/
-  return helmet.contentSecurityPolicy({
-    useDefaults: false,
-    directives,
-    reportOnly,
-  });
+  // Build enforce policy (strict)
+  const enforceDirectives = Object.assign({}, baseDirectives);
+  if (!dev) {
+    enforceDirectives.upgradeInsecureRequests = [];
+  }
+
+  // Build report-only policy (can be more permissive)
+  const reportOnlyDirectives = Object.assign({}, baseDirectives);
+  // Add any additional permissive directives for monitoring here
+  // For example, you might want to monitor more sources in report-only mode
+  if (process.env.CSP_REPORT_ONLY_EXTRA_HOSTS) {
+    const reportOnlyExtraHosts = process.env.CSP_REPORT_ONLY_EXTRA_HOSTS.split(/\s+/).filter(Boolean);
+    if (reportOnlyExtraHosts.length > 0) {
+      if (reportOnlyDirectives.connectSrc) {
+        reportOnlyDirectives.connectSrc = [...reportOnlyDirectives.connectSrc, ...reportOnlyExtraHosts];
+      }
+      if (reportOnlyDirectives.scriptSrc) {
+        reportOnlyDirectives.scriptSrc = [...reportOnlyDirectives.scriptSrc, ...reportOnlyExtraHosts];
+      }
+    }
+  }
+
+  // Add report URI to both policies
+  enforceDirectives.reportUri = [reportUri];
+  reportOnlyDirectives.reportUri = [reportUri];
+
+  return {
+    enforce: helmet.contentSecurityPolicy({
+      useDefaults: false,
+      directives: enforceDirectives,
+      reportOnly: false,
+    }),
+    reportOnly: helmet.contentSecurityPolicy({
+      useDefaults: false,
+      directives: reportOnlyDirectives,
+      reportOnly: true,
+    }),
+  };
 };
