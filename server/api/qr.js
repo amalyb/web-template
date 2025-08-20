@@ -45,8 +45,8 @@ module.exports = ({ getTrustedSdk }) => {
     }
   });
 
-  // Main QR redirect: /api/qr/:txId
-  router.get('/:txId', async (req, res) => {
+  // Main QR redirect: /api/qr/:txId (constrained to UUID format)
+  router.get('/:txId([0-9a-fA-F-]{36})', async (req, res) => {
     const { txId } = req.params;
 
     // Add guard log if PUBLIC_BASE_URL is missing

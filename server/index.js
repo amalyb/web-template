@@ -276,6 +276,7 @@ function mask(str, keep = 4) {
 
 // GET /api/qr/test — writes and reads a dummy Redis key and returns status
 app.get('/api/qr/test', async (req, res) => {
+  console.log('[qr-test] route enabled at /api/qr/test');
   const redis = getRedis();
 
   const env = {
