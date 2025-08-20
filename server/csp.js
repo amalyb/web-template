@@ -88,6 +88,7 @@ const defaultDirectives = {
     '*.picsum.photos',
 
     'api.mapbox.com',
+    'https://*.tiles.mapbox.com',
     'maps.googleapis.com',
     '*.gstatic.com',
     '*.googleapis.com',

@@ -12,12 +12,48 @@
 const { execSync } = require('child_process');
 const path = require('path');
 
+// Dynamic host detection from environment variables
+const getSelfHostPatterns = () => {
+  const patterns = [];
+  
+  // Parse ROOT_URL if present
+  if (process.env.ROOT_URL) {
+    try {
+      const url = new URL(process.env.ROOT_URL);
+      patterns.push(`https?://${url.hostname.replace(/\./g, '\\.')}`);
+    } catch (e) {
+      console.warn('⚠️  Invalid ROOT_URL format:', process.env.ROOT_URL);
+    }
+  }
+  
+  // Parse CANONICAL_HOST if present
+  if (process.env.CANONICAL_HOST) {
+    patterns.push(`https?://${process.env.CANONICAL_HOST.replace(/\./g, '\\.')}`);
+  }
+  
+  // Parse ALLOWED_SELF_HOSTS (comma-separated) if present
+  if (process.env.ALLOWED_SELF_HOSTS) {
+    const hosts = process.env.ALLOWED_SELF_HOSTS.split(',').map(h => h.trim()).filter(Boolean);
+    hosts.forEach(host => {
+      patterns.push(`https?://${host.replace(/\./g, '\\.')}`);
+    });
+  }
+  
+  // Fallback to common patterns if no environment variables set
+  if (patterns.length === 0) {
+    patterns.push(
+      'https?://(web-template-1\\.onrender\\.com|sherbrt-test\\.onrender\\.com)',
+      'https?://sherbrt\\.com'
+    );
+    console.log('⚠️  No environment variables set for host detection, using fallback patterns');
+  }
+  
+  return patterns;
+};
+
 // Patterns to search for absolute self-host URLs that should be relative
 // Note: SMS/email links are allowed to be absolute
-const SELF_HOST_PATTERNS = [
-  'https?://(web-template-1\\.onrender\\.com|sherbrt-test\\.onrender\\.com)',
-  'https?://sherbrt\\.com'
-];
+const SELF_HOST_PATTERNS = getSelfHostPatterns();
 
 // Files that are allowed to contain absolute URLs (SMS/email templates)
 const ALLOWED_ABSOLUTE_URL_FILES = [
@@ -39,6 +75,9 @@ const EXCLUDE_PATTERNS = [
 ];
 
 console.log('🔍 Auditing for absolute self-host URLs...\n');
+console.log('📋 Using host patterns:');
+SELF_HOST_PATTERNS.forEach(pattern => console.log(`  - ${pattern}`));
+console.log('');
 
 let foundIssues = false;
 
