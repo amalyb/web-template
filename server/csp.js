@@ -62,12 +62,14 @@ const defaultDirectives = {
 
     'sentry.io',
     '*.sentry.io',
+    'https://api.stripe.com',
     '*.stripe.com',
   ],
   fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'fonts.gstatic.com'],
   formAction: [self],
   frameSrc: [
     self,
+    'https://js.stripe.com',
     '*.stripe.com',
     '*.youtube-nocookie.com',
     'https://bid.g.doubleclick.net',
@@ -106,6 +108,7 @@ const defaultDirectives = {
     '*.ytimg.com',
 
     // Stripe
+    'https://q.stripe.com',
     '*.stripe.com',
   ],
   scriptSrc: [
@@ -121,7 +124,7 @@ const defaultDirectives = {
     'js.stripe.com',
     'plausible.io',
   ],
-  "script-src-elem": [self, blob, "https://api.mapbox.com", "https://*.mapbox.com"],
+  "script-src-elem": [self, blob, "https://js.stripe.com", "https://api.mapbox.com", "https://*.mapbox.com"],
   "manifest-src": [self],
   "worker-src": [self, blob],
   styleSrc: [self, unsafeInline, 'fonts.googleapis.com', 'api.mapbox.com'],

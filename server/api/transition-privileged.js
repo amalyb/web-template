@@ -944,9 +944,13 @@ module.exports = async (req, res) => {
           const listingTitle = listing?.attributes?.title || 'your item';
           const providerName = params?.protectedData?.providerName || 'the lender';
           
-          // Build dynamic site base for borrower inbox link
-          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
-          const buyerLink = `${siteBase}/inbox/purchases`;
+                  // Build dynamic site base for borrower inbox link (SMS/email need absolute URLs)
+        const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
+        if (!siteBase) {
+          console.warn('[BORROWER_SMS] No ROOT_URL and no req — skipping link build');
+          return { success: false, reason: 'no_base_url_available' };
+        }
+        const buyerLink = `${siteBase}/inbox/purchases`;
           
           const message = `🎉 Your Sherbrt request was accepted! 🍧
 "${listingTitle}" from ${providerName} is confirmed. 

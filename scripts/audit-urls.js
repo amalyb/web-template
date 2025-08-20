@@ -2,16 +2,27 @@
 
 /**
  * Audit script to check for absolute self-host URLs that should be relative
+ * 
+ * RULE: Web app assets (scripts, CSS, manifest, images) should be relative
+ *       SMS/email links should be absolute (phones/email clients can't resolve relative paths)
+ * 
  * Run with: npm run audit:urls
  */
 
 const { execSync } = require('child_process');
 const path = require('path');
 
-// Patterns to search for absolute self-host URLs
+// Patterns to search for absolute self-host URLs that should be relative
+// Note: SMS/email links are allowed to be absolute
 const SELF_HOST_PATTERNS = [
   'https?://(web-template-1\\.onrender\\.com|sherbrt-test\\.onrender\\.com)',
   'https?://sherbrt\\.com'
+];
+
+// Files that are allowed to contain absolute URLs (SMS/email templates)
+const ALLOWED_ABSOLUTE_URL_FILES = [
+  'server/api/transition-privileged.js',
+  'server/api/initiate-privileged.js'
 ];
 
 // Files/directories to exclude from search
@@ -40,9 +51,21 @@ SELF_HOST_PATTERNS.forEach(pattern => {
     const output = execSync(command, { encoding: 'utf8', cwd: process.cwd() });
     
     if (output.trim()) {
-      console.log(`❌ Found absolute self-host URLs matching pattern: ${pattern}`);
-      console.log(output);
-      foundIssues = true;
+      // Filter out allowed files (SMS/email templates)
+      const lines = output.trim().split('\n');
+      const filteredLines = lines.filter(line => {
+        const filePath = line.split(':')[0];
+        return !ALLOWED_ABSOLUTE_URL_FILES.some(allowed => filePath.includes(allowed));
+      });
+      
+      if (filteredLines.length > 0) {
+        console.log(`❌ Found absolute self-host URLs matching pattern: ${pattern}`);
+        console.log('Files that should use relative URLs:');
+        filteredLines.forEach(line => console.log(`  ${line}`));
+        foundIssues = true;
+      } else {
+        console.log(`✅ No issues found for pattern: ${pattern} (allowed URLs are in SMS/email templates)`);
+      }
     } else {
       console.log(`✅ No issues found for pattern: ${pattern}`);
     }
