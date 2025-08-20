@@ -57,7 +57,24 @@ module.exports = ({ getTrustedSdk }) => {
     }
 
     try {
-      // 1. Try Flex first: sdk.transactions.show({ id }). If found and `protectedData.shippo.outbound.qrCodeUrl`, redirect 302 to it.
+      // 1. Redis cache first (faster than Flex, should have data immediately after label creation)
+      const { getRedis } = require('../redis');
+      const redis = getRedis();
+      
+      try {
+        const raw = await redis.get(`qr:${txId}`);
+        if (raw) {
+          const data = JSON.parse(raw);
+          if (data?.qrCodeUrl) {
+            console.log(`qr:redirect source=redis`);
+            return res.redirect(302, data.qrCodeUrl);
+          }
+        }
+      } catch (e) {
+        console.warn('[QR] redis get failed', e);
+      }
+
+      // 2. Flex fallback (in case Redis was missed but Flex has persisted data)
       const resp = await sdk.transactions.show({ id: txId, include: ['lineItems'] });
       const tx = resp?.data?.data;
       const pData = tx?.attributes?.protectedData || {};
@@ -67,30 +84,6 @@ module.exports = ({ getTrustedSdk }) => {
       if (outbound.qrCodeUrl) {
         console.log(`qr:redirect source=flex`);
         return res.redirect(302, outbound.qrCodeUrl);
-      }
-
-      // 2. Else check qrCache.get(id). If present and not expired, redirect 302.
-      // Import qrCache from transition-privileged module
-      let qrCache = null;
-      try {
-        const transitionPrivileged = require('./transition-privileged');
-        qrCache = transitionPrivileged.qrCache;
-      } catch (err) {
-        console.warn('[QR] Could not import qrCache:', err.message);
-      }
-
-      if (qrCache && qrCache.has(txId)) {
-        const cachedData = qrCache.get(txId);
-        const now = Date.now();
-        
-        // Check if not expired (expiresAt is in seconds, convert to milliseconds)
-        if (!cachedData.expiresAt || (cachedData.expiresAt * 1000) > now) {
-          console.log(`qr:redirect source=cache`);
-          return res.redirect(302, cachedData.qrCodeUrl);
-        } else {
-          console.log(`[QR] Cached QR data expired for transaction ${txId}`);
-          qrCache.delete(txId); // Clean up expired entry
-        }
       }
 
       // 3. Else return 202 with JSON: { ok: false, status: 'pending', message: 'Label not ready yet' }.

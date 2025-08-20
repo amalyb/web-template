@@ -50,26 +50,12 @@ try {
   sendSMS = () => Promise.resolve(); // No-op function
 }
 
-// QR delivery reliability: in-memory cache for transaction QR data
-const qrCache = new Map(); // key: transactionId, value: { qrCodeUrl, labelUrl, expiresAt, savedAt }
+// QR delivery reliability: Redis cache for transaction QR data
+const { getRedis } = require('../redis');
+const redis = getRedis();
 
-// Evict entries older than 24h on an interval
-setInterval(() => {
-  const now = Date.now();
-  const cutoff = now - (24 * 60 * 60 * 1000); // 24 hours ago
-  let evicted = 0;
-  
-  for (const [key, value] of qrCache.entries()) {
-    if (value.savedAt < cutoff) {
-      qrCache.delete(key);
-      evicted++;
-    }
-  }
-  
-  if (evicted > 0) {
-    console.log(`🧹 [QR_CACHE] Evicted ${evicted} expired entries`);
-  }
-}, 60 * 60 * 1000); // Run every hour
+// Log cache mode on startup
+console.log('[qr-cache] mode:', redis.status === 'mock' ? 'in-memory' : 'redis');
 
 // Robust persistence with retry logic for Shippo data
 async function persistWithRetry(id, data, { retries = 3, delayMs = 250 } = {}) {
@@ -327,9 +313,9 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       // unique dedupe key for lender on this transition
       const dedupeKey = `${txIdStr}:transition/accept:lender`;
 
-      // Prefer branded short link if available, else fall back to Shippo URL
-      const qrShort = `${base}/api/qr/${txIdStr}`;
-      const finalQrUrl = qrCache.has(transactionId) ? qrShort : qrCodeUrl;
+      // With Redis, the short URL should work immediately for any instance
+      const shortQr = `${process.env.PUBLIC_BASE_URL || 'https://web-template-1.onrender.com'}/api/qr/${transactionId}`;
+      const finalQrUrl = shortQr;
       
       await sendSMS(
         lenderPhone,
@@ -454,15 +440,24 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
           trackingUrlFallback: !transactionRes.data.tracking_url_provider && !transactionRes.data.tracking_url
         });
         
-        // Store in QR cache for immediate availability
-        const qrData = {
+        // Store in Redis cache for immediate availability
+        const ttlSeconds = 48 * 60 * 60; // 48h
+        const qrPayload = {
           qrCodeUrl,
           labelUrl,
+          trackingNumber,
+          carrier: selectedRate.provider,
           expiresAt: qrExpiry,
-          savedAt: Date.now()
+          savedAt: new Date().toISOString(),
         };
-        qrCache.set(transactionId, qrData);
-        console.log(`💾 [QR_CACHE] Stored QR data for transaction ${transactionId}`);
+
+        const qrKey = `qr:${transactionId}`;
+        try {
+          await redis.set(qrKey, JSON.stringify(qrPayload), 'EX', ttlSeconds);
+          console.log('[qr-cache] saved', { key: qrKey, ttlSeconds });
+        } catch (e) {
+          console.warn('[qr-cache] save failed', e);
+        }
         
         // Use persistWithRetry for robust Flex persistence
         const persistSuccess = await persistWithRetry(transactionId, {
@@ -1232,5 +1227,3 @@ process.on('unhandledRejection', (reason, promise) => {
   // process.exit(1);
 });
 
-// Export qrCache for use by other modules
-module.exports.qrCache = qrCache;
