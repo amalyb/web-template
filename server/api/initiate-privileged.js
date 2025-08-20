@@ -25,9 +25,9 @@ console.log('🚦 initiate-privileged endpoint is wired up');
 
 // Helper function to build lender SMS message
 function buildLenderMsg(tx, listingTitle) {
-  const lenderInboxUrl = 'https://sherbrt.com/inbox/sales';
+  const lenderInboxUrl = process.env.ROOT_URL ? `${process.env.ROOT_URL}/inbox/sales` : '/inbox/sales';
   const lenderMsg =
-    `👗 New Sherbrt booking request! ` +
+    `👗🍧 New Sherbrt booking request! ` +
     `Someone wants to borrow your listing "${listingTitle}". ` +
     `Check your inbox to respond: ${lenderInboxUrl}`;
   return lenderMsg;
@@ -200,7 +200,7 @@ module.exports = (req, res) => {
               console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
               
               const listingTitle = listing?.attributes?.title || 'your listing';
-              const borrowerInboxUrl = 'https://sherbrt.com/inbox/orders';
+              const borrowerInboxUrl = process.env.ROOT_URL ? `${process.env.ROOT_URL}/inbox/orders` : '/inbox/orders';
               const borrowerMsg =
                 `✅ Request sent! Your booking request for "${listingTitle}" was delivered. ` +
                 `Track and reply in your inbox: ${borrowerInboxUrl}`;

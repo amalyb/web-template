@@ -945,7 +945,7 @@ module.exports = async (req, res) => {
           const providerName = params?.protectedData?.providerName || 'the lender';
           
           // Build dynamic site base for borrower inbox link
-          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : 'https://sherbrt.com');
+          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
           const buyerLink = `${siteBase}/inbox/purchases`;
           
           const message = `🎉 Your Sherbrt request was accepted! 🍧
