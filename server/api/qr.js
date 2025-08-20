@@ -49,6 +49,9 @@ module.exports = ({ getTrustedSdk }) => {
   router.get('/:txId', async (req, res) => {
     const { txId } = req.params;
 
+    // Add guard log if PUBLIC_BASE_URL is missing
+    if (!process.env.PUBLIC_BASE_URL) console.warn('[qr] PUBLIC_BASE_URL not set');
+
     const { sdk } = await resolveSdk(req);
     const wired = !!(sdk && sdk.transactions && typeof sdk.transactions.show === 'function');
     if (!wired) {

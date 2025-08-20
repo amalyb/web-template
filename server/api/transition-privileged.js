@@ -313,9 +313,12 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       // unique dedupe key for lender on this transition
       const dedupeKey = `${txIdStr}:transition/accept:lender`;
 
-      // With Redis, the short URL should work immediately for any instance
-      const shortQr = `${process.env.PUBLIC_BASE_URL || 'https://web-template-1.onrender.com'}/api/qr/${transactionId}`;
-      const finalQrUrl = shortQr;
+      // Smart URL selection: branded short link if Redis available, else Shippo URL
+      const shortQr = `${process.env.PUBLIC_BASE_URL}/api/qr/${transactionId}`;
+      const shippoQr = qrPayload.qrCodeUrl;
+      // If REDIS_URL is not set (redis.status === 'mock') OR save failed, fall back to Shippo URL.
+      const useShippoFallback = (redis.status === 'mock') || !qrSaved || !shippoQr;
+      const finalQrUrl = useShippoFallback ? shippoQr : shortQr;
       
       await sendSMS(
         lenderPhone,
@@ -324,6 +327,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         dedupeKey
       );
       console.log('📱 [LENDER_SMS] sent', { to: `***${String(lenderPhone).slice(-4)}`, finalQrUrl });
+      console.log('[qr-sms] url', { tx: transactionId, chosen: useShippoFallback ? 'shippo' : 'short' });
     } else {
       console.warn('⚠️ [LENDER_SMS] skipped — no lender phone on transaction/profile');
     }
@@ -452,10 +456,12 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         };
 
         const qrKey = `qr:${transactionId}`;
+        let qrSaved = true;
         try {
           await redis.set(qrKey, JSON.stringify(qrPayload), 'EX', ttlSeconds);
           console.log('[qr-cache] saved', { key: qrKey, ttlSeconds });
         } catch (e) {
+          qrSaved = false;
           console.warn('[qr-cache] save failed', e);
         }
         
