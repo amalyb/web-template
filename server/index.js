@@ -163,6 +163,26 @@ if (cspEnabled) {
   }
 }
 
+// Set up integration SDK for QR and other privileged operations
+const { getIntegrationSdk } = require('./api-util/integrationSdk');
+
+function buildIntegrationSdk() {
+  try {
+    const sdk = getIntegrationSdk();
+    if (sdk) {
+      app.set('integrationSdk', sdk);
+      console.log('✅ integrationSdk attached to app');
+      return sdk;
+    }
+  } catch (err) {
+    console.warn('⚠️ Missing INTEGRATION_CLIENT_ID/INTEGRATION_CLIENT_SECRET – integrationSdk not set');
+    console.warn('   Error:', err.message);
+  }
+  return null;
+}
+
+const integrationSdk = buildIntegrationSdk();
+
 // Redirect HTTP to HTTPS if REDIRECT_SSL is `true`.
 // This also works behind reverse proxies (load balancers) as they are for example used by Heroku.
 // In such cases, however, the TRUST_PROXY parameter has to be set (see below)
