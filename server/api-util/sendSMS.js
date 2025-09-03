@@ -174,9 +174,9 @@ async function sendSMS(to, message, opts = {}) {
   const payload = {
     to: normalizedPhone, // real E.164
     body: message,
-    statusCallback: process.env.PUBLIC_BASE_URL
-      ? `${process.env.PUBLIC_BASE_URL}/twilio/sms-status`
-      : undefined,
+      statusCallback: process.env.PUBLIC_BASE_URL
+    ? `${process.env.PUBLIC_BASE_URL}/api/twilio/sms-status`
+    : undefined,
   };
 
   if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
