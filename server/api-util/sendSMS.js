@@ -171,12 +171,22 @@ async function sendSMS(to, message, opts = {}) {
   }
   console.log(`📱 [CRITICAL] ========================`);
 
+  const payload = {
+    to: normalizedPhone, // real E.164
+    body: message,
+    statusCallback: process.env.PUBLIC_BASE_URL
+      ? `${process.env.PUBLIC_BASE_URL}/twilio/sms-status`
+      : undefined,
+  };
+
+  if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
+    payload.messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  } else {
+    payload.from = process.env.TWILIO_PHONE_NUMBER;
+  }
+
   return client.messages
-    .create({
-      body: message,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: normalizedPhone,
-    })
+    .create(payload)
     .then(msg => {
       // Success
       if (role) sent(role);

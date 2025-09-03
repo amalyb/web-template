@@ -17,6 +17,7 @@ const initiatePrivileged = require('./api/initiate-privileged');
 const transitionPrivileged = require('./api/transition-privileged');
 const shippoWebhook = require('./webhooks/shippoTracking');
 const qrRouter = require('./api/qr');
+const smsStatus = require('./api/twilio/sms-status');
 
 const createUserWithIdp = require('./api/auth/createUserWithIdp');
 const loginWithIdp = require('./api/auth/loginWithIdp');
@@ -61,6 +62,9 @@ router.post('/transition-privileged', transitionPrivileged);
 
 // Shippo webhook endpoint
 router.use('/webhooks', shippoWebhook);
+
+// Twilio SMS delivery receipt endpoint (no auth required - Twilio webhook)
+router.post('/twilio/sms-status', express.urlencoded({ extended: false }), smsStatus);
 
 // QR code redirect endpoint
 const qrRouterInstance = qrRouter({ getTrustedSdk }); // factory export
