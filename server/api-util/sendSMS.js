@@ -125,23 +125,23 @@ async function sendSMS(to, message, opts = {}) {
   }
 
   // Normalize the phone number to E.164
-  const normalizedPhone = normalizePhoneNumber(to);
-  if (!normalizedPhone) {
+  const toE164 = normalizePhoneNumber(to);
+  if (!toE164) {
     console.warn(`📱 Invalid phone number format: ${to}`);
     if (role) failed(role, 'invalid_format');
     return Promise.resolve();
   }
 
   // E.164 validation
-  if (!isE164(normalizedPhone)) {
+  if (!isE164(toE164)) {
     console.warn('[SMS] invalid phone, aborting:', to ? maskPhone(to) : 'null');
     if (role) failed(role, 'invalid_e164');
     throw new Error('Invalid E.164 phone');
   }
 
   // Check STOP list
-  if (stopList.has(normalizedPhone)) {
-    console.warn('[SMS] suppressed: number opted out (STOP):', maskPhone(normalizedPhone));
+  if (stopList.has(toE164)) {
+    console.warn('[SMS] suppressed: number opted out (STOP):', maskPhone(toE164));
     return { suppressed: true, reason: 'stop_list' };
   }
 
@@ -159,7 +159,7 @@ async function sendSMS(to, message, opts = {}) {
   console.log(`📱 [CRITICAL] === SEND SMS CALLED ===`);
   console.log(`📱 [CRITICAL] Caller function: ${caller}`);
   console.log(`📱 [CRITICAL] Raw phone: ${maskPhone(to)}`);
-  console.log(`📱 [CRITICAL] Normalized phone: ${maskPhone(normalizedPhone)}`);
+  console.log(`📱 [CRITICAL] E.164 phone: ${maskPhone(toE164)}`);
   console.log(`📱 [CRITICAL] SMS message: ${message}`);
   console.log(`📱 [CRITICAL] Role: ${role || 'none'}`);
   if (transactionId && transition) {
@@ -167,16 +167,16 @@ async function sendSMS(to, message, opts = {}) {
   }
   if (devFullLogs) {
     console.debug('[DEV ONLY] Raw number:', to);
-    console.debug('[DEV ONLY] Normalized number:', normalizedPhone);
+    console.debug('[DEV ONLY] E.164 number:', toE164);
   }
   console.log(`📱 [CRITICAL] ========================`);
 
   const payload = {
-    to: normalizedPhone, // real E.164
+    to: toE164, // real E.164 - unmasked
     body: message,
-      statusCallback: process.env.PUBLIC_BASE_URL
-    ? `${process.env.PUBLIC_BASE_URL}/api/twilio/sms-status`
-    : undefined,
+    statusCallback: process.env.PUBLIC_BASE_URL
+      ? `${process.env.PUBLIC_BASE_URL}/api/twilio/sms-status`
+      : undefined,
   };
 
   if (process.env.TWILIO_MESSAGING_SERVICE_SID) {
@@ -190,9 +190,9 @@ async function sendSMS(to, message, opts = {}) {
     .then(msg => {
       // Success
       if (role) sent(role);
-      console.log(`📤 [CRITICAL] SMS sent successfully to ${maskPhone(normalizedPhone)}`);
+      console.log(`📤 [CRITICAL] SMS sent successfully to ${maskPhone(toE164)}`);
       console.log(`📤 [CRITICAL] Twilio message SID: ${msg.sid}`);
-      console.log(`📤 [CRITICAL] Raw → Normalized: ${maskPhone(to)} → ${maskPhone(normalizedPhone)}`);
+      console.log(`📤 [CRITICAL] Raw → E.164: ${maskPhone(to)} → ${maskPhone(toE164)}`);
       return msg;
     })
     .catch(err => {
@@ -202,12 +202,12 @@ async function sendSMS(to, message, opts = {}) {
       console.warn('[SMS] failed', { 
         code, 
         rawPhone: maskPhone(to), 
-        normalizedPhone: maskPhone(normalizedPhone),
+        e164Phone: maskPhone(toE164),
         error: err.message 
       });
 
       // 21610: STOP. Avoid future sends in this process.
-      if (String(code) === '21610') stopList.add(normalizedPhone);
+      if (String(code) === '21610') stopList.add(toE164);
       throw err;
     });
 }

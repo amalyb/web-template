@@ -36,3 +36,4 @@ function getRedis() {
 }
 
 module.exports = { getRedis };
+
