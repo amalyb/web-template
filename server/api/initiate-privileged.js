@@ -160,7 +160,11 @@ module.exports = (req, res) => {
                 console.log('[SMS] duplicate suppressed (lender):', key);
               } else {
                 try {
-                  await sendSMS(provPhone, buildLenderMsg(tx, listingTitle), { role: 'lender' });
+                  await sendSMS(provPhone, buildLenderMsg(tx, listingTitle), { 
+                    role: 'lender',
+                    tag: 'booking_request_to_lender_alt',
+                    meta: { listingId: listing?.id?.uuid || listing?.id }
+                  });
                   console.log(`📱 [SMS][booking-request] Lender notification sent to ${maskPhone(provPhone)}`);
                 } catch (e) {
                   console.error('[SMS][booking-request] Lender SMS failed:', e.message);
@@ -207,7 +211,11 @@ module.exports = (req, res) => {
                 console.log('[SMS] duplicate suppressed (borrower):', key);
               } else {
                 try {
-                  await sendSMS(borrowerPhone, borrowerMsg, { role: 'borrower' });
+                  await sendSMS(borrowerPhone, borrowerMsg, { 
+                    role: 'borrower',
+                    tag: 'booking_confirmation_to_borrower',
+                    meta: { listingId: listing?.id?.uuid || listing?.id }
+                  });
                   console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${maskPhone(borrowerPhone)}`);
                 } catch (e) {
                   console.error('[SMS][customer-confirmation] Customer SMS failed:', e.message);

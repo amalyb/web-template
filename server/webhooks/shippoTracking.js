@@ -13,7 +13,58 @@ try {
   sendSMS = () => Promise.resolve(); // No-op function
 }
 
+// Shippo signature verification
+function verifyShippoSignature(req, webhookSecret) {
+  const shippoSignature = req.headers['x-shippo-signature'];
+  if (!shippoSignature) {
+    console.log('⚠️ No X-Shippo-Signature header found');
+    return false;
+  }
+  
+  if (!webhookSecret) {
+    console.log('⚠️ No SHIPPO_WEBHOOK_SECRET configured');
+    return false;
+  }
+  
+  // Use the raw body for signature verification
+  const rawBody = req.rawBody;
+  
+  // Shippo uses HMAC SHA256
+  const crypto = require('crypto');
+  const signature = crypto
+    .createHmac('sha256', webhookSecret)
+    .update(rawBody)
+    .digest('hex');
+  
+  const isValid = crypto.timingSafeEqual(
+    Buffer.from(shippoSignature),
+    Buffer.from(signature)
+  );
+  
+  if (process.env.VERBOSE === '1') {
+    console.log(`🔐 Shippo signature verification: ${isValid ? 'VALID' : 'INVALID'}`);
+    console.log(`🔐 Expected: ${signature}`);
+    console.log(`🔐 Received: ${shippoSignature}`);
+  }
+  
+  return isValid;
+}
+
 const router = express.Router();
+
+// Middleware to capture raw body for signature verification
+router.use('/shippo', express.raw({ type: 'application/json' }), (req, res, next) => {
+  // Store raw body for signature verification
+  req.rawBody = req.body;
+  // Parse JSON for processing
+  try {
+    req.body = JSON.parse(req.body.toString());
+  } catch (error) {
+    console.error('❌ Failed to parse JSON body:', error.message);
+    return res.status(400).json({ error: 'Invalid JSON' });
+  }
+  next();
+});
 
 // Helper function to normalize phone number to E.164 format
 function normalizePhoneNumber(phone) {
@@ -117,10 +168,51 @@ function getBorrowerPhone(transaction) {
   }
 }
 
+// Helper function to get lender phone number
+function getLenderPhone(transaction) {
+  console.log('📱 Extracting lender phone number...');
+  
+  try {
+    // Method 1: transaction.provider.profile.protectedData.phone
+    if (transaction.relationships?.provider?.data?.attributes?.profile?.protectedData?.phone) {
+      const phone = transaction.relationships.provider.data.attributes.profile.protectedData.phone;
+      console.log(`📱 Found lender phone in provider profile: ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+    
+    // Method 2: transaction.protectedData.providerPhone
+    if (transaction.attributes?.protectedData?.providerPhone) {
+      const phone = transaction.attributes.protectedData.providerPhone;
+      console.log(`📱 Found lender phone in transaction protectedData: ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+    
+    // Method 3: transaction.attributes.metadata.providerPhone
+    if (transaction.attributes?.metadata?.providerPhone) {
+      const phone = transaction.attributes.metadata.providerPhone;
+      console.log(`📱 Found lender phone in transaction metadata: ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+    
+    console.warn('⚠️ No lender phone number found in any expected location');
+    return null;
+  } catch (error) {
+    console.error('❌ Error extracting lender phone:', error.message);
+    return null;
+  }
+}
+
   // Main webhook handler
   router.post('/shippo', async (req, res) => {
     console.log('🚀 Shippo webhook received!');
     console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
+    
+    // Verify Shippo signature
+    const webhookSecret = process.env.SHIPPO_WEBHOOK_SECRET;
+    if (webhookSecret && !verifyShippoSignature(req, webhookSecret)) {
+      console.log('🚫 Invalid Shippo signature - rejecting request');
+      return res.status(403).json({ error: 'Invalid signature' });
+    }
     
     try {
       const payload = req.body;
@@ -202,8 +294,85 @@ function getBorrowerPhone(transaction) {
     
     console.log(`✅ Transaction found via ${matchStrategy}: ${transaction.id}`);
     
-    // Check if SMS already sent (idempotency) based on event type
+    // Check if this is a return tracking number
     const protectedData = transaction.attributes.protectedData || {};
+    const returnData = protectedData.return || {};
+    const isReturnTracking = trackingNumber === protectedData.returnTrackingNumber ||
+                            trackingNumber === returnData.label?.trackingNumber;
+    
+    console.log(`🔍 Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'}`);
+    
+    // Handle return tracking - send SMS to lender
+    if (isReturnTracking && isFirstScan) {
+      console.log('📬 Processing return first scan - sending SMS to lender');
+      
+      // Check if return first scan SMS already sent
+      if (returnData.firstScanAt) {
+        console.log('ℹ️ Return first scan SMS already sent - skipping (idempotent)');
+        return res.status(200).json({ message: 'Return first scan SMS already sent - idempotent' });
+      }
+      
+      // Get lender phone
+      const lenderPhone = getLenderPhone(transaction);
+      if (!lenderPhone) {
+        console.warn('⚠️ No lender phone number found - cannot send return SMS');
+        return res.status(400).json({ error: 'No lender phone number found' });
+      }
+      
+      // Get listing title
+      const listingTitle = transaction.attributes.listing?.title || 'your item';
+      const trackingUrl = protectedData.returnTrackingUrl || `https://track.shippo.com/${trackingNumber}`;
+      
+      const message = `📬 Return in transit: "${listingTitle}". Track here: ${trackingUrl}`;
+      
+      try {
+        await sendSMS(lenderPhone, message, {
+          role: 'lender',
+          transactionId: transaction.id,
+          transition: 'webhook/shippo-return-first-scan',
+          tag: 'return_first_scan_to_lender',
+          meta: { 
+            listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id,
+            trackingNumber: trackingNumber
+          }
+        });
+        
+        // Update transaction with return first scan timestamp
+        try {
+          const sdk = await getTrustedSdk();
+          await sdk.transactions.update({
+            id: transaction.id,
+            attributes: {
+              protectedData: {
+                ...protectedData,
+                return: {
+                  ...returnData,
+                  firstScanAt: new Date().toISOString()
+                }
+              }
+            }
+          });
+          console.log(`💾 Updated transaction with return first scan timestamp`);
+        } catch (updateError) {
+          console.error(`❌ Failed to update transaction:`, updateError.message);
+        }
+        
+        console.log(`✅ Return first scan SMS sent to lender ${lenderPhone}`);
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Return first scan SMS sent to lender',
+          transactionId: transaction.id,
+          lenderPhone: lenderPhone
+        });
+        
+      } catch (smsError) {
+        console.error(`❌ Failed to send return first scan SMS to lender:`, smsError.message);
+        return res.status(500).json({ error: 'Failed to send return first scan SMS to lender' });
+      }
+    }
+    
+    // Check if SMS already sent (idempotency) based on event type for outbound
+    if (!isReturnTracking) {
     
     if (isDelivery && protectedData.shippingNotification?.delivered?.sent === true) {
       console.log('ℹ️ Delivery SMS already sent - skipping (idempotent)');
@@ -274,7 +443,9 @@ function getBorrowerPhone(transaction) {
       await sendSMS(borrowerPhone, message, { 
         role: 'customer',
         transactionId: transaction.id,
-        transition: `webhook/shippo-${smsType.replace(' ', '-')}`
+        transition: `webhook/shippo-${smsType.replace(' ', '-')}`,
+        tag: isDelivery ? 'delivery_to_borrower' : 'first_scan_to_borrower',
+        meta: { listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id }
       });
       console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
       

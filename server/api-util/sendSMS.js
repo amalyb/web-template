@@ -96,11 +96,13 @@ const stopList = new Set();
  * opts: { 
  *   role?: 'lender' | 'borrower' | 'customer',
  *   transactionId?: string,
- *   transition?: string
+ *   transition?: string,
+ *   tag?: string,
+ *   meta?: object
  * }
  */
 async function sendSMS(to, message, opts = {}) {
-  const { role, transactionId, transition } = opts;
+  const { role, transactionId, transition, tag, meta } = opts;
   
   if (!role && process.env.METRICS_LOG === '1') {
     console.warn('[metrics] skipped: no role provided to sendSMS');
@@ -155,28 +157,35 @@ async function sendSMS(to, message, opts = {}) {
   // Metrics: attempt only if role provided
   if (role) attempt(role);
   
-  // Enhanced logging with raw vs normalized phone comparison
-  console.log(`📱 [CRITICAL] === SEND SMS CALLED ===`);
-  console.log(`📱 [CRITICAL] Caller function: ${caller}`);
-  console.log(`📱 [CRITICAL] Raw phone: ${maskPhone(to)}`);
-  console.log(`📱 [CRITICAL] E.164 phone: ${maskPhone(toE164)}`);
-  console.log(`📱 [CRITICAL] SMS message: ${message}`);
-  console.log(`📱 [CRITICAL] Role: ${role || 'none'}`);
-  if (transactionId && transition) {
-    console.log(`📱 [CRITICAL] Transaction: ${transactionId}:${transition}`);
-  }
+  // Enhanced logging with tag and meta information
+  const metaJson = meta ? JSON.stringify(meta) : '{}';
+  const bodyJson = JSON.stringify(message);
+  console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164)} meta=${metaJson} body=${bodyJson}`);
+  
   if (devFullLogs) {
     console.debug('[DEV ONLY] Raw number:', to);
     console.debug('[DEV ONLY] E.164 number:', toE164);
+    console.debug('[DEV ONLY] Caller function:', caller);
   }
-  console.log(`📱 [CRITICAL] ========================`);
+
+  // Build statusCallback URL with tag and transactionId parameters
+  let statusCallbackUrl = undefined;
+  if (process.env.PUBLIC_BASE_URL) {
+    const params = new URLSearchParams();
+    if (tag) params.append('tag', tag);
+    if (transactionId) params.append('txId', transactionId);
+    if (meta?.listingId) params.append('listingId', meta.listingId);
+    
+    statusCallbackUrl = `${process.env.PUBLIC_BASE_URL}/api/twilio/sms-status`;
+    if (params.toString()) {
+      statusCallbackUrl += `?${params.toString()}`;
+    }
+  }
 
   const payload = {
     to: toE164, // real E.164 - unmasked
     body: message,
-    statusCallback: process.env.PUBLIC_BASE_URL
-      ? `${process.env.PUBLIC_BASE_URL}/api/twilio/sms-status`
-      : undefined,
+    statusCallback: statusCallbackUrl,
   };
 
   // Always use Messaging Service for better deliverability
@@ -194,9 +203,7 @@ async function sendSMS(to, message, opts = {}) {
     .then(msg => {
       // Success
       if (role) sent(role);
-      console.log(`📤 [CRITICAL] SMS sent successfully to ${maskPhone(toE164)}`);
-      console.log(`📤 [CRITICAL] Twilio message SID: ${msg.sid}`);
-      console.log(`📤 [CRITICAL] Raw → E.164: ${maskPhone(to)} → ${maskPhone(toE164)}`);
+      console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164)} meta=${metaJson} body=${bodyJson} sid=${msg.sid}`);
       return msg;
     })
     .catch(err => {

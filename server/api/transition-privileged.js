@@ -313,6 +313,15 @@ async function createShippingLabels({
       service: qrPayload.service,
     });
 
+    // Calculate ship-by date
+    const { computeShipByDate } = require('../scripts/sendShipByReminders');
+    const shipByDate = computeShipByDate({ 
+      attributes: { 
+        bookingStart: listing?.attributes?.bookingStart,
+        protectedData: protectedData 
+      } 
+    });
+    
     // Persist to Flex protectedData using txId
     try {
       const patch = {
@@ -324,12 +333,19 @@ async function createShippingLabels({
         outboundService: service,
         outboundQrExpiry: parseExpiresParam(qrUrl),
         outboundPurchasedAt: new Date().toISOString(),
+        outbound: {
+          ...protectedData.outbound,
+          shipByDate: shipByDate ? shipByDate.toISOString() : null
+        }
       };
       const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
       if (result && result.success === false) {
         console.warn('📝 [SHIPPO] Persistence not available, but SMS will continue:', result.reason);
       } else {
         console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+        if (shipByDate) {
+          console.log('📅 [SHIPPO] Set ship-by date:', shipByDate.toISOString());
+        }
       }
     } catch (e) {
       console.error('[SHIPPO] Failed to persist outbound label details to protectedData', e);
@@ -353,7 +369,9 @@ async function createShippingLabels({
           {
             role: 'provider',
             transactionId: txId,
-            transition: 'transition/accept'
+            transition: 'transition/accept',
+            tag: 'outbound_label_to_lender',
+            meta: { listingId: listing?.id?.uuid || listing?.id }
           }
         );
         console.log('[SHIPPO][SMS] Provider carrier-friendly SMS sent');
@@ -502,7 +520,9 @@ async function createShippingLabels({
             { 
               role: 'customer',
               transactionId: txId,
-              transition: 'transition/accept'
+              transition: 'transition/accept',
+              tag: 'label_created_to_borrower',
+              meta: { listingId: listing?.id?.uuid || listing?.id }
             }
           );
           console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for label created with tracking: ${maskUrl(trackingUrl)}`);
@@ -964,6 +984,33 @@ module.exports = async (req, res) => {
         transition: response?.data?.data?.attributes?.transition
       });
       
+      // Set acceptedAt for transition/accept if not already set
+      if (bodyParams?.transition === 'transition/accept' && response?.data?.data) {
+        const transaction = response.data.data;
+        const protectedData = transaction.attributes.protectedData || {};
+        const outbound = protectedData.outbound || {};
+        
+        if (!outbound.acceptedAt) {
+          try {
+            await sdk.transactions.update({
+              id: transaction.id,
+              attributes: {
+                protectedData: {
+                  ...protectedData,
+                  outbound: {
+                    ...outbound,
+                    acceptedAt: new Date().toISOString()
+                  }
+                }
+              }
+            });
+            console.log('💾 Set outbound.acceptedAt for transition/accept');
+          } catch (updateError) {
+            console.error('❌ Failed to set acceptedAt:', updateError.message);
+          }
+        }
+      }
+      
       // After booking (request-payment), log the transaction's protectedData
       if (bodyParams && bodyParams.transition === 'transition/request-payment' && response && response.data && response.data.data && response.data.data.attributes) {
         console.log('🧾 Booking complete. Transaction protectedData:', response.data.data.attributes.protectedData);
@@ -1031,7 +1078,9 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             await sendSMS(borrowerPhone, message, { 
               role: 'customer',
               transactionId: transactionId,
-              transition: 'transition/accept'
+              transition: 'transition/accept',
+              tag: 'accept_to_borrower',
+              meta: { listingId: listing?.id?.uuid || listing?.id }
             });
             console.log('✅ SMS sent successfully to borrower');
             console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for accepted request`);
@@ -1076,7 +1125,9 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
               await sendSMS(borrowerPhone, message, { 
                 role: 'customer',
                 transactionId: transactionId,
-                transition: 'transition/decline'
+                transition: 'transition/decline',
+                tag: 'reject_to_borrower',
+                meta: { listingId: listing?.id?.uuid || listing?.id }
               });
               console.log('✅ SMS sent successfully to borrower');
               console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for declined request`);
@@ -1205,7 +1256,9 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             await sendSMS(providerPhone, message, { 
               role: 'lender',
               transactionId: transaction?.id?.uuid || transaction?.id,
-              transition: 'transition/request-payment'
+              transition: 'transition/request-payment',
+              tag: 'booking_request_to_lender',
+              meta: { listingId: listing?.id?.uuid || listing?.id }
             });
             console.log(`✅ [SMS][booking-request] SMS sent to provider ${maskPhone(providerPhone)}`);
           } else {
