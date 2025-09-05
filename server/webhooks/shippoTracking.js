@@ -373,123 +373,124 @@ function getLenderPhone(transaction) {
     
     // Check if SMS already sent (idempotency) based on event type for outbound
     if (!isReturnTracking) {
-    
-    if (isDelivery && protectedData.shippingNotification?.delivered?.sent === true) {
-      console.log('ℹ️ Delivery SMS already sent - skipping (idempotent)');
-      return res.status(200).json({ message: 'Delivery SMS already sent - idempotent' });
-    }
-    
-    if (isFirstScan && protectedData.shippingNotification?.firstScan?.sent === true) {
-      console.log('ℹ️ First scan SMS already sent - skipping (idempotent)');
-      return res.status(200).json({ message: 'First scan SMS already sent - idempotent' });
-    }
-    
-    // Get borrower phone number
-    const borrowerPhone = getBorrowerPhone(transaction);
-    if (!borrowerPhone) {
-      console.warn('⚠️ No borrower phone number found - cannot send SMS');
-      return res.status(400).json({ error: 'No borrower phone number found' });
-    }
-    
-    console.log(`📱 Borrower phone: ${borrowerPhone}`);
-    
-    let message, smsType, protectedDataUpdate;
-    
-            if (isDelivery) {
-          // Send delivery SMS
-          message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
-          smsType = 'delivery';
-          protectedDataUpdate = {
-            ...protectedData,
-            lastTrackingStatus: {
-              status: trackingStatus,
-              substatus: substatus,
-              timestamp: new Date().toISOString(),
-              event: 'delivered'
-            },
-            shippingNotification: {
-              ...protectedData.shippingNotification,
-              delivered: { sent: true, sentAt: new Date().toISOString() }
-            }
-          };
-        } else if (isFirstScan) {
-          // Send first scan SMS
-          const trackingUrl = protectedData.outboundTrackingUrl;
-          if (!trackingUrl) {
-            console.warn('⚠️ No tracking URL found for first scan notification');
-            return res.status(400).json({ error: 'No tracking URL found for first scan notification' });
-          }
-          
-          message = `🚚 Your Sherbrt item is on the way!\nTrack it here: ${trackingUrl}`;
-          smsType = 'first scan';
-          protectedDataUpdate = {
-            ...protectedData,
-            lastTrackingStatus: {
-              status: trackingStatus,
-              substatus: substatus,
-              timestamp: new Date().toISOString(),
-              event: 'first_scan'
-            },
-            shippingNotification: {
-              ...protectedData.shippingNotification,
-              firstScan: { sent: true, sentAt: new Date().toISOString() }
-            }
-          };
-        }
-    
-    console.log(`📤 Sending ${smsType} SMS to ${borrowerPhone}: ${message}`);
-    
-    try {
-      await sendSMS(borrowerPhone, message, { 
-        role: 'customer',
-        transactionId: transaction.id,
-        transition: `webhook/shippo-${smsType.replace(' ', '-')}`,
-        tag: isDelivery ? 'delivery_to_borrower' : 'first_scan_to_borrower',
-        meta: { listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id }
-      });
-      console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
-      
-      // Mark SMS as sent in transaction protectedData
-      try {
-        const sdk = await getTrustedSdk();
-        
-        if (isFirstScan) {
-          // Use privileged transition for first scan updates
-          await sdk.transactions.transition({
-            id: transaction.id,
-            transition: 'transition/store-shipping-urls',
-            params: { protectedData: protectedDataUpdate }
-          });
-        } else {
-          // Use privileged transition for delivery updates (consistent approach)
-          await sdk.transactions.transition({
-            id: transaction.id,
-            transition: 'transition/store-shipping-urls',
-            params: { protectedData: protectedDataUpdate }
-          });
-        }
-        
-        console.log(`💾 Updated transaction protectedData: ${smsType} SMS sent = true`);
-        
-      } catch (updateError) {
-        console.error(`❌ Failed to update transaction protectedData for ${smsType}:`, updateError.message);
-        // Don't fail the webhook if we can't update the flag
+      if (isDelivery && protectedData.shippingNotification?.delivered?.sent === true) {
+        console.log('ℹ️ Delivery SMS already sent - skipping (idempotent)');
+        return res.status(200).json({ message: 'Delivery SMS already sent - idempotent' });
       }
       
-    } catch (smsError) {
-      console.error(`❌ Failed to send ${smsType} SMS to ${borrowerPhone}:`, smsError.message);
-      return res.status(500).json({ error: `Failed to send ${smsType} SMS` });
-    }
-    
-    console.log(`🎉 ${smsType} webhook processed successfully!`);
-    res.status(200).json({ 
-      success: true, 
-      message: `${smsType} SMS sent successfully`,
-      transactionId: transaction.id,
-      matchStrategy,
-      borrowerPhone,
-      smsType
-    });
+      if (isFirstScan && protectedData.shippingNotification?.firstScan?.sent === true) {
+        console.log('ℹ️ First scan SMS already sent - skipping (idempotent)');
+        return res.status(200).json({ message: 'First scan SMS already sent - idempotent' });
+      }
+      
+      // Get borrower phone number
+      const borrowerPhone = getBorrowerPhone(transaction);
+      if (!borrowerPhone) {
+        console.warn('⚠️ No borrower phone number found - cannot send SMS');
+        return res.status(400).json({ error: 'No borrower phone number found' });
+      }
+      
+      console.log(`📱 Borrower phone: ${borrowerPhone}`);
+      
+      let message, smsType, protectedDataUpdate;
+      
+      if (isDelivery) {
+        // Send delivery SMS
+        message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
+        smsType = 'delivery';
+        protectedDataUpdate = {
+          ...protectedData,
+          lastTrackingStatus: {
+            status: trackingStatus,
+            substatus: substatus,
+            timestamp: new Date().toISOString(),
+            event: 'delivered'
+          },
+          shippingNotification: {
+            ...protectedData.shippingNotification,
+            delivered: { sent: true, sentAt: new Date().toISOString() }
+          }
+        };
+      } else if (isFirstScan) {
+        // Send first scan SMS
+        const trackingUrl = protectedData.outboundTrackingUrl;
+        if (!trackingUrl) {
+          console.warn('⚠️ No tracking URL found for first scan notification');
+          return res.status(400).json({ error: 'No tracking URL found for first scan notification' });
+        }
+        
+        message = `🚚 Your Sherbrt item is on the way!\nTrack it here: ${trackingUrl}`;
+        smsType = 'first scan';
+        protectedDataUpdate = {
+          ...protectedData,
+          lastTrackingStatus: {
+            status: trackingStatus,
+            substatus: substatus,
+            timestamp: new Date().toISOString(),
+            event: 'first_scan'
+          },
+          shippingNotification: {
+            ...protectedData.shippingNotification,
+            firstScan: { sent: true, sentAt: new Date().toISOString() }
+          }
+        };
+      }
+      
+      console.log(`📤 Sending ${smsType} SMS to ${borrowerPhone}: ${message}`);
+      
+      try {
+        await sendSMS(borrowerPhone, message, { 
+          role: 'customer',
+          transactionId: transaction.id,
+          transition: `webhook/shippo-${smsType.replace(' ', '-')}`,
+          tag: isDelivery ? 'delivery_to_borrower' : 'first_scan_to_borrower',
+          meta: { listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id }
+        });
+        console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
+        
+        // Mark SMS as sent in transaction protectedData
+        try {
+          const sdk = await getTrustedSdk();
+          
+          if (isFirstScan) {
+            // Use privileged transition for first scan updates
+            await sdk.transactions.transition({
+              id: transaction.id,
+              transition: 'transition/store-shipping-urls',
+              params: { protectedData: protectedDataUpdate }
+            });
+          } else {
+            // Use privileged transition for delivery updates (consistent approach)
+            await sdk.transactions.transition({
+              id: transaction.id,
+              transition: 'transition/store-shipping-urls',
+              params: { protectedData: protectedDataUpdate }
+            });
+          }
+          
+          console.log(`💾 Updated transaction protectedData: ${smsType} SMS sent = true`);
+          
+        } catch (updateError) {
+          console.error(`❌ Failed to update transaction protectedData for ${smsType}:`, updateError.message);
+          // Don't fail the webhook if we can't update the flag
+        }
+        
+      } catch (smsError) {
+        console.error(`❌ Failed to send ${smsType} SMS to ${borrowerPhone}:`, smsError.message);
+        return res.status(500).json({ error: `Failed to send ${smsType} SMS` });
+      }
+      
+      console.log(`🎉 ${smsType} webhook processed successfully!`);
+      res.status(200).json({ 
+        success: true, 
+        message: `${smsType} SMS sent successfully`,
+        transactionId: transaction.id,
+        matchStrategy,
+        borrowerPhone,
+        smsType
+      });
+      
+    } // End of if (!isReturnTracking)
     
   } catch (error) {
     console.error('❌ Fatal error in Shippo webhook:', error.message);
