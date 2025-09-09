@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -164,7 +164,7 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   return orderParams;
 };
 
-const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction) => {
+const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) => {
   const tx = pageData ? pageData.transaction : null;
   const pageDataListing = pageData.listing;
   const processName =
@@ -180,23 +180,39 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
     !hasTransactionPassedPendingPayment(tx, process);
 
   if (shouldFetchSpeculatedTransaction) {
-    const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
-    const transactionId = tx ? tx.id : null;
-    const isInquiryInPaymentProcess =
-      tx?.attributes?.lastTransition === process.transitions.INQUIRE;
+    // Create a stable key based on parameters that should trigger a new fetch
+    const specParams = JSON.stringify({
+      listingId: pageData.listing.id,
+      startDate: orderParams?.bookingStart,
+      endDate: orderParams?.bookingEnd,
+      quantity: orderParams?.quantity,
+      shippingZip: (orderParams?.shippingDetails?.postalCode || '').trim().toUpperCase(),
+      country: (orderParams?.shippingDetails?.country || 'US').toUpperCase(),
+      transactionId: tx?.id,
+    });
 
-    const requestTransition = isInquiryInPaymentProcess
-      ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
-      : process.transitions.REQUEST_PAYMENT;
-    const isPrivileged = process.isPrivileged(requestTransition);
+    // Only fetch if the key has changed (prevents loops)
+    if (prevKeyRef.current !== specParams) {
+      prevKeyRef.current = specParams;
+      
+      const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
+      const transactionId = tx ? tx.id : null;
+      const isInquiryInPaymentProcess =
+        tx?.attributes?.lastTransition === process.transitions.INQUIRE;
 
-    fetchSpeculatedTransaction(
-      orderParams,
-      processAlias,
-      transactionId,
-      requestTransition,
-      isPrivileged
-    );
+      const requestTransition = isInquiryInPaymentProcess
+        ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+        : process.transitions.REQUEST_PAYMENT;
+      const isPrivileged = process.isPrivileged(requestTransition);
+
+      fetchSpeculatedTransaction(
+        orderParams,
+        processAlias,
+        transactionId,
+        requestTransition,
+        isPrivileged
+      );
+    }
   }
 };
 
@@ -231,7 +247,7 @@ export const loadInitialDataForStripePayments = ({
   const optionalPaymentParams = {};
   const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
 
-  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction);
+  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, { current: null });
 };
 
 const handleSubmit = (values, process, props, stripe, submitting, setSubmitting) => {
@@ -507,6 +523,8 @@ export const CheckoutPageWithPayment = props => {
   const [submitting, setSubmitting] = useState(false);
   // Initialized stripe library is saved to state - if it's needed at some point here too.
   const [stripe, setStripe] = useState(null);
+  // Ref to prevent speculative transaction loops
+  const prevKeyRef = useRef(null);
 
   const {
     scrollingDisabled,
@@ -630,7 +648,12 @@ export const CheckoutPageWithPayment = props => {
   // If your marketplace works mostly in one country you can use initial values to select country automatically
   // e.g. {country: 'FI'}
 
-  const initialValuesForStripePayment = { name: userName, recipientName: userName };
+  // Note: StripePaymentForm handles its own comprehensive initialValues setup
+  // We only pass userName for legacy compatibility
+  const initialValuesForStripePayment = { 
+    name: userName, 
+    recipientName: userName
+  };
   const askShippingDetails =
     orderData?.deliveryMethod === 'shipping' &&
     !hasTransactionPassedPendingPayment(existingTransaction, process);

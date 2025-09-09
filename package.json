@@ -73,10 +73,10 @@
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
     "bfj": "^9.1.2",
-    "chalk": "^v4.1.2",
+    "chalk": "4.1.2",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
-    "inquirer": "^12.9.4",
+    "inquirer": "8.2.5",
     "nodemon": "^3.1.9",
     "prettier": "^1.18.2"
   },

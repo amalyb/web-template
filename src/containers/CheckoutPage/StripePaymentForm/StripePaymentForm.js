@@ -4,12 +4,13 @@
  * It's also handled separately in handleSubmit function.
  */
 import React, { Component } from 'react';
-import { Form as FinalForm } from 'react-final-form';
+import { Form as FinalForm, Field, useForm, useFormState } from 'react-final-form';
 import classNames from 'classnames';
 
 import { FormattedMessage, injectIntl } from '../../../util/reactIntl';
 import { propTypes } from '../../../util/types';
 import { ensurePaymentMethodCard } from '../../../util/data';
+import { mapToStripeBilling, mapToShippo, normalizeAddress, normalizePhone, validateAddress } from '../../../util/addressHelpers';
 
 import {
   Heading,
@@ -21,6 +22,7 @@ import {
   SavedCardDetails,
   StripePaymentAddress,
 } from '../../../components';
+import AddressForm from '../../../components/AddressForm/AddressForm';
 
 import ShippingDetails from '../ShippingDetails/ShippingDetails';
 
@@ -244,6 +246,83 @@ const LocationOrShippingDetails = props => {
   ) : null;
 };
 
+// Utility to copy billing fields to shipping fields
+const copyBillingToShipping = (form) => {
+  const values = form.getState().values || {};
+  const b = values.billing || {};
+  const mapping = {
+    'shipping.name': b.name || '',
+    'shipping.line1': b.line1 || '',
+    'shipping.line2': b.line2 || '',
+    'shipping.city': b.city || '',
+    'shipping.state': b.state || '',
+    'shipping.postalCode': b.postalCode || '',
+    'shipping.country': b.country || '',
+    'shipping.email': b.email || '',
+    'shipping.phone': b.phone || '',
+  };
+  Object.entries(mapping).forEach(([k, v]) => form.change(k, v));
+};
+
+// Shipping section component with checkbox at top
+const ShippingSection = ({ intl, css }) => {
+  const form = useForm();
+  const { values } = useFormState({ subscription: { values: true } });
+
+  const onSameAsBillingChange = (e) => {
+    const checked = !!e.target.checked;
+    form.change('shippingSameAsBilling', checked);
+    if (checked) copyBillingToShipping(form);
+  };
+
+  // Keep shipping in sync when billing changes while checkbox is checked
+  React.useEffect(() => {
+    if (values.shippingSameAsBilling) copyBillingToShipping(form);
+  }, [
+    values.shippingSameAsBilling,
+    values.billing?.name,
+    values.billing?.line1,
+    values.billing?.line2,
+    values.billing?.city,
+    values.billing?.state,
+    values.billing?.postalCode,
+    values.billing?.country,
+    values.billing?.email,
+    values.billing?.phone,
+  ]);
+
+  return (
+    <section aria-labelledby="shippingTitle">
+      <h2 id="shippingTitle" className={css.heading}>
+        <FormattedMessage id="StripePaymentForm.shippingDetails.title" />
+      </h2>
+
+      <div className={css.sameAsBillingRow}>
+        <label className={css.inlineCheckbox} htmlFor="shippingSameAsBilling">
+          <Field
+            id="shippingSameAsBilling"
+            name="shippingSameAsBilling"
+            component="input"
+            type="checkbox"
+            onChange={onSameAsBillingChange}
+          />
+          <span>{intl.formatMessage({ id: 'StripePaymentForm.shippingSameAsBilling' })}</span>
+        </label>
+      </div>
+
+      {!values.shippingSameAsBilling && (
+        <div className={css.fieldStack}>
+          <AddressForm
+            namespace="shipping"
+            requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: true }}
+            countryAfterZipForUSCA
+          />
+        </div>
+      )}
+    </section>
+  );
+};
+
 const initialState = {
   error: null,
   cardValueValid: false,
@@ -434,6 +513,26 @@ class StripePaymentForm extends Component {
       return;
     }
 
+    // Extract raw form values
+    const rawBilling = values.billing || {};
+    const rawShipping = values.shipping || {};
+    
+    // Normalize addresses (happens before mapping & submit)
+    const billing = normalizeAddress(rawBilling);
+    const shipping = values.shippingSameAsBilling
+      ? normalizeAddress({ ...values.billing, phone: values.billing?.phone || values.shipping?.phone })
+      : normalizeAddress(rawShipping);
+    
+    // Optional: block PO Boxes for couriers (UPS/FedEx). Route to USPS if needed.
+    const isPOBox = /^(P(OST)?\.?\s*O(FFICE)?\.?\s*BOX)\b/i.test((shipping.line1 || '').toUpperCase());
+    if (isPOBox) {
+      throw new Error('PO Boxes are not supported for courier shipping. Please enter a street address.');
+    }
+    
+    // Map to service-specific formats
+    const billingForStripe = mapToStripeBilling(billing);
+    const shippingForCourier = mapToShippo({ ...shipping, line2: shipping.line2 || undefined });
+
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: this.card,
@@ -443,6 +542,11 @@ class StripePaymentForm extends Component {
         paymentMethod,
         ensurePaymentMethodCard(defaultPaymentMethod).id
       ),
+      billingAddress: billingForStripe,
+      shippingAddress: shippingForCourier,
+      // Also provide normalized objects for any custom logic
+      normalizedBilling: billing,
+      normalizedShipping: shipping,
     };
     onSubmit(params);
   }
@@ -596,110 +700,16 @@ class StripePaymentForm extends Component {
 
             {showOnetimePaymentFields ? (
               <div className={css.billingDetails}>
-                <Heading as="h3" rootClassName={css.heading}>
-                  <FormattedMessage id="StripePaymentForm.billingDetails" />
-                </Heading>
-
-                {askShippingDetails ? (
-                  <FieldCheckbox
-                    className={css.sameAddressCheckbox}
-                    textClassName={css.sameAddressLabel}
-                    id="sameAddressCheckbox"
-                    name="sameAddressCheckbox"
-                    label={intl.formatMessage({
-                      id: 'StripePaymentForm.sameBillingAndShippingAddress',
-                    })}
-                    value="sameAddress"
-                    useSuccessColor
-                    onChange={handleSameAddressCheckbox}
-                  />
-                ) : null}
-
-                <FieldTextInput
-                  className={css.field}
-                  type="text"
-                  id="name"
-                  name="name"
-                  autoComplete="cc-name"
-                  label={billingDetailsNameLabel}
-                  placeholder={billingDetailsNamePlaceholder}
+                {/* Billing Address */}
+                <AddressForm
+                  namespace="billing"
+                  title="Billing details"
+                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: false }}
+                  countryAfterZipForUSCA
                 />
 
-                {billingAddress}
-
-                {/* Shipping Details Section */}
-                <div className={css.billingDetails}>
-                  <Heading as="h3" rootClassName={css.heading}>
-                    Shipping Details
-                  </Heading>
-                  <FieldTextInput
-                    className={css.field}
-                    type="text"
-                    id="customerName"
-                    name="customerName"
-                    label="Full Name"
-                    required
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="text"
-                    id="customerStreet"
-                    name="customerStreet"
-                    label="Street *"
-                    placeholder="123 Example Street"
-                    required
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="text"
-                    id="customerStreet2"
-                    name="customerStreet2"
-                    label="Street (line 2)"
-                    placeholder="Apt 7"
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="text"
-                    id="customerCity"
-                    name="customerCity"
-                    label="City"
-                    required
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="text"
-                    id="customerState"
-                    name="customerState"
-                    label="State"
-                    required
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="text"
-                    id="customerZip"
-                    name="customerZip"
-                    label="ZIP Code"
-                    required
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="email"
-                    id="customerEmail"
-                    name="customerEmail"
-                    label="Email"
-                    required
-                    validate={value => (!value ? 'Required' : !/^\S+@\S+\.\S+$/.test(value) ? 'Invalid email' : undefined)}
-                  />
-                  <FieldTextInput
-                    className={css.field}
-                    type="tel"
-                    id="customerPhone"
-                    name="customerPhone"
-                    label="Phone Number"
-                    required
-                    validate={value => (!value ? 'Required' : !/^\+?\d{7,15}$/.test(value) ? 'Invalid phone' : undefined)}
-                  />
-                </div>
+                {/* Shipping Address */}
+                <ShippingSection intl={intl} css={css} />
               </div>
             ) : null}
           </React.Fragment>
@@ -767,8 +777,34 @@ class StripePaymentForm extends Component {
 
   render() {
     const { onSubmit, ...rest } = this.props;
-    // Add initialValues for shipping fields
-    const initialValues = {
+    
+    // Deep merge initial values to avoid nuking nested fields from previous drafts
+    const defaultInitialValues = {
+      sameAsBilling: false,
+      shippingSameAsBilling: false,
+      billing: {
+        country: 'US',
+        state: '',
+        postalCode: '',
+        name: '',
+        line1: '',
+        line2: '',
+        city: '',
+        email: '',
+        phone: ''
+      },
+      shipping: {
+        country: 'US',
+        state: '',
+        postalCode: '',
+        name: '',
+        line1: '',
+        line2: '',
+        city: '',
+        email: '',
+        phone: ''
+      },
+      // Legacy fields for backward compatibility
       customerName: '',
       customerStreet: '',
       customerStreet2: '',
@@ -777,9 +813,34 @@ class StripePaymentForm extends Component {
       customerZip: '',
       customerEmail: '',
       customerPhone: '',
-      ...(rest.initialValues || {})
     };
-    return <FinalForm onSubmit={this.handleSubmit} initialValues={initialValues} {...rest} render={this.paymentForm} />;
+    
+    // Deep merge with any existing initial values
+    const initialValues = {
+      ...defaultInitialValues,
+      ...(rest.initialValues || {}),
+      billing: {
+        ...defaultInitialValues.billing,
+        ...(rest.initialValues?.billing || {})
+      },
+      shipping: {
+        ...defaultInitialValues.shipping,
+        ...(rest.initialValues?.shipping || {})
+      }
+    };
+    
+    const validate = values => {
+      const errors = {};
+      const billErr = validateAddress(values.billing || {}, { requirePhone: false });
+      if (Object.keys(billErr).length) errors.billing = billErr;
+      if (!values.shippingSameAsBilling) {
+        const shipErr = validateAddress(values.shipping || {}, { requirePhone: true });
+        if (Object.keys(shipErr).length) errors.shipping = shipErr;
+      }
+      return errors;
+    };
+
+    return <FinalForm onSubmit={this.handleSubmit} validate={validate} initialValues={initialValues} {...rest} render={this.paymentForm} />;
   }
 }
 
