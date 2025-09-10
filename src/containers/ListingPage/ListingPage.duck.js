@@ -28,6 +28,25 @@ import { fetchCurrentUser, fetchCurrentUserHasOrdersSuccess } from '../../ducks/
 const { UUID } = sdkTypes;
 const MINUTE_IN_MS = 1000 * 60;
 
+// Flex timeslot query window constraints
+const DAY = 24 * 60 * 60 * 1000;
+const MAX_RANGE_DAYS = 90;
+
+const clampToFlexWindow = (startUTC, endUTC) => {
+  const now = new Date();
+
+  // Flex: start >= now - 1 day
+  const minStart = new Date(now.getTime() - DAY);
+  const start = startUTC < minStart ? minStart : startUTC;
+
+  // Flex: end <= start + 90 days AND <= now + 366 days
+  const maxEndByStart = new Date(start.getTime() + MAX_RANGE_DAYS * DAY);
+  const maxEndByNow = new Date(now.getTime() + 366 * DAY);
+  const end = new Date(Math.min(endUTC.getTime(), maxEndByStart.getTime(), maxEndByNow.getTime()));
+
+  return { start, end };
+};
+
 // Day-based time slots queries are cached for 1 minute.
 const removeOutdatedDateData = timeSlotsForDate => {
   const now = new Date().getTime();
@@ -381,28 +400,39 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
 ) => {
   const { extraQueryParams = null, useFetchTimeSlotsForDate = false } = options || {};
 
-  // The maximum pagination page size for timeSlots is 500
-  const extraParams = extraQueryParams || {
-    perPage: 500,
+  // Ensure listingId is a string UUID
+  const listingIdStr = typeof listingId === 'object' && listingId.uuid ? listingId.uuid : listingId;
+
+  // Convert start and end to Date objects for clamping
+  const startUTC = typeof start === 'string' ? new Date(start) : start;
+  const endUTC = typeof end === 'string' ? new Date(end) : end;
+
+  // Apply Flex window clamping
+  const { start: clampedStart, end: clampedEnd } = clampToFlexWindow(startUTC, endUTC);
+
+  // Convert back to ISO strings for the API call
+  const startISO = clampedStart.toISOString();
+  const endISO = clampedEnd.toISOString();
+
+  const params = { 
+    listingId: listingIdStr,  // Use camelCase for SDK
+    start: clampedStart,      // Pass Date object directly
+    end: clampedEnd,          // Pass Date object directly
+    perPage: 100,            // Use smaller page size as suggested
     page: 1,
+    ...extraQueryParams 
   };
 
-  // Ensure listingId is a string UUID
-  const listing_id = typeof listingId === 'object' && listingId.uuid ? listingId.uuid : listingId;
-
-  // Ensure start and end are ISO8601 strings
-  const startISO = typeof start === 'string' ? start : start?.toISOString();
-  const endISO = typeof end === 'string' ? end : end?.toISOString();
-
-  const params = { listing_id, start: startISO, end: endISO, ...extraParams };
-
   // Debug logging for time slot API call
-  console.log('📤 [ListingPage.duck] Time slot API call params:', {
-    listing_id,
+  console.log('📤 [ListingPage.duck] Flex timeslots params:', {
+    listingId: listingIdStr,
     start: startISO,
     end: endISO,
-    timeZone,
-    extraParams,
+    perPage: 100,
+    page: 1,
+    originalStart: startUTC.toISOString(),
+    originalEnd: endUTC.toISOString(),
+    clamped: true,
   });
 
   if (useFetchTimeSlotsForDate) {
@@ -427,15 +457,18 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
   } else {
     const monthId = monthIdString(start, timeZone);
     dispatch(fetchMonthlyTimeSlotsRequest(monthId));
-    return dispatch(timeSlotsRequest(params))
-      .then(timeSlots => {
+    
+    // Use SDK directly with camelCase parameters
+    return sdk.timeslots.query(params)
+      .then(response => {
+        const timeSlots = denormalisedResponseEntities(response);
+        
         // Debug logging for returned time slots
-        console.log('📆 [ListingPage.duck] Time slots returned:', {
+        console.log('📆 [ListingPage.duck] Time slots fetched:', {
           monthId,
-          timeSlotsCount: timeSlots?.length || 0,
-          firstSlotDate: timeSlots?.[0]?.attributes?.start,
-          lastSlotDate: timeSlots?.[timeSlots.length - 1]?.attributes?.start,
-          timeSlots: timeSlots?.slice(0, 3), // Log first 3 slots for debugging
+          count: timeSlots?.length || 0,
+          first: timeSlots?.[0]?.attributes?.start,
+          last: timeSlots?.[timeSlots.length - 1]?.attributes?.end,
         });
         
         dispatch(fetchMonthlyTimeSlotsSuccess(monthId, timeSlots));
