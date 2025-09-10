@@ -5,6 +5,7 @@ import { storableError } from '../../util/errors';
 import { addMarketplaceEntities } from '../../ducks/marketplaceData.duck';
 import { transactionLineItems } from '../../util/api';
 import * as log from '../../util/log';
+import { toUuidString } from '../../util/id';
 import { denormalisedResponseEntities } from '../../util/data';
 import {
   bookingTimeUnits,
@@ -113,6 +114,8 @@ const initialState = {
     // },
   },
   lineItems: null,
+  breakdownData: null,
+  bookingDates: null,
   fetchLineItemsInProgress: false,
   fetchLineItemsError: null,
   sendInquiryInProgress: false,
@@ -215,7 +218,13 @@ const listingPageReducer = (state = initialState, action = {}) => {
     case FETCH_LINE_ITEMS_REQUEST:
       return { ...state, fetchLineItemsInProgress: true, fetchLineItemsError: null };
     case FETCH_LINE_ITEMS_SUCCESS:
-      return { ...state, fetchLineItemsInProgress: false, lineItems: payload };
+      return { 
+        ...state, 
+        fetchLineItemsInProgress: false, 
+        lineItems: payload.lineItems,
+        breakdownData: payload.breakdownData,
+        bookingDates: payload.bookingDates,
+      };
     case FETCH_LINE_ITEMS_ERROR:
       return { ...state, fetchLineItemsInProgress: false, fetchLineItemsError: payload };
 
@@ -288,9 +297,13 @@ export const fetchTimeSlotsForDateError = (dateId, error) => ({
 });
 
 export const fetchLineItemsRequest = () => ({ type: FETCH_LINE_ITEMS_REQUEST });
-export const fetchLineItemsSuccess = lineItems => ({
+export const fetchLineItemsSuccess = (lineItems, breakdownData, bookingDates) => ({
   type: FETCH_LINE_ITEMS_SUCCESS,
-  payload: lineItems,
+  payload: {
+    lineItems,
+    breakdownData,
+    bookingDates,
+  },
 });
 export const fetchLineItemsError = error => ({
   type: FETCH_LINE_ITEMS_ERROR,
@@ -678,17 +691,35 @@ const fetchMonthlyTimeSlots = (dispatch, listing) => {
   return Promise.all([]);
 };
 
-export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }) => dispatch => {
+export const fetchTransactionLineItems = (params) => async (dispatch, getState, sdk) => {
+  const { listingId, orderData, isOwnListing } = params;
+
+  const normalizedListingId = toUuidString(listingId);
+  console.log('[lineItems] outgoing listingId:', listingId, '→', normalizedListingId);
+
+  if (!normalizedListingId) {
+    // surface a user-visible error if needed
+    return dispatch(fetchLineItemsError(new Error('Invalid listingId')));
+  }
+
   dispatch(fetchLineItemsRequest());
-  transactionLineItems({ orderData, listingId, isOwnListing })
-    .then(response => {
-      const lineItems = response.data;
-      dispatch(fetchLineItemsSuccess(lineItems));
+  
+  return transactionLineItems({
+    listingId: normalizedListingId,   // <-- STRING
+    orderData,
+    isOwnListing,
+  })
+    .then(result => {
+      // result is the JS object from step 1 (deserialized)
+      const { lineItems, breakdownData, bookingDates } = result;
+      console.log('[duck] storing lineItems:', Array.isArray(result.lineItems), result.lineItems);
+      console.log('[duck] lineItems fetched:', {count: result.lineItems?.length, result});
+      dispatch(fetchLineItemsSuccess(lineItems, breakdownData, bookingDates));
     })
     .catch(e => {
       dispatch(fetchLineItemsError(storableError(e)));
       log.error(e, 'fetching-line-items-failed', {
-        listingId: listingId.uuid,
+        listingId: normalizedListingId,
         orderData,
       });
     });
@@ -704,7 +735,12 @@ export const loadData = (params, search, config) => (dispatch, getState, sdk) =>
       : null;
 
   // Clear old line-items
-  dispatch(setInitialValues({ lineItems: null, inquiryModalOpenForListingId }));
+  dispatch(setInitialValues({ 
+    lineItems: null, 
+    breakdownData: null, 
+    bookingDates: null, 
+    inquiryModalOpenForListingId 
+  }));
 
   const ownListingVariants = [LISTING_PAGE_DRAFT_VARIANT, LISTING_PAGE_PENDING_APPROVAL_VARIANT];
   if (ownListingVariants.includes(params.variant)) {

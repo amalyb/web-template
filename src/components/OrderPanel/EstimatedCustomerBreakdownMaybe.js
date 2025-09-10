@@ -28,7 +28,7 @@
 import React, { useEffect } from 'react';
 import Decimal from 'decimal.js';
 
-import { types as sdkTypes } from '../../util/sdkLoader';
+import { types as sdkTypes, transit } from '../../util/sdkLoader';
 import { FormattedMessage, useIntl } from '../../util/reactIntl';
 import { LINE_ITEM_DAY, LINE_ITEM_NIGHT, LISTING_UNIT_TYPES } from '../../util/types';
 import { unitDivisor, convertMoneyToNumber, convertUnitToSubUnit, formatMoney } from '../../util/currency';
@@ -42,6 +42,26 @@ import { differenceInCalendarDays } from 'date-fns'; // If not already imported
 
 
 const { Money, UUID } = sdkTypes;
+
+// Type handlers for defensive deserialization
+const typeHandlers = [
+  {
+    type: sdkTypes.BigDecimal,
+    customType: Decimal,
+    writer: v => new sdkTypes.BigDecimal(v.toString()),
+    reader: v => new Decimal(v.value),
+  },
+];
+
+// Defensive guard to ensure lineItems is always an array
+const fromTransit = str => transit.read(str, { typeHandlers });
+
+const ensureArray = (li) => {
+  if (Array.isArray(li)) return li;
+  if (typeof li === 'string') return fromTransit(li);
+  // if it's already a plain object (rare), wrap or normalize as needed
+  return Array.isArray(li?.lineItems) ? li.lineItems : [];
+};
 
 // Add DOM-based logging
 const domLog = (label, data) => {
@@ -232,8 +252,25 @@ const estimatedCustomerTransaction = (
 ) => {
   const transitions = process?.transitions;
   const now = new Date();
+  
+  // Debug includeFor filtering
+  console.log('[breakdown] Line items before filtering:', lineItems.map(li => ({
+    code: li.code,
+    includeFor: li.includeFor,
+    hasCustomer: li.includeFor?.includes('customer'),
+    hasProvider: li.includeFor?.includes('provider')
+  })));
+  
   const customerLineItems = lineItems.filter(item => item.includeFor.includes('customer'));
   const providerLineItems = lineItems.filter(item => item.includeFor.includes('provider'));
+  
+  console.log('[breakdown] After filtering:', {
+    customerLineItems: customerLineItems.length,
+    providerLineItems: providerLineItems.length,
+    customerCodes: customerLineItems.map(li => li.code),
+    providerCodes: providerLineItems.map(li => li.code)
+  });
+  
   const payinTotal = estimatedTotalPrice(customerLineItems, marketplaceCurrency);
   const payoutTotal = estimatedTotalPrice(providerLineItems, marketplaceCurrency);
 
@@ -337,23 +374,89 @@ const EstimatedCustomerBreakdownMaybe = props => {
     // });
   }, []);
 
+  // Temporary guard to cope with accidental stringification
+  const parseMaybe = v => {
+    if (Array.isArray(v) || (v && typeof v === 'object')) return v;
+    if (typeof v === 'string') {
+      try { return JSON.parse(v); } catch {}
+      try { return transit.read(v, { typeHandlers }); } catch {}
+    }
+    return null;
+  };
+
   try {
-    const { breakdownData = {}, lineItems, timeZone, currency, marketplaceName, processName } = props;
+    const { breakdownData: rawBreakdownData = {}, lineItems: rawLineItems, timeZone, currency, marketplaceName, processName } = props;
+    
+    // Apply parsing guard
+    const breakdownData = parseMaybe(rawBreakdownData) || {};
+    const lineItems = parseMaybe(rawLineItems) || [];
+    
+    console.log('[breakdown] Parsing guard applied:', {
+      rawBreakdownDataType: typeof rawBreakdownData,
+      rawLineItemsType: typeof rawLineItems,
+      parsedBreakdownDataType: typeof breakdownData,
+      parsedLineItemsType: typeof lineItems,
+      isLineItemsArray: Array.isArray(lineItems)
+    });
     const { startDate, endDate } = breakdownData;
 
-    debugLog('Processing props', { lineItems, currency });
+    console.log('[breakdown] props:', { lineItems, currency, sdkTypes, breakdownData });
 
-    if (!lineItems?.length) {
+    // Debug breakdownData dates
+    console.log('[breakdown] breakdownData dates:', {
+      startDate: breakdownData?.startDate,
+      endDate: breakdownData?.endDate,
+      hasStartDate: !!breakdownData?.startDate,
+      hasEndDate: !!breakdownData?.endDate,
+      startDateType: typeof breakdownData?.startDate,
+      endDateType: typeof breakdownData?.endDate
+    });
+
+    // Defensive guard: ensure lineItems is always an array
+    const parsedLineItems = ensureArray(lineItems);
+
+    // Fast visual of the lines
+    console.table((parsedLineItems || []).map(li => ({
+      code: li.code,
+      amount: li.unitPrice?.amount,
+      qty: li.quantity,
+      includeFor: (li.includeFor || []).join(','),
+      reversal: li.reversal
+    })));
+
+    debugLog('Processing props', { lineItems, parsedLineItems, currency });
+
+    if (!parsedLineItems?.length) {
+      console.log('[breakdown] No line items found');
       debugLog('No line items', null);
       return null;
     }
 
+    // Debug LISTING_UNIT_TYPES
+    console.log('[breakdown] LISTING_UNIT_TYPES:', LISTING_UNIT_TYPES);
+    
     // Find the unit line item and validate it
-    const unitLineItem = lineItems.find(
+    const unitLineItem = parsedLineItems.find(
       item => LISTING_UNIT_TYPES.includes(item.code) && !item.reversal
     );
     
+    // Debug all line items and their codes
+    console.log('[breakdown] All line item codes:', parsedLineItems.map(li => ({
+      code: li.code,
+      isInListingUnitTypes: LISTING_UNIT_TYPES.includes(li.code),
+      isReversal: li.reversal,
+      wouldMatch: LISTING_UNIT_TYPES.includes(li.code) && !li.reversal
+    })));
+    
+    // Debug unit line item
+    const unit = (Array.isArray(lineItems) ? lineItems : []).find(li => li.code === 'line-item/day');
+    console.log('[breakdown] unit line:', unit);
+    console.log('[breakdown] unitLineItem found:', unitLineItem);
+    
     if (!unitLineItem) {
+      console.log('[breakdown] No unit line item found - checking why...');
+      console.log('[breakdown] Available codes:', parsedLineItems.map(li => li.code));
+      console.log('[breakdown] Expected codes:', LISTING_UNIT_TYPES);
       debugLog('No unit line item found', null);
       return null;
     }
@@ -367,14 +470,26 @@ const EstimatedCustomerBreakdownMaybe = props => {
     const lineItemUnitType = unitLineItem.code;
     const numberOfDays = startDate && endDate ? differenceInCalendarDays(endDate, startDate) : 0;
 
+    // Debug date calculation
+    console.log('[breakdown] Date calculation:', {
+      startDate,
+      endDate,
+      numberOfDays,
+      startDateValid: !!startDate,
+      endDateValid: !!endDate,
+      bothDatesValid: !!(startDate && endDate)
+    });
+
     // Early return if invalid booking duration
     if (numberOfDays <= 0) {
+      console.log('[breakdown] Invalid booking duration - returning null');
+      console.log('[breakdown] numberOfDays:', numberOfDays, 'startDate:', startDate, 'endDate:', endDate);
       debugLog('Invalid booking duration', { startDate, endDate, numberOfDays });
       return null;
     }
 
     // Remove all frontend discount logic. Only use the provided lineItems.
-    let adjustedLineItems = lineItems;
+    let adjustedLineItems = parsedLineItems;
 
     let process = null;
     try {
@@ -388,7 +503,7 @@ const EstimatedCustomerBreakdownMaybe = props => {
     }
 
     const shouldHaveBooking = [LINE_ITEM_DAY, LINE_ITEM_NIGHT].includes(lineItemUnitType);
-    const hasLineItems = lineItems && lineItems.length > 0;
+    const hasLineItems = parsedLineItems && parsedLineItems.length > 0;
     const hasRequiredBookingData = !shouldHaveBooking || (startDate && endDate);
 
     const tx =

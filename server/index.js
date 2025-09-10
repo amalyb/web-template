@@ -19,6 +19,11 @@ require('source-map-support').install();
 // Configure process.env with .env.* files
 require('./env').configureEnv();
 
+// Log presence (not values) of critical envs at boot
+const hasIC = Boolean(process.env.INTEGRATION_CLIENT_ID);
+const hasIS = Boolean(process.env.INTEGRATION_CLIENT_SECRET);
+console.log('[server] Integration creds present?', { INTEGRATION_CLIENT_ID: hasIC, INTEGRATION_CLIENT_SECRET: hasIS });
+
 // Setup Sentry
 // Note 1: This needs to happen before other express requires
 // Note 2: this doesn't use instrument.js file but log.js

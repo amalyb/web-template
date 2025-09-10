@@ -11,6 +11,10 @@ const { maskPhone } = require('../api-util/phone');
 const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
 
+// Helper to normalize listingId to string
+const toUuidString = id =>
+  typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
+
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
 try {
@@ -41,6 +45,18 @@ module.exports = (req, res) => {
   
   const { isSpeculative, orderData, bodyParams, queryParams } = req.body;
   
+  // Normalize listingId to string if present
+  if (bodyParams?.params?.listingId) {
+    const originalListingId = bodyParams.params.listingId;
+    const listingId = toUuidString(bodyParams.params.listingId);
+    console.log('[server] incoming listingId:', originalListingId, '→', listingId);
+    
+    if (!listingId) {
+      return res.status(400).json({ error: 'listingId missing or invalid' });
+    }
+    bodyParams.params.listingId = listingId;
+  }
+  
   // STEP 2: Log the transition type
   console.log('🔁 Transition received:', bodyParams?.transition);
   
@@ -57,8 +73,9 @@ module.exports = (req, res) => {
       const sdk = trustedSdk; // Single SDK variable throughout
       
       // Get listing data for line items and SMS
+      const listingIdParam = bodyParams?.params?.listingId;
       const listingResponse = await sdk.listings.show({ 
-        id: bodyParams?.params?.listingId,
+        id: listingIdParam,
         include: ['author', 'author.profile']
       });
       const listing = listingResponse.data.data;
@@ -253,7 +270,30 @@ module.exports = (req, res) => {
         .end();
     })
     .catch(e => {
-      handleError(res, e);
+      // Extract as much as possible from the error
+      const status =
+        e?.status ||
+        e?.response?.status ||
+        e?.statusCode ||
+        500;
+
+      const data = e?.response?.data || e?.data;
+      console.error('[initiate-privileged] failed', {
+        status,
+        message: e?.message,
+        data,
+        stack: e?.stack,
+        transition: bodyParams?.transition,
+        listingId: bodyParams?.params?.listingId,
+      });
+
+      // Propagate the real status (400/409/etc) so UI can show a meaningful message
+      return res.status(status).json({
+        error: 'initiate-privileged-failed',
+        status,
+        data,
+        message: e?.message,
+      });
     });
 };
 

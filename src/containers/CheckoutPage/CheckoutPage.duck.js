@@ -3,6 +3,7 @@ import { initiatePrivileged, transitionPrivileged } from '../../util/api';
 import { denormalisedResponseEntities } from '../../util/data';
 import { storableError } from '../../util/errors';
 import * as log from '../../util/log';
+import { toUuidString } from '../../util/id';
 import { fetchCurrentUserHasOrdersSuccess, fetchCurrentUser } from '../../ducks/user.duck';
 
 // ================ Action types ================ //
@@ -251,6 +252,13 @@ export const initiateOrder = (
     ...otherOrderParams,
     protectedData, // Include protected data in transition params
   };
+  
+  // Normalize listingId to string if present
+  if (transitionParams.listingId) {
+    const originalListingId = transitionParams.listingId;
+    transitionParams.listingId = toUuidString(transitionParams.listingId);
+    console.log('[initiateOrder] outgoing listingId:', originalListingId, '→', transitionParams.listingId);
+  }
 
   const bodyParams = isTransition
     ? {
@@ -493,6 +501,13 @@ export const speculateTransaction = (
     ...otherOrderParams,
     cardToken: 'CheckoutPage_speculative_card_token',
   };
+  
+  // Normalize listingId to string if present
+  if (transitionParams.listingId) {
+    const originalListingId = transitionParams.listingId;
+    transitionParams.listingId = toUuidString(transitionParams.listingId);
+    console.log('[speculateTransaction] outgoing listingId:', originalListingId, '→', transitionParams.listingId);
+  }
 
   const bodyParams = isTransition
     ? {

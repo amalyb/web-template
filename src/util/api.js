@@ -124,8 +124,22 @@ export const post = (path, body, options = {}) => {
 //
 // See `server/api/transaction-line-items.js` to see what data should
 // be sent in the body.
-export const transactionLineItems = (payload) =>
-  apiClient.post('/transaction-line-items', payload);
+export const transactionLineItems = (params) =>
+  axios.post('/api/transaction-line-items', serialize(params), {
+    headers: {
+      'Content-Type': 'application/transit+json',
+      'Accept': 'application/transit+json',
+    },
+    // ensure Axios doesn't pre-parse Transit into an object when it guesses
+    transformResponse: [data => data],
+  }).then(res => {
+    const raw = res.data;
+    // ✅ Only decode if it's a string; otherwise assume it's already JS
+    const result = (typeof raw === 'string') ? deserialize(raw) : raw;
+    console.log('[tx-li] RESULT:', result);
+    // should be: { lineItems: [...], breakdownData: {...}, bookingDates: {...} }
+    return result;
+  });
 
 // Initiate a privileged transaction.
 //
