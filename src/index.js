@@ -125,6 +125,12 @@ const setupAnalyticsHandlers = googleAnalyticsId => {
 
 // If we're in a browser already, render the client application.
 if (typeof window !== 'undefined') {
+  // At the VERY top: boot logging and error handling
+  window.onerror = (m, s, l, c, e) => {
+    console.error('[BOOT] window.onerror:', m, s, l, c, e);
+  };
+  console.log('[BOOT] client bundle executing');
+
   // set up logger with Sentry DSN client key and environment
   log.setup();
 
@@ -158,7 +164,15 @@ if (typeof window !== 'undefined') {
   const store = configureStore(initialState, sdk, analyticsHandlers);
 
   require('./util/polyfills');
-  render(store, !!window.__PRELOADED_STATE__);
+  
+  // Wrap render in try/catch so nothing gets swallowed
+  try {
+    console.log('[BOOT] about to hydrate');
+    render(store, !!window.__PRELOADED_STATE__);
+    console.log('[BOOT] hydration done');
+  } catch (err) {
+    console.error('[BOOT] hydrate failed:', err);
+  }
 
   if (appSettings.dev) {
     // Expose stuff for the browser REPL
