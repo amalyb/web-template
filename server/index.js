@@ -39,7 +39,6 @@ const enforceSsl = require('express-enforces-ssl');
 const path = require('path');
 const passport = require('passport');
 const cors = require('cors');
-const { ChunkExtractor } = require('@loadable/server');
 
 const auth = require('./auth');
 const apiRouter = require('./apiRouter');
@@ -53,81 +52,8 @@ const dataLoader = require('./dataLoader');
 const { generateCSPNonce, csp } = require('./csp');
 const sdkUtils = require('./api-util/sdk');
 
-const buildPath = path.resolve(__dirname, '..', 'build');
-// Where your built frontend lives (adjust if your build folder differs)
-const publicDir = path.resolve(__dirname, '..', 'build');
-
-// Stats and manifest file paths
-const statsFile = path.join(buildPath, 'loadable-stats.json');
-const manifestFile = path.join(buildPath, 'asset-manifest.json');
-
-// Sanity check: verify we're serving the right folder
-console.log('[server] Serving static from:', publicDir, 'exists:', fs.existsSync(publicDir));
-
-function scriptTagsFromManifest() {
-  try {
-    const raw = fs.readFileSync(manifestFile, 'utf8');
-    const manifest = JSON.parse(raw);
-    // CRA-style: prefer `entrypoints`, fallback to `files.main.js`
-    const entrypoints = manifest.entrypoints || [];
-    const tags = entrypoints
-      .filter(f => f.endsWith('.js'))
-      .map(f => `<script defer src="/${f}"></script>`)
-      .join('');
-    if (tags) {
-      console.warn('[server] Using manifest entrypoints for scripts.');
-      return tags;
-    }
-    const mainJs = manifest.files?.['main.js']
-      ? `<script defer src="${manifest.files['main.js']}"></script>`
-      : '';
-    if (mainJs) console.warn('[server] Using manifest files.main.js fallback.');
-    return mainJs;
-  } catch (e) {
-    console.error('[server] manifest fallback failed:', e.message);
-    return '';
-  }
-}
-
-function scriptTagsByScanning() {
-  try {
-    const jsDir = path.join(buildPath, 'static', 'js');
-    const files = fs.readdirSync(jsDir).filter(f => f.endsWith('.js'));
-    // Heuristic: include runtime, main first, then the rest (chunks will lazy-load themselves if needed)
-    const prioritized = [
-      ...files.filter(f => /runtime|main/i.test(f)),
-      ...files.filter(f => !/runtime|main/i.test(f)),
-    ];
-    const tags = prioritized.map(f => `<script defer src="/static/js/${f}"></script>`).join('');
-    console.warn('[server] Using directory scan fallback for scripts.');
-    return tags;
-  } catch (e) {
-    console.error('[server] directory scan fallback failed:', e.message);
-    return '';
-  }
-}
-
-function getScriptTagsWithFallback(extractorGetTags) {
-  // Prefer extractor (if you already built one around @loadable/server)
-  if (typeof extractorGetTags === 'function') {
-    try {
-      const tags = extractorGetTags();
-      if (tags && tags.length > 0) {
-        console.log('[server] Using ChunkExtractor script tags.');
-        return tags;
-      }
-    } catch (e) {
-      console.error('[server] extractor getScriptTags failed:', e.message);
-    }
-  }
-
-  // Then try asset-manifest.json
-  const fromManifest = scriptTagsFromManifest();
-  if (fromManifest) return fromManifest;
-
-  // Finally scan the js folder
-  return scriptTagsByScanning();
-}
+const buildDir = path.join(__dirname, '..', 'build');
+console.log('[server] buildDir:', buildDir, 'exists:', fs.existsSync(buildDir));
 
 const dev = process.env.REACT_APP_ENV === 'development';
 const PORT = process.env.PORT || 3000;
@@ -143,9 +69,35 @@ const cspReportUrl = '/csp-report';
 const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
 
-// Health first — must be at the very top
-app.get('/healthz', (_req, res) => res.sendStatus(204));
-app.head('/healthz', (_req, res) => res.sendStatus(204));
+// Health check - must return 200 for Render
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.head('/healthz', (_req, res) => res.status(200).send('ok'));
+
+// Debug endpoint to verify SSR and build artifacts
+app.get('/__debug-ssr', (_req, res) => {
+  try {
+    const manifestPath = path.join(buildDir, 'asset-manifest.json');
+    const statsPath = path.join(buildDir, 'loadable-stats.json');
+    
+    const manifest = fs.existsSync(manifestPath) ? require(manifestPath) : null;
+    const stats = fs.existsSync(statsPath);
+    
+    const jsDir = path.join(buildDir, 'static', 'js');
+    const jsFiles = fs.existsSync(jsDir) ? fs.readdirSync(jsDir).filter(f => f.endsWith('.js')) : [];
+    
+    res.json({ 
+      buildDir,
+      manifest: manifest ? {
+        entrypoints: manifest.entrypoints || [],
+        files: Object.keys(manifest.files || {})
+      } : null,
+      loadableStats: stats,
+      jsFiles: jsFiles.slice(0, 5) // First 5 JS files
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Boot-time Integration creds presence log
 console.log(
@@ -189,8 +141,8 @@ const corsOptions = {
 app.use(require('cors')(corsOptions));
 app.options('*', require('cors')(corsOptions)); // handle preflight everywhere
 
-const errorPage500 = fs.readFileSync(path.join(buildPath, '500.html'), 'utf-8');
-const errorPage404 = fs.readFileSync(path.join(buildPath, '404.html'), 'utf-8');
+const errorPage500 = fs.readFileSync(path.join(buildDir, '500.html'), 'utf-8');
+const errorPage404 = fs.readFileSync(path.join(buildDir, '404.html'), 'utf-8');
 
 // Filter out bot requests that scan websites for php vulnerabilities
 // from paths like /asdf/index.php, //cms/wp-includes/wlwmanifest.xml, etc.
@@ -294,14 +246,9 @@ if (TRUST_PROXY === 'true') {
 }
 
 app.use(compression());
-app.use('/static', express.static(path.join(buildPath, 'static')));
-app.use(express.static(publicDir, { fallthrough: true, etag: true, maxAge: '7d' }));
+// Serve static assets from build directory
+app.use(express.static(buildDir, { index: false }));
 app.use(cookieParser());
-
-// Explicit route for favicon.ico (serve actual file instead of 404)
-app.get('/favicon.ico', (req, res, next) => {
-  res.sendFile(path.join(publicDir, 'favicon.ico'), err => err ? next(err) : null);
-});
 
 // robots.txt is generated by resources/robotsTxt.js
 // It creates the sitemap URL with the correct marketplace URL
@@ -417,23 +364,11 @@ app.get('/api/qr/test', async (req, res) => {
   return res.status(result.ok ? 200 : 500).json(result);
 });
 
-// Debug endpoint to verify bundle files
-app.get('/__debug-bundles', (req, res) => {
-  try {
-    const jsDir = path.join(buildPath, 'static', 'js');
-    const js = fs.existsSync(jsDir) ? fs.readdirSync(jsDir) : [];
-    const stats = fs.existsSync(statsFile);
-    const manifest = fs.existsSync(manifestFile);
-    res.json({ buildDir: buildPath, statsFileExists: stats, manifestExists: manifest, jsFiles: js });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 const noCacheHeaders = {
   'Cache-control': 'no-cache, no-store, must-revalidate',
 };
 
+// SSR catch-all - this replaces <!--!script--> with real <script src="/static/js/...">
 app.get('*', async (req, res) => {
   if (req.url.startsWith('/static/')) {
     // The express.static middleware only handles static resources
@@ -464,63 +399,55 @@ app.get('*', async (req, res) => {
 
   const sdk = sdkUtils.getSdk(req, res);
 
-  dataLoader
-    .loadData(req.url, sdk, appInfo)
-    .then(data => {
-      const cspNonce = cspEnabled ? res.locals.cspNonce : null;
-      return renderer.render(req.url, context, data, renderApp, webExtractor, cspNonce);
-    })
-    .then(html => {
-      if (dev) {
-        const debugData = {
-          url: req.url,
-          context,
-        };
-        console.log(`\nRender info:\n${JSON.stringify(debugData, null, '  ')}`);
-      }
+  try {
+    const data = await dataLoader.loadData(req.url, sdk, appInfo);
+    const cspNonce = cspEnabled ? res.locals.cspNonce : null;
+    const html = await renderer.render(req.url, context, data, renderApp, webExtractor, cspNonce);
+    
+    if (dev) {
+      const debugData = {
+        url: req.url,
+        context,
+      };
+      console.log(`\nRender info:\n${JSON.stringify(debugData, null, '  ')}`);
+    }
 
-      // Inject script tags using the new fallback system
-      const scriptTags = getScriptTagsWithFallback(() => webExtractor?.getScriptTags?.() || '');
-      
-      // Replace BOTH placeholders if present
-      let finalHtml = html
-        .replace('<!--!ssrScripts-->', scriptTags)
-        .replace('<!--!script-->', scriptTags);
+    // Sanity check: ensure bundles were injected
+    if (!/\/static\/js\//.test(html)) {
+      console.error('❌ SSR returned HTML without bundle scripts.');
+    }
 
-      console.log('[server] injected script tags length:', scriptTags.length);
-
-      if (context.unauthorized) {
-        // Routes component injects the context.unauthorized when the
-        // user isn't logged in to view the page that requires
-        // authentication.
-        sdk.authInfo().then(authInfo => {
-          if (authInfo && authInfo.isAnonymous === false) {
-            // It looks like the user is logged in.
-            // Full verification would require actual call to API
-            // to refresh the access token
-            res.status(200).send(finalHtml);
-          } else {
-            // Current token is anonymous.
-            res.status(401).send(finalHtml);
-          }
-        });
-      } else if (context.forbidden) {
-        res.status(403).send(finalHtml);
-      } else if (context.url) {
-        // React Router injects the context.url if a redirect was rendered
-        res.redirect(context.url);
-      } else if (context.notfound) {
-        // NotFoundPage component injects the context.notfound when a
-        // 404 should be returned
-        res.status(404).send(finalHtml);
-      } else {
-        res.send(finalHtml);
-      }
-    })
-    .catch(e => {
-      log.error(e, 'server-side-render-failed');
-      res.status(500).send(errorPage500);
-    });
+    if (context.unauthorized) {
+      // Routes component injects the context.unauthorized when the
+      // user isn't logged in to view the page that requires
+      // authentication.
+      sdk.authInfo().then(authInfo => {
+        if (authInfo && authInfo.isAnonymous === false) {
+          // It looks like the user is logged in.
+          // Full verification would require actual call to API
+          // to refresh the access token
+          res.status(200).send(html);
+        } else {
+          // Current token is anonymous.
+          res.status(401).send(html);
+        }
+      });
+    } else if (context.forbidden) {
+      res.status(403).send(html);
+    } else if (context.url) {
+      // React Router injects the context.url if a redirect was rendered
+      res.redirect(context.url);
+    } else if (context.notfound) {
+      // NotFoundPage component injects the context.notfound when a
+      // 404 should be returned
+      res.status(404).send(html);
+    } else {
+      res.status(200).send(html);
+    }
+  } catch (e) {
+    log.error(e, 'server-side-render-failed');
+    res.status(500).send(errorPage500);
+  }
 });
 
 // Set error handler. If Sentry is set up, all error responses
@@ -546,7 +473,7 @@ if (cspEnabled) {
 
 const server = app.listen(PORT, () => {
   const mode = process.env.NODE_ENV || 'development';
-  console.log(`Listening on port ${PORT} in ${mode} mode`);
+  console.log(`✅ Listening on port ${PORT} in ${mode} mode`);
   if (dev) {
     console.log(`Open http://localhost:${PORT}/ and start hacking!`);
   }
