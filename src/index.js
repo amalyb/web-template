@@ -131,6 +131,23 @@ if (typeof window !== 'undefined') {
   };
   console.log('[BOOT] client bundle executing');
 
+  // 1) Instrument unhandled errors (keeps working in prod)
+  window.addEventListener('error', e => {
+    console.error('[BOOT] window error:', e.message, e.error);
+  });
+  window.addEventListener('unhandledrejection', e => {
+    console.error('[BOOT] unhandledrejection:', e.reason);
+  });
+
+  // 2) Validate hydrate target + initial state
+  const rootEl = document.getElementById('root'); // or whatever your SSR root id is
+  console.log('[BOOT] rootEl exists?', !!rootEl, rootEl?.outerHTML?.slice(0, 120));
+  console.log('[BOOT] window state keys:', Object.keys(window || {}));
+
+  // If you expect a specific inline state/config, log it:
+  console.log('[BOOT] __INITIAL_STATE__:', window.__INITIAL_STATE__);
+  console.log('[BOOT] __APP_CONFIG__:', window.__APP_CONFIG__);
+
   // set up logger with Sentry DSN client key and environment
   log.setup();
 
