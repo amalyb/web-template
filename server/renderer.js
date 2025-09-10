@@ -3,6 +3,8 @@ const fs = require('fs');
 const _ = require('lodash');
 const { types } = require('sharetribe-flex-sdk');
 
+console.log('[renderer] loaded');
+
 const buildPath = path.resolve(__dirname, '..', 'build');
 
 // The HTML build file is generated from the `public/index.html` file
@@ -91,6 +93,7 @@ const replacer = (key = null, value) => {
 };
 
 exports.render = function(requestUrl, context, data, renderApp, webExtractor, nonce) {
+  console.log('[renderer] render start');
   const { preloadedState, translations, hostedConfig } = data;
 
   // Bind webExtractor as "this" for collectChunks call.

@@ -47,7 +47,13 @@ const webmanifestResourceRoute = require('./resources/webmanifest');
 const robotsTxtRoute = require('./resources/robotsTxt');
 const sitemapResourceRoute = require('./resources/sitemap');
 const { getExtractors } = require('./importer');
-const renderer = require('./renderer');
+
+// Import SSR renderer with fallback
+let renderer;
+try { renderer = require('./ssr/renderer'); }
+catch { renderer = require('./renderer'); }
+console.log('[server] renderer keys:', Object.keys(renderer || {}));
+
 const dataLoader = require('./dataLoader');
 const { generateCSPNonce, csp } = require('./csp');
 const sdkUtils = require('./api-util/sdk');
@@ -73,29 +79,17 @@ const app = express();
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.head('/healthz', (_req, res) => res.status(200).send('ok'));
 
-// Debug endpoint to verify SSR and build artifacts
-app.get('/__debug-ssr', (_req, res) => {
+// SSR info endpoint - reads build/asset-manifest.json and lists /static/js bundles
+app.get('/__ssr-info', (_req, res) => {
   try {
-    const manifestPath = path.join(buildDir, 'asset-manifest.json');
-    const statsPath = path.join(buildDir, 'loadable-stats.json');
-    
-    const manifest = fs.existsSync(manifestPath) ? require(manifestPath) : null;
-    const stats = fs.existsSync(statsPath);
-    
-    const jsDir = path.join(buildDir, 'static', 'js');
-    const jsFiles = fs.existsSync(jsDir) ? fs.readdirSync(jsDir).filter(f => f.endsWith('.js')) : [];
-    
-    res.json({ 
-      buildDir,
-      manifest: manifest ? {
-        entrypoints: manifest.entrypoints || [],
-        files: Object.keys(manifest.files || {})
-      } : null,
-      loadableStats: stats,
-      jsFiles: jsFiles.slice(0, 5) // First 5 JS files
-    });
+    const manifest = require(path.join(buildDir, 'asset-manifest.json'));
+    const files = manifest.files || {};
+    const bundles = Object.values(files)
+      .filter(f => /\/static\/js\/.+\.js$/.test(f))
+      .slice(0, 5);
+    res.json({ ok: true, entrypoints: manifest.entrypoints || [], bundles });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
@@ -368,85 +362,25 @@ const noCacheHeaders = {
   'Cache-control': 'no-cache, no-store, must-revalidate',
 };
 
-// SSR catch-all - this replaces <!--!script--> with real <script src="/static/js/...">
-app.get('*', async (req, res) => {
-  if (req.url.startsWith('/static/')) {
-    // The express.static middleware only handles static resources
-    // that it finds, otherwise passes them through. However, we don't
-    // want to render the app for missing static resources and can
-    // just return 404 right away.
-    return res.status(404).send('Static asset not found.');
-  }
-
-  if (req.url === '/_status.json') {
-    return res.status(200).send({ status: 'ok' });
-  }
-
-  const context = {};
-
-  // Until we have a better plan for caching dynamic content and we
-  // make sure that no sensitive data can appear in the prefetched
-  // data, let's disable response caching altogether.
-  res.set(noCacheHeaders);
-
-  // Get chunk extractors from node and web builds
-  // https://loadable-components.com/docs/api-loadable-server/#chunkextractor
-  const { nodeExtractor, webExtractor } = getExtractors();
-
-  // Server-side entrypoint provides us the functions for server-side data loading and rendering
-  const nodeEntrypoint = nodeExtractor.requireEntrypoint();
-  const { default: renderApp, ...appInfo } = nodeEntrypoint;
-
-  const sdk = sdkUtils.getSdk(req, res);
-
+// SSR catch-all LAST (with tracing + bundle check)
+app.get('*', async (req, res, next) => {
   try {
-    const data = await dataLoader.loadData(req.url, sdk, appInfo);
-    const cspNonce = cspEnabled ? res.locals.cspNonce : null;
-    const html = await renderer.render(req.url, context, data, renderApp, webExtractor, cspNonce);
-    
-    if (dev) {
-      const debugData = {
-        url: req.url,
-        context,
-      };
-      console.log(`\nRender info:\n${JSON.stringify(debugData, null, '  ')}`);
-    }
+    console.log('[trace] SSR handler for', req.path);
+    const html = renderer?.renderApp
+      ? await renderer.renderApp(req, res)
+      : (typeof renderer === 'function'
+          ? await renderer(req, res)
+          : (renderer?.default ? await renderer.default(req, res) : null));
 
-    // Sanity check: ensure bundles were injected
+    if (!html) throw new Error('Renderer returned empty');
+
     if (!/\/static\/js\//.test(html)) {
-      console.error('❌ SSR returned HTML without bundle scripts.');
+      console.error('❌ SSR returned HTML without bundle scripts');
     }
-
-    if (context.unauthorized) {
-      // Routes component injects the context.unauthorized when the
-      // user isn't logged in to view the page that requires
-      // authentication.
-      sdk.authInfo().then(authInfo => {
-        if (authInfo && authInfo.isAnonymous === false) {
-          // It looks like the user is logged in.
-          // Full verification would require actual call to API
-          // to refresh the access token
-          res.status(200).send(html);
-        } else {
-          // Current token is anonymous.
-          res.status(401).send(html);
-        }
-      });
-    } else if (context.forbidden) {
-      res.status(403).send(html);
-    } else if (context.url) {
-      // React Router injects the context.url if a redirect was rendered
-      res.redirect(context.url);
-    } else if (context.notfound) {
-      // NotFoundPage component injects the context.notfound when a
-      // 404 should be returned
-      res.status(404).send(html);
-    } else {
-      res.status(200).send(html);
-    }
+    res.status(200).send(html);
   } catch (e) {
-    log.error(e, 'server-side-render-failed');
-    res.status(500).send(errorPage500);
+    console.error('[SSR error]', e);
+    next(e);
   }
 });
 
