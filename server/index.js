@@ -366,11 +366,17 @@ const noCacheHeaders = {
 app.get('*', async (req, res, next) => {
   try {
     console.log('[trace] SSR handler for', req.path);
-    const html = renderer?.renderApp
-      ? await renderer.renderApp(req, res)
-      : (typeof renderer === 'function'
-          ? await renderer(req, res)
-          : (renderer?.default ? await renderer.default(req, res) : null));
+
+    let html;
+    if (renderer.renderApp) {
+      html = await renderer.renderApp(req, res);
+    } else if (renderer.render) {
+      html = await renderer.render(req, res);
+    } else if (typeof renderer === 'function') {
+      html = await renderer(req, res);
+    } else if (renderer.default) {
+      html = await renderer.default(req, res);
+    }
 
     if (!html) throw new Error('Renderer returned empty');
 
