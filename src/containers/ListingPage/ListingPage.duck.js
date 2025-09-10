@@ -419,8 +419,8 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
     start: clampedStart,      // Pass Date object directly
     end: clampedEnd,          // Pass Date object directly
     perPage: 100,            // Use smaller page size as suggested
-    page: 1,
-    ...extraQueryParams 
+    page: 1
+    // Remove extraQueryParams to prevent parameter conflicts
   };
 
   // Debug logging for time slot API call
