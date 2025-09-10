@@ -56,8 +56,8 @@ const buildPath = path.resolve(__dirname, '..', 'build');
 // Where your built frontend lives (adjust if your build folder differs)
 const publicDir = path.resolve(__dirname, '..', 'build');
 
-// optional: log it once during boot
-console.log('[server] publicDir:', publicDir);
+// Sanity check: verify we're serving the right folder
+console.log('[server] Serving static from:', publicDir, 'exists:', fs.existsSync(publicDir));
 
 const dev = process.env.REACT_APP_ENV === 'development';
 const PORT = process.env.PORT || 3000;
