@@ -34,6 +34,11 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
+// Log Basic Auth status on boot
+console.log('[api] baseURL =', apiClient.defaults.baseURL,
+            'authHeaderEnabled =',
+            Boolean(process.env.REACT_APP_BASIC_AUTH_USERNAME && process.env.REACT_APP_BASIC_AUTH_PASSWORD));
+
 // Application type handlers for JS SDK.
 //
 // NOTE: keep in sync with `typeHandlers` in `server/api-util/sdk.js`

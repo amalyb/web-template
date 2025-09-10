@@ -12,6 +12,7 @@ import {
   getStartOf,
   monthIdString,
   stringifyDateToISO8601,
+  monthBoundsUTCInTZ,
 } from '../../util/dates';
 import {
   hasPermissionToInitiateTransactions,
@@ -407,27 +408,35 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
   const startUTC = typeof start === 'string' ? new Date(start) : start;
   const endUTC = typeof end === 'string' ? new Date(end) : end;
 
+  // Use proper TZ midnight for month boundaries (if we have a month date)
+  let monthStartUTC = startUTC;
+  let monthEndUTC = endUTC;
+  
+  // If we're dealing with month boundaries, use TZ helper
+  if (timeZone && startUTC.getDate() === 1 && endUTC.getDate() === 1) {
+    const monthBounds = monthBoundsUTCInTZ(startUTC, timeZone);
+    monthStartUTC = monthBounds.start;
+    monthEndUTC = monthBounds.end;
+  }
+
   // Apply Flex window clamping
-  const { start: clampedStart, end: clampedEnd } = clampToFlexWindow(startUTC, endUTC);
+  const { start: clampedStart, end: clampedEnd } = clampToFlexWindow(monthStartUTC, monthEndUTC);
 
-  // Convert back to ISO strings for the API call
-  const startISO = clampedStart.toISOString();
-  const endISO = clampedEnd.toISOString();
-
-  const params = { 
-    listingId: listingIdStr,  // Use camelCase for SDK
-    start: clampedStart,      // Pass Date object directly
-    end: clampedEnd,          // Pass Date object directly
-    perPage: 100,            // Use smaller page size as suggested
-    page: 1
-    // Remove extraQueryParams to prevent parameter conflicts
+  // Safe params guard - only pass SDK's camelCase keys
+  const safeParams = {
+    listingId: listingIdStr,
+    start: clampedStart,      // Date object
+    end: clampedEnd,         // Date object
+    perPage: 100,
+    page: 1,
   };
+  // Never spread anything else in here
 
   // Debug logging for time slot API call
   console.log('📤 [ListingPage.duck] Flex timeslots params:', {
     listingId: listingIdStr,
-    start: startISO,
-    end: endISO,
+    start: clampedStart.toISOString(),
+    end: clampedEnd.toISOString(),
     perPage: 100,
     page: 1,
     originalStart: startUTC.toISOString(),
@@ -445,7 +454,7 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
     }
 
     dispatch(fetchTimeSlotsForDateRequest(dateId));
-    return dispatch(timeSlotsRequest(params))
+    return dispatch(timeSlotsRequest(safeParams))
       .then(timeSlots => {
         dispatch(fetchTimeSlotsForDateSuccess(dateId, timeSlots));
         return timeSlots;
@@ -458,8 +467,8 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
     const monthId = monthIdString(start, timeZone);
     dispatch(fetchMonthlyTimeSlotsRequest(monthId));
     
-    // Use SDK directly with camelCase parameters
-    return sdk.timeslots.query(params)
+    // Use SDK directly with safe params
+    return sdk.timeslots.query(safeParams)
       .then(response => {
         const timeSlots = denormalisedResponseEntities(response);
         
@@ -478,7 +487,7 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
         console.error('❌ [ListingPage.duck] Time slot fetch error:', {
           monthId,
           error: e.message,
-          params,
+          safeParams,
         });
         dispatch(fetchMonthlyTimeSlotsError(monthId, storableError(e)));
         return [];
