@@ -64,41 +64,69 @@ const manifestFile = path.join(buildPath, 'asset-manifest.json');
 // Sanity check: verify we're serving the right folder
 console.log('[server] Serving static from:', publicDir, 'exists:', fs.existsSync(publicDir));
 
-function getScriptTagsFallback() {
+function scriptTagsFromManifest() {
   try {
-    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-    // CRA-style manifest has `files` or `entrypoints`
+    const raw = fs.readFileSync(manifestFile, 'utf8');
+    const manifest = JSON.parse(raw);
+    // CRA-style: prefer `entrypoints`, fallback to `files.main.js`
     const entrypoints = manifest.entrypoints || [];
-    const files = manifest.files || {};
-
-    // Prefer entrypoints if present
-    const scriptsFromEntrypoints = (entrypoints || [])
+    const tags = entrypoints
       .filter(f => f.endsWith('.js'))
-      .map(f => `<script defer src="/${f}"></script>`);
-
-    // Fallback to main.js if needed
-    const mainJs = files['main.js'] ? `<script defer src="${files['main.js']}"></script>` : '';
-
-    const tags = scriptsFromEntrypoints.join('') || mainJs;
-    console.warn('[server] Using manifest fallback for script tags.');
-    return tags;
+      .map(f => `<script defer src="/${f}"></script>`)
+      .join('');
+    if (tags) {
+      console.warn('[server] Using manifest entrypoints for scripts.');
+      return tags;
+    }
+    const mainJs = manifest.files?.['main.js']
+      ? `<script defer src="${manifest.files['main.js']}"></script>`
+      : '';
+    if (mainJs) console.warn('[server] Using manifest files.main.js fallback.');
+    return mainJs;
   } catch (e) {
-    console.error('[server] No manifest fallback available:', e);
+    console.error('[server] manifest fallback failed:', e.message);
     return '';
   }
 }
 
-function getScriptTagsWithExtractor(jsx) {
-  if (!fs.existsSync(statsFile)) {
-    console.warn('[server] loadable-stats.json missing at:', statsFile);
-    return { html: jsx, scriptTags: getScriptTagsFallback() };
+function scriptTagsByScanning() {
+  try {
+    const jsDir = path.join(buildPath, 'static', 'js');
+    const files = fs.readdirSync(jsDir).filter(f => f.endsWith('.js'));
+    // Heuristic: include runtime, main first, then the rest (chunks will lazy-load themselves if needed)
+    const prioritized = [
+      ...files.filter(f => /runtime|main/i.test(f)),
+      ...files.filter(f => !/runtime|main/i.test(f)),
+    ];
+    const tags = prioritized.map(f => `<script defer src="/static/js/${f}"></script>`).join('');
+    console.warn('[server] Using directory scan fallback for scripts.');
+    return tags;
+  } catch (e) {
+    console.error('[server] directory scan fallback failed:', e.message);
+    return '';
+  }
+}
+
+function getScriptTagsWithFallback(extractorGetTags) {
+  // Prefer extractor (if you already built one around @loadable/server)
+  if (typeof extractorGetTags === 'function') {
+    try {
+      const tags = extractorGetTags();
+      if (tags && tags.length > 0) {
+        console.log('[server] Using ChunkExtractor script tags.');
+        return tags;
+      }
+    } catch (e) {
+      console.error('[server] extractor getScriptTags failed:', e.message);
+    }
   }
 
-  console.log('[server] loadable-stats.json OK at:', statsFile);
-  const extractor = new ChunkExtractor({ statsFile });
-  const jsxWrapped = extractor.collectChunks(jsx);
-  const scriptTags = extractor.getScriptTags(); // string of <script> tags
-  return { html: jsxWrapped, scriptTags };
+  // Then try asset-manifest.json
+  const fromManifest = scriptTagsFromManifest();
+  if (fromManifest) return fromManifest;
+
+  // Finally scan the js folder
+  return scriptTagsByScanning();
 }
 
 const dev = process.env.REACT_APP_ENV === 'development';
@@ -389,6 +417,19 @@ app.get('/api/qr/test', async (req, res) => {
   return res.status(result.ok ? 200 : 500).json(result);
 });
 
+// Debug endpoint to verify bundle files
+app.get('/__debug-bundles', (req, res) => {
+  try {
+    const jsDir = path.join(buildPath, 'static', 'js');
+    const js = fs.existsSync(jsDir) ? fs.readdirSync(jsDir) : [];
+    const stats = fs.existsSync(statsFile);
+    const manifest = fs.existsSync(manifestFile);
+    res.json({ buildDir: buildPath, statsFileExists: stats, manifestExists: manifest, jsFiles: js });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const noCacheHeaders = {
   'Cache-control': 'no-cache, no-store, must-revalidate',
 };
@@ -438,6 +479,16 @@ app.get('*', async (req, res) => {
         console.log(`\nRender info:\n${JSON.stringify(debugData, null, '  ')}`);
       }
 
+      // Inject script tags using the new fallback system
+      const scriptTags = getScriptTagsWithFallback(() => webExtractor?.getScriptTags?.() || '');
+      
+      // Replace BOTH placeholders if present
+      let finalHtml = html
+        .replace('<!--!ssrScripts-->', scriptTags)
+        .replace('<!--!script-->', scriptTags);
+
+      console.log('[server] injected script tags length:', scriptTags.length);
+
       if (context.unauthorized) {
         // Routes component injects the context.unauthorized when the
         // user isn't logged in to view the page that requires
@@ -447,23 +498,23 @@ app.get('*', async (req, res) => {
             // It looks like the user is logged in.
             // Full verification would require actual call to API
             // to refresh the access token
-            res.status(200).send(html);
+            res.status(200).send(finalHtml);
           } else {
             // Current token is anonymous.
-            res.status(401).send(html);
+            res.status(401).send(finalHtml);
           }
         });
       } else if (context.forbidden) {
-        res.status(403).send(html);
+        res.status(403).send(finalHtml);
       } else if (context.url) {
         // React Router injects the context.url if a redirect was rendered
         res.redirect(context.url);
       } else if (context.notfound) {
         // NotFoundPage component injects the context.notfound when a
         // 404 should be returned
-        res.status(404).send(html);
+        res.status(404).send(finalHtml);
       } else {
-        res.send(html);
+        res.send(finalHtml);
       }
     })
     .catch(e => {

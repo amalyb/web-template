@@ -2,58 +2,14 @@ const path = require('path');
 const fs = require('fs');
 const _ = require('lodash');
 const { types } = require('sharetribe-flex-sdk');
-const React = require('react');
-const ReactDOMServer = require('react-dom/server');
 
 const buildPath = path.resolve(__dirname, '..', 'build');
-
-// Stats and manifest file paths
-const statsFile = path.join(buildPath, 'loadable-stats.json');
-const manifestFile = path.join(buildPath, 'asset-manifest.json');
 
 // The HTML build file is generated from the `public/index.html` file
 // and used as a template for server side rendering. The application
 // head and body are injected to the template from the results of
 // calling the `renderApp` function imported from the bundle above.
 const indexHtml = fs.readFileSync(path.join(buildPath, 'index.html'), 'utf-8');
-
-function getScriptTagsFallback() {
-  try {
-    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-    // CRA-style manifest has `files` or `entrypoints`
-    const entrypoints = manifest.entrypoints || [];
-    const files = manifest.files || {};
-
-    // Prefer entrypoints if present
-    const scriptsFromEntrypoints = (entrypoints || [])
-      .filter(f => f.endsWith('.js'))
-      .map(f => `<script defer src="/${f}"></script>`);
-
-    // Fallback to main.js if needed
-    const mainJs = files['main.js'] ? `<script defer src="${files['main.js']}"></script>` : '';
-
-    const tags = scriptsFromEntrypoints.join('') || mainJs;
-    console.warn('[server] Using manifest fallback for script tags.');
-    return tags;
-  } catch (e) {
-    console.error('[server] No manifest fallback available:', e);
-    return '';
-  }
-}
-
-function getScriptTagsWithExtractor(jsx) {
-  if (!fs.existsSync(statsFile)) {
-    console.warn('[server] loadable-stats.json missing at:', statsFile);
-    return { html: jsx, scriptTags: getScriptTagsFallback() };
-  }
-
-  console.log('[server] loadable-stats.json OK at:', statsFile);
-  const { ChunkExtractor } = require('@loadable/server');
-  const extractor = new ChunkExtractor({ statsFile });
-  const jsxWrapped = extractor.collectChunks(jsx);
-  const scriptTags = extractor.getScriptTags(); // string of <script> tags
-  return { html: jsxWrapped, scriptTags };
-}
 
 const reNoMatch = /($^)/;
 
@@ -168,18 +124,6 @@ exports.render = function(requestUrl, context, data, renderApp, webExtractor, no
     // Add nonce to server-side rendered script tags
     const nonceParamMaybe = nonce ? { nonce } : {};
 
-    // Create JSX tree for script tag injection
-    const appJsx = React.createElement('div', null, body);
-
-    // Wrap & collect scripts using the new helper
-    const { html: wrappedJsx, scriptTags } = getScriptTagsWithExtractor(appJsx);
-
-    // Render to string
-    const appHtml = ReactDOMServer.renderToString(wrappedJsx);
-
-    // Log script tag injection for verification
-    console.log('[server] injected script tags length:', scriptTags.length);
-
     return template({
       htmlAttributes: head.htmlAttributes.toString(),
       title: head.title.toString(),
@@ -189,8 +133,8 @@ exports.render = function(requestUrl, context, data, renderApp, webExtractor, no
       preloadedStateScript,
       ssrStyles: webExtractor.getStyleTags(),
       ssrLinks: webExtractor.getLinkTags(),
-      ssrScripts: scriptTags, // Use the new script tags instead of webExtractor
-      body: appHtml, // Use the rendered HTML with injected scripts
+      ssrScripts: webExtractor.getScriptTags(nonceParamMaybe),
+      body,
     });
   });
 };
