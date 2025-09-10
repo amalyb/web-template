@@ -133,6 +133,12 @@ if (typeof window !== 'undefined') {
     ? { assetCdnBaseUrl: appSettings.sdk.assetCdnBaseUrl }
     : {};
 
+  // Verify environment variables are loaded
+  console.log('🌐 Flex Client ID in use:', process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID);
+  if (!process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID) {
+    throw new Error('clientId must be provided');
+  }
+
   // eslint-disable-next-line no-underscore-dangle
   const preloadedState = window.__PRELOADED_STATE__ || '{}';
   const initialState = JSON.parse(preloadedState, sdkTypes.reviver);
