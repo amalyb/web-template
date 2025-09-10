@@ -125,6 +125,13 @@ const setupAnalyticsHandlers = googleAnalyticsId => {
 
 // If we're in a browser already, render the client application.
 if (typeof window !== 'undefined') {
+  // DEBUG: cannot be stripped by Terser
+  debugger;                                  // DevTools will pause here if the file runs
+  window.__BOOT_PROBE__ = 'client-entry';    // Check this in console later
+  document.body.setAttribute('data-boot', '1'); // Visible in Elements
+  // Optional: very loud (remove after one deploy)
+  // alert('BOOT: client entry executing');
+
   // At the VERY top: boot logging and error handling
   window.onerror = (m, s, l, c, e) => {
     console.error('[BOOT] window.onerror:', m, s, l, c, e);
