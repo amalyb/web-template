@@ -39,6 +39,7 @@ const enforceSsl = require('express-enforces-ssl');
 const path = require('path');
 const passport = require('passport');
 const cors = require('cors');
+const { ChunkExtractor } = require('@loadable/server');
 
 const auth = require('./auth');
 const apiRouter = require('./apiRouter');
@@ -56,8 +57,49 @@ const buildPath = path.resolve(__dirname, '..', 'build');
 // Where your built frontend lives (adjust if your build folder differs)
 const publicDir = path.resolve(__dirname, '..', 'build');
 
+// Stats and manifest file paths
+const statsFile = path.join(buildPath, 'loadable-stats.json');
+const manifestFile = path.join(buildPath, 'asset-manifest.json');
+
 // Sanity check: verify we're serving the right folder
 console.log('[server] Serving static from:', publicDir, 'exists:', fs.existsSync(publicDir));
+
+function getScriptTagsFallback() {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    // CRA-style manifest has `files` or `entrypoints`
+    const entrypoints = manifest.entrypoints || [];
+    const files = manifest.files || {};
+
+    // Prefer entrypoints if present
+    const scriptsFromEntrypoints = (entrypoints || [])
+      .filter(f => f.endsWith('.js'))
+      .map(f => `<script defer src="/${f}"></script>`);
+
+    // Fallback to main.js if needed
+    const mainJs = files['main.js'] ? `<script defer src="${files['main.js']}"></script>` : '';
+
+    const tags = scriptsFromEntrypoints.join('') || mainJs;
+    console.warn('[server] Using manifest fallback for script tags.');
+    return tags;
+  } catch (e) {
+    console.error('[server] No manifest fallback available:', e);
+    return '';
+  }
+}
+
+function getScriptTagsWithExtractor(jsx) {
+  if (!fs.existsSync(statsFile)) {
+    console.warn('[server] loadable-stats.json missing at:', statsFile);
+    return { html: jsx, scriptTags: getScriptTagsFallback() };
+  }
+
+  console.log('[server] loadable-stats.json OK at:', statsFile);
+  const extractor = new ChunkExtractor({ statsFile });
+  const jsxWrapped = extractor.collectChunks(jsx);
+  const scriptTags = extractor.getScriptTags(); // string of <script> tags
+  return { html: jsxWrapped, scriptTags };
+}
 
 const dev = process.env.REACT_APP_ENV === 'development';
 const PORT = process.env.PORT || 3000;
