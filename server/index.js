@@ -230,18 +230,11 @@ if (REDIRECT_SSL) {
   app.use(enforceSsl());
 }
 
-// Set the TRUST_PROXY when running the app behind a reverse proxy.
-//
-// For example, when running the app in Heroku, set TRUST_PROXY to `true`.
-//
-// Read more: https://expressjs.com/en/guide/behind-proxies.html
-//
-if (TRUST_PROXY === 'true') {
-  app.enable('trust proxy');
-} else if (TRUST_PROXY === 'false') {
-  app.disable('trust proxy');
-} else if (TRUST_PROXY !== null) {
-  app.set('trust proxy', TRUST_PROXY);
+// Behind Render/Heroku, trust the proxy so req.protocol/host reflect original request.
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+} else if (process.env.TRUST_PROXY) {
+  app.set('trust proxy', process.env.TRUST_PROXY);
 }
 
 app.use(compression());

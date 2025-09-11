@@ -1,56 +1,27 @@
 // server/api/twilio/sms-status.js
 const express = require('express');
+const twilio = require('twilio');
 const { maskPhone } = require('../../api-util/phone');
 
-// Twilio signature verification
+// Twilio signature verification using Twilio's built-in validator
 function verifyTwilioSignature(req, authToken) {
-  const twilioSignature = req.headers['x-twilio-signature'];
-  if (!twilioSignature) {
-    console.log('⚠️ No X-Twilio-Signature header found');
-    return false;
-  }
-  
-  if (!authToken) {
-    console.log('⚠️ No TWILIO_AUTH_TOKEN configured');
-    return false;
-  }
-  
-  // Build the URL with query parameters
-  const protocol = req.get('x-forwarded-proto') || req.protocol;
-  const host = req.get('host');
-  const fullUrl = `${protocol}://${host}${req.originalUrl}`;
-  
-  // Twilio's signature verification
-  const crypto = require('crypto');
-  const data = Object.keys(req.body)
-    .sort()
-    .map(key => `${key}=${req.body[key]}`)
-    .join('');
-  
-  const signature = crypto
-    .createHmac('sha1', authToken)
-    .update(fullUrl + data)
-    .digest('base64');
-  
-  const isValid = crypto.timingSafeEqual(
-    Buffer.from(twilioSignature),
-    Buffer.from(signature)
-  );
-  
-  if (process.env.VERBOSE === '1') {
-    console.log(`🔐 Twilio signature verification: ${isValid ? 'VALID' : 'INVALID'}`);
-    console.log(`🔐 Expected: ${signature}`);
-    console.log(`🔐 Received: ${twilioSignature}`);
-  }
-  
-  return isValid;
+  const twilioSignature = req.get('X-Twilio-Signature');
+  if (!twilioSignature || !authToken) return false;
+  const proto = req.get('x-forwarded-proto') || req.protocol;        // respect proxy
+  const host  = req.get('x-forwarded-host') || req.get('host');      // respect proxy
+  const url   = `${proto}://${host}${req.originalUrl}`;              // keep exact query
+  return twilio.validateRequest(authToken, twilioSignature, url, req.body);
 }
 
 module.exports = async (req, res) => {
   // Verify Twilio signature
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   if (authToken && !verifyTwilioSignature(req, authToken)) {
+    const xfProto = req.get('x-forwarded-proto');
+    const xfHost  = req.get('x-forwarded-host');
     console.log('🚫 Invalid Twilio signature - rejecting request');
+    console.log('[twilio] xfp/xfh:', xfProto, xfHost, 'raw host:', req.get('host'));
+    console.log('[twilio] originalUrl:', req.originalUrl);
     return res.status(403).json({ error: 'Invalid signature' });
   }
   
