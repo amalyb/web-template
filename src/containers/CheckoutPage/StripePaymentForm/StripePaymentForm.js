@@ -607,7 +607,20 @@ class StripePaymentForm extends Component {
       isBooking,
       isFuzzyLocation,
       values,
+      errors,
+      submitFailed,
+      hasValidationErrors,
+      dirtySinceLastSubmit,
     } = formRenderProps;
+
+    // Detailed form validation logging
+    console.log('[Form] invalid:', invalid,
+      'hasValidationErrors:', hasValidationErrors,
+      'submitFailed:', submitFailed,
+      'dirtySinceLastSubmit:', dirtySinceLastSubmit,
+      'errors:', errors,
+      'values:', values
+    );
 
     this.finalFormAPI = formApi;
 
@@ -794,6 +807,14 @@ class StripePaymentForm extends Component {
               />
             )}
           </PrimaryButton>
+          
+          {/* Temporary UI helper to show form errors */}
+          {invalid && errors ? (
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+              Form invalid. First error: <code>{Object.keys(errors)[0]}</code> → <code>{errors[Object.keys(errors)[0]]}</code>
+            </div>
+          ) : null}
+          
           <p className={css.paymentInfo}>
             <FormattedMessage
               id="StripePaymentForm.submitConfirmPaymentFinePrint"

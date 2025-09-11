@@ -786,7 +786,10 @@ export const CheckoutPageWithPayment = props => {
                     setStripeElementMounted(v);
                   }}
                   onPaymentElementChange={setPaymentElementComplete}
-                  onFormValidityChange={setFormValid}
+                  onFormValidityChange={(v) => { 
+                    console.log('[Form] parent sees valid:', v); 
+                    setFormValid(v); 
+                  }}
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
                     const tx = speculativeTransaction; // ✅ use normalized name
