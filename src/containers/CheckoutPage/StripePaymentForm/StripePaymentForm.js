@@ -384,6 +384,11 @@ class StripePaymentForm extends Component {
     this.changePaymentMethod = this.changePaymentMethod.bind(this);
     this.finalFormAPI = null;
     this.cardContainer = null;
+    
+    // Change guards to prevent unnecessary callbacks
+    this.lastValuesJSON = '';
+    this.lastEffectiveInvalid = undefined;
+    this.reportedMounted = false;
   }
 
   componentDidMount() {
@@ -412,10 +417,11 @@ class StripePaymentForm extends Component {
       this.card = null;
     }
     
-    // Notify parent that Stripe element is unmounted
+    // Notify parent that Stripe element is unmounted and reset guard
     if (this.props.onStripeElementMounted) {
       this.props.onStripeElementMounted(false);
     }
+    this.reportedMounted = false;
   }
 
   initializeStripeElement(element) {
@@ -434,9 +440,10 @@ class StripePaymentForm extends Component {
       this.card.mount(targetElement);
       this.card.addEventListener('change', this.handleCardValueChange);
       
-      // Notify parent that Stripe element is mounted
-      if (this.props.onStripeElementMounted) {
-        this.props.onStripeElementMounted(true);
+      // Notify parent that Stripe element is mounted (only once)
+      if (!this.reportedMounted) {
+        this.reportedMounted = true;
+        this.props.onStripeElementMounted?.(true);
       }
       
       // EventListener is the only way to simulate breakpoints with Stripe.
@@ -613,24 +620,27 @@ class StripePaymentForm extends Component {
       dirtySinceLastSubmit,
     } = formRenderProps;
 
-    // Detailed form validation logging
+    // Detailed form validation logging (avoid printing huge objects)
     console.log('[Form] invalid:', invalid, 'hasValidationErrors:', hasValidationErrors, 'errors keys:', Object.keys(errors||{}));
 
     this.finalFormAPI = formApi;
 
-    // Bubble up form values to parent
-    if (this.props.onFormValuesChange) {
-      this.props.onFormValuesChange(values);
-    }
-
-    // Compute effective validity when addresses are handled outside
+    // Compute effective validity (ignore address errors if external form handles them)
     const requireInPaymentForm = this.props.requireInPaymentForm ?? true;
     const hasAddressErrors = !!(errors?.billing || errors?.shipping);
     const effectiveInvalid = requireInPaymentForm ? invalid : (invalid && !hasAddressErrors);
-    
-    // Bubble up effective form validity to parent
-    if (this.props.onFormValidityChange) {
-      this.props.onFormValidityChange(!effectiveInvalid);
+
+    // 🔒 bubble validity only when it changes
+    if (effectiveInvalid !== this.lastEffectiveInvalid) {
+      this.lastEffectiveInvalid = effectiveInvalid;
+      this.props.onFormValidityChange?.(!effectiveInvalid);
+    }
+
+    // 🔒 bubble values only when they change
+    const nextJSON = JSON.stringify(values || {});
+    if (nextJSON !== this.lastValuesJSON) {
+      this.lastValuesJSON = nextJSON;
+      this.props.onFormValuesChange?.(values);
     }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);

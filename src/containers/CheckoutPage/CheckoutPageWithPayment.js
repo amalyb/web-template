@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -246,7 +246,7 @@ export const loadInitialDataForStripePayments = ({
   const shippingDetails = {};
   console.log('📬 shippingDetails in loadInitialData:', shippingDetails);
   const optionalPaymentParams = {};
-  const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config, formValues);
+  const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
 
   // Use a more robust guard to prevent duplicate calls
   const prevKeyRef = { current: null };
@@ -528,14 +528,21 @@ export const CheckoutPageWithPayment = props => {
   const [stripe, setStripe] = useState(null);
   // Payment element completion state
   const [paymentElementComplete, setPaymentElementComplete] = useState(false);
-  // Stripe element mounting state
-  const [stripeElementMounted, setStripeElementMounted] = useState(false);
-  // Form validity state
-  const [formValid, setFormValid] = useState(false);
-  // Form values state for building protectedData
   const [formValues, setFormValues] = useState({});
+  const [formValid, setFormValid] = useState(false);
+  const [stripeElementMounted, setStripeElementMounted] = useState(false);
+  const stripeReady = !!stripeElementMounted;
+
+  const handleFormValuesChange = useCallback((next) => {
+    const prev = JSON.stringify(formValues || {});
+    const json = JSON.stringify(next || {});
+    if (json !== prev) setFormValues(next || {});
+  }, [formValues]);
+  
   // Ref to prevent speculative transaction loops
-  const prevKeyRef = useRef(null);
+  const prevSpecKeyRef = useRef(null);
+  // Ref to throttle disabled gates logging
+  const lastReasonRef = useRef(null);
 
   const {
     scrollingDisabled,
@@ -557,6 +564,44 @@ export const CheckoutPageWithPayment = props => {
     title,
     config,
   } = props;
+
+  // Handle speculative transaction initiation with proper guards (one-shot)
+  useEffect(() => {
+    const listingId = pageData?.listing?.id?.uuid || pageData?.listing?.id;
+
+    if (!listingId) return;
+
+    // only when listing changes & we still don't have a speculative tx
+    if (!speculativeTransaction?.id && !speculativeInProgress) {
+      const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
+      fetchSpeculatedTransactionIfNeeded(
+        orderParams,
+        pageData,
+        props.fetchSpeculatedTransaction,
+        prevSpecKeyRef // <-- use the stable ref
+      );
+    }
+    // depend on listingId only, so it's a true one-shot per listing
+  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress, formValues]);
+
+  // Throttled logging for disabled gates
+  useEffect(() => {
+    const tx = speculativeTransaction;
+    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+    const gates = { 
+      hasSpeculativeTx: hasTxId, 
+      stripeReady, 
+      paymentElementComplete, 
+      formValid, 
+      notSubmitting: !submitting, 
+      notSpeculating: !speculativeInProgress 
+    };
+    const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
+    if (disabledReason !== lastReasonRef.current) {
+      lastReasonRef.current = disabledReason;
+      console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
+    }
+  }, [speculativeTransaction, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -734,17 +779,12 @@ export const CheckoutPageWithPayment = props => {
                   const tx = speculativeTransaction; // ✅ use normalized name
                   const hasTxId = !!(tx?.id?.uuid || tx?.id);
 
-                  // Compute stripe readiness - handle default payment methods (strict boolean)
-                  const hasDefaultPM = hasDefaultPaymentMethod(stripeCustomerFetched, currentUser);
-                  const stripeReadyComputed = !!(
-                    stripeElementMounted ||
-                    hasDefaultPM ||
-                    hasPaymentIntentUserActionsDone
-                  );
+                  // Compute stripe readiness (strict boolean)
+                  const stripeReady = !!stripeElementMounted;
 
                   const gates = {
                     hasSpeculativeTx: hasTxId,
-                    stripeReady: stripeReadyComputed,                 // 👈 updated
+                    stripeReady: stripeReady,                 // 👈 simplified
                     paymentElementComplete: !!paymentElementComplete,
                     formValid: formValid,                   // ✅ bubbled up from child form
                     notSubmitting: !submitting,      // local state (no duck submitInProgress available)
@@ -753,10 +793,6 @@ export const CheckoutPageWithPayment = props => {
 
                   const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
                   const submitDisabled = !!disabledReason;
-
-                  console.log('[Checkout] submit disabled gates:', {
-                    hasSpeculativeTx, stripeReady: stripeReadyComputed, paymentElementComplete, formValid, notSubmitting: !submitting, notSpeculating: !speculativeInProgress
-                  }, 'disabledReason:', disabledReason);
 
                   return (
                     <>
@@ -794,7 +830,7 @@ export const CheckoutPageWithPayment = props => {
                     console.log('[Stripe] element mounted:', v);
                     setStripeElementMounted(!!v);
                   }}
-                  onFormValuesChange={setFormValues}
+                  onFormValuesChange={handleFormValuesChange}
                   onPaymentElementChange={setPaymentElementComplete}
                   onFormValidityChange={(v) => { 
                     console.log('[Form] parent sees valid:', v); 
@@ -806,17 +842,12 @@ export const CheckoutPageWithPayment = props => {
                     const tx = speculativeTransaction; // ✅ use normalized name
                     const hasTxId = !!(tx?.id?.uuid || tx?.id);
                     
-                    // Compute stripe readiness - handle default payment methods (strict boolean)
-                    const hasDefaultPM = hasDefaultPaymentMethod(stripeCustomerFetched, currentUser);
-                    const stripeReadyComputed = !!(
-                      stripeElementMounted ||
-                      hasDefaultPM ||
-                      hasPaymentIntentUserActionsDone
-                    );
+                    // Compute stripe readiness (strict boolean)
+                    const stripeReady = !!stripeElementMounted;
                     
                     const gates = {
                       hasSpeculativeTx: hasTxId,
-                      stripeReady: stripeReadyComputed,                 // 👈 updated
+                      stripeReady: stripeReady,                 // 👈 simplified
                       paymentElementComplete: !!paymentElementComplete,
                       formValid: formValid,
                       notSubmitting: !submitting,
