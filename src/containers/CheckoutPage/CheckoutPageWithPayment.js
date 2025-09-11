@@ -362,6 +362,15 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
       console.log('🔐 Protected data constructed from formValues:', protectedData);
       console.log('📦 Raw formValues:', formValues);
       console.log('[checkout] sending protectedData:', Object.entries(protectedData));
+      
+      // Verify customer fields are populated
+      const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
+      const missingFields = customerFields.filter(field => !protectedData[field]?.trim());
+      if (missingFields.length > 0) {
+        console.warn('⚠️ Missing customer fields:', missingFields);
+      } else {
+        console.log('✅ All customer fields populated:', customerFields.map(field => `${field}: "${protectedData[field]}"`));
+      }
     } catch (_) {
       // never block submission on logging
     }
@@ -458,6 +467,18 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   // One-time logs right before the API call
   console.log('[checkout→request-payment] protectedData keys:', Object.keys(protectedData));
   console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
+  
+  // Verify customer data is included in the request
+  if (!isProd) {
+    try {
+      const customerDataInRequest = orderParams.protectedData;
+      const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
+      const populatedFields = customerFields.filter(field => customerDataInRequest[field]?.trim());
+      console.log(`[checkout→request-payment] Customer fields in request: ${populatedFields.length}/${customerFields.length}`, populatedFields);
+    } catch (_) {
+      // never block submission on logging
+    }
+  }
 
   // Log line items for debugging
   console.log('🔍 Line item codes being sent:', lineItems.map(item => item.code));

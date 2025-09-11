@@ -568,11 +568,29 @@ class StripePaymentForm extends Component {
     const billingForStripe = mapToStripeBilling(billing);
     const shippingForCourier = mapToShippo({ ...shipping, line2: shipping.line2 || undefined });
 
+    // Map nested form values to flat structure expected by CheckoutPageWithPayment
+    const mappedFormValues = {
+      // Customer fields from shipping (primary) or billing (fallback)
+      customerName: shipping.name || billing.name || '',
+      customerStreet: shipping.line1 || billing.line1 || '',
+      customerStreet2: shipping.line2 || billing.line2 || '',
+      customerCity: shipping.city || billing.city || '',
+      customerState: shipping.state || billing.state || '',
+      customerZip: shipping.postalCode || billing.postalCode || '',
+      customerEmail: shipping.email || billing.email || '',
+      customerPhone: shipping.phone || billing.phone || '',
+      
+      // Include original nested structure for backward compatibility
+      billing: rawBilling,
+      shipping: rawShipping,
+      shippingSameAsBilling: values.shippingSameAsBilling || false,
+    };
+
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: this.card,
       formId,
-      formValues: values,
+      formValues: mappedFormValues,
       paymentMethod: getPaymentMethod(
         paymentMethod,
         ensurePaymentMethodCard(defaultPaymentMethod).id
@@ -640,7 +658,26 @@ class StripePaymentForm extends Component {
     const nextJSON = JSON.stringify(values || {});
     if (nextJSON !== this.lastValuesJSON) {
       this.lastValuesJSON = nextJSON;
-      this.props.onFormValuesChange?.(values);
+      
+      // Map nested form values to flat structure expected by CheckoutPageWithPayment
+      const mappedValues = {
+        // Customer fields from shipping (primary) or billing (fallback)
+        customerName: values.shipping?.name || values.billing?.name || '',
+        customerStreet: values.shipping?.line1 || values.billing?.line1 || '',
+        customerStreet2: values.shipping?.line2 || values.billing?.line2 || '',
+        customerCity: values.shipping?.city || values.billing?.city || '',
+        customerState: values.shipping?.state || values.billing?.state || '',
+        customerZip: values.shipping?.postalCode || values.billing?.postalCode || '',
+        customerEmail: values.shipping?.email || values.billing?.email || '',
+        customerPhone: values.shipping?.phone || values.billing?.phone || '',
+        
+        // Include original nested structure for backward compatibility
+        billing: values.billing || {},
+        shipping: values.shipping || {},
+        shippingSameAsBilling: values.shippingSameAsBilling || false,
+      };
+      
+      this.props.onFormValuesChange?.(mappedValues);
     }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);
@@ -822,10 +859,22 @@ class StripePaymentForm extends Component {
             )}
           </PrimaryButton>
           
-          {/* Temporary UI helper to show form errors */}
+          {/* Customer field validation errors */}
           {invalid && errors ? (
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-              Form invalid. First error: <code>{Object.keys(errors)[0]}</code> → <code>{errors[Object.keys(errors)[0]]}</code>
+            <div style={{ marginTop: 8, fontSize: 12, color: '#d32f2f' }}>
+              {errors.customerName && <div>• {errors.customerName}</div>}
+              {errors.customerStreet && <div>• {errors.customerStreet}</div>}
+              {errors.customerCity && <div>• {errors.customerCity}</div>}
+              {errors.customerState && <div>• {errors.customerState}</div>}
+              {errors.customerZip && <div>• {errors.customerZip}</div>}
+              {errors.customerEmail && <div>• {errors.customerEmail}</div>}
+              {errors.customerPhone && <div>• {errors.customerPhone}</div>}
+              {/* Show other errors if no customer field errors */}
+              {!errors.customerName && !errors.customerStreet && !errors.customerCity && 
+               !errors.customerState && !errors.customerZip && !errors.customerEmail && 
+               !errors.customerPhone && Object.keys(errors).length > 0 && (
+                <div>Form invalid. First error: <code>{Object.keys(errors)[0]}</code> → <code>{errors[Object.keys(errors)[0]]}</code></div>
+              )}
             </div>
           ) : null}
           
@@ -908,6 +957,44 @@ class StripePaymentForm extends Component {
         if (!values.shippingSameAsBilling) {
           const shipErr = validateAddress(values.shipping || {}, { requirePhone: true });
           if (Object.keys(shipErr).length) errors.shipping = shipErr;
+        }
+      }
+      
+      // Validate required customer fields for protectedData
+      const shipping = values.shipping || {};
+      const billing = values.billing || {};
+      const effectiveShipping = values.shippingSameAsBilling ? billing : shipping;
+      
+      // Required fields validation
+      if (!effectiveShipping.name?.trim()) {
+        errors.customerName = 'Name is required';
+      }
+      if (!effectiveShipping.line1?.trim()) {
+        errors.customerStreet = 'Street address is required';
+      }
+      if (!effectiveShipping.city?.trim()) {
+        errors.customerCity = 'City is required';
+      }
+      if (!effectiveShipping.state?.trim()) {
+        errors.customerState = 'State is required';
+      }
+      if (!effectiveShipping.postalCode?.trim()) {
+        errors.customerZip = 'ZIP code is required';
+      } else if (!/^\d{5,}$/.test(effectiveShipping.postalCode.trim())) {
+        errors.customerZip = 'ZIP code must be at least 5 digits';
+      }
+      if (!effectiveShipping.email?.trim()) {
+        errors.customerEmail = 'Email is required';
+      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(effectiveShipping.email.trim())) {
+        errors.customerEmail = 'Please enter a valid email address';
+      }
+      if (!effectiveShipping.phone?.trim()) {
+        errors.customerPhone = 'Phone number is required';
+      } else {
+        const phone = effectiveShipping.phone.trim();
+        // Accept E.164 format (+1234567890) or 10-digit US format
+        if (!/^\+1\d{10}$/.test(phone) && !/^\d{10}$/.test(phone)) {
+          errors.customerPhone = 'Please enter a valid phone number (10 digits or E.164 format)';
         }
       }
       
