@@ -535,8 +535,8 @@ export const CheckoutPageWithPayment = props => {
   const {
     scrollingDisabled,
     speculateTransactionError,
-    speculatedTransaction: speculativeTransaction, // normalize name
-    speculateTransactionInProgress: speculativeInProgress, // normalize name
+    speculativeTransaction, // ✅ normalized name from mapStateToProps
+    speculativeInProgress, // ✅ normalized name from mapStateToProps
     isClockInSync,
     initiateOrderError,
     confirmPaymentError,
@@ -726,7 +726,7 @@ export const CheckoutPageWithPayment = props => {
               <>
                 {(() => {
                   // Canonical gating (parent)
-                  const tx = props.speculativeTransaction;
+                  const tx = speculativeTransaction; // ✅ use normalized name
                   const hasTxId = !!(tx?.id?.uuid || tx?.id);
 
                   const gates = {
@@ -735,7 +735,7 @@ export const CheckoutPageWithPayment = props => {
                     paymentElementComplete: !!paymentElementComplete,
                     formValid: formValid,                   // ✅ bubbled up from child form
                     notSubmitting: !submitting,      // local state (no duck submitInProgress available)
-                    notSpeculating: !props.speculativeInProgress
+                    notSpeculating: !speculativeInProgress  // ✅ use normalized name
                   };
 
                   const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
@@ -781,7 +781,7 @@ export const CheckoutPageWithPayment = props => {
                   onFormValidityChange={setFormValid}
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
-                    const tx = props.speculativeTransaction;
+                    const tx = speculativeTransaction; // ✅ use normalized name
                     const hasTxId = !!(tx?.id?.uuid || tx?.id);
                     const gates = {
                       hasSpeculativeTx: hasTxId,
@@ -789,7 +789,7 @@ export const CheckoutPageWithPayment = props => {
                       paymentElementComplete: !!paymentElementComplete,
                       formValid: formValid,
                       notSubmitting: !submitting,
-                      notSpeculating: !props.speculativeInProgress,
+                      notSpeculating: !speculativeInProgress, // ✅ use normalized name
                     };
                     return !!Object.entries(gates).find(([, ok]) => !ok)?.[0];
                   })()}

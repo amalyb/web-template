@@ -593,14 +593,13 @@ class StripePaymentForm extends Component {
       isBooking,
       isFuzzyLocation,
       values,
-      onFormValidityChange,
     } = formRenderProps;
 
     this.finalFormAPI = formApi;
 
     // Bubble up form validity to parent
-    if (onFormValidityChange) {
-      onFormValidityChange(!invalid);
+    if (this.props.onFormValidityChange) {
+      this.props.onFormValidityChange(!invalid);
     }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);

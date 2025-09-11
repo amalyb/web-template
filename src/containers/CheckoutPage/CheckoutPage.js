@@ -205,9 +205,10 @@ const mapStateToProps = state => {
     currentUser,
     stripeCustomerFetched,
     orderData,
-    speculateTransactionInProgress,
+    speculateTransactionInProgress: speculateTransactionInProgress,
     speculateTransactionError,
-    speculatedTransaction,
+    speculativeTransaction: speculatedTransaction, // normalize name
+    speculativeInProgress: speculateTransactionInProgress, // normalize name
     isClockInSync,
     transaction,
     listing,
