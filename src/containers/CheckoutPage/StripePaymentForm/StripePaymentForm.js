@@ -3,7 +3,7 @@
  * Card is not a Final Form field so it's not available trough Final Form.
  * It's also handled separately in handleSubmit function.
  */
-import React, { Component } from 'react';
+import React, { Component, useEffect } from 'react';
 import { Form as FinalForm, Field, useForm, useFormState } from 'react-final-form';
 import classNames from 'classnames';
 
@@ -387,12 +387,9 @@ class StripePaymentForm extends Component {
   }
 
   componentDidMount() {
-    if (!window.Stripe) {
-      throw new Error('Stripe must be loaded for StripePaymentForm');
-    }
-
-    const publishableKey = this.props.stripePublishableKey;
-    if (publishableKey) {
+    // SSR/boot safety: gate Stripe init
+    if (typeof window !== 'undefined' && window.Stripe && this.props.stripePublishableKey) {
+      const publishableKey = this.props.stripePublishableKey;
       const {
         onStripeInitialized,
         hasHandledCardPayment,
@@ -401,6 +398,11 @@ class StripePaymentForm extends Component {
       } = this.props;
       this.stripe = window.Stripe(publishableKey);
       onStripeInitialized(this.stripe);
+      
+      // Notify parent that Stripe element is mounted
+      if (this.props.onStripeElementMounted) {
+        this.props.onStripeElementMounted(true);
+      }
 
       if (!(hasHandledCardPayment || defaultPaymentMethod || loadingData)) {
         this.initializeStripeElement();
@@ -474,12 +476,18 @@ class StripePaymentForm extends Component {
   }
 
   handleCardValueChange(event) {
-    const { intl } = this.props;
+    const { intl, onPaymentElementChange } = this.props;
     const { error, complete } = event;
 
     const postalCode = event.value.postalCode;
     if (this.finalFormAPI) {
       this.finalFormAPI.change('postal', postalCode);
+    }
+
+    // Call payment element change callback
+    if (onPaymentElementChange) {
+      onPaymentElementChange(!!complete);
+      console.log('[Stripe] PaymentElement complete:', complete);
     }
 
     this.setState(prevState => {
@@ -496,6 +504,7 @@ class StripePaymentForm extends Component {
       formId,
       hasHandledCardPayment,
       defaultPaymentMethod,
+      submitDisabled,
     } = this.props;
     const { initialMessage } = values;
     const { cardValueValid, paymentMethod } = this.state;
@@ -507,6 +516,11 @@ class StripePaymentForm extends Component {
       hasDefaultPaymentMethod,
       hasHandledCardPayment
     );
+
+    // Prevent double submit: early-return if submitDisabled (belt & suspenders)
+    if (submitDisabled) {
+      return;
+    }
 
     if (inProgress || onetimePaymentNeedsAttention) {
       // Already submitting or card value incomplete/invalid
@@ -579,9 +593,15 @@ class StripePaymentForm extends Component {
       isBooking,
       isFuzzyLocation,
       values,
+      onFormValidityChange,
     } = formRenderProps;
 
     this.finalFormAPI = formApi;
+
+    // Bubble up form validity to parent
+    if (onFormValidityChange) {
+      onFormValidityChange(!invalid);
+    }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);
     const billingDetailsNeeded = !(hasHandledCardPayment || confirmPaymentError);
@@ -596,7 +616,7 @@ class StripePaymentForm extends Component {
       hasHandledCardPayment
     );
 
-    const submitDisabled = invalid || onetimePaymentNeedsAttention || submitInProgress;
+    const submitDisabled = props.submitDisabled;   // single source of truth
     const hasCardError = this.state.error && !submitInProgress;
     const hasPaymentErrors = confirmCardPaymentError || confirmPaymentError;
     const classes = classNames(rootClassName || css.root, className);
@@ -743,10 +763,11 @@ class StripePaymentForm extends Component {
             <span className={css.errorMessage}>{paymentErrorMessage}</span>
           ) : null}
           <PrimaryButton
-            className={css.submitButton}
+            className={classNames(css.submitButton, { [css.submitButtonDisabled]: submitDisabled })}
             type="submit"
-            inProgress={submitInProgress}
+            inProgress={props.submitInProgress}  // just a spinner flag, not a gate
             disabled={submitDisabled}
+            aria-disabled={submitDisabled}
           >
             {billingDetailsNeeded ? (
               <FormattedMessage

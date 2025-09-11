@@ -78,6 +78,8 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       const lastTransitionedAt = payload.transaction?.attributes?.lastTransitionedAt;
       const localTime = new Date();
       const minute = 60000;
+      const tx = payload.transaction;
+      console.log('[duck] privileged speculative success:', tx?.id?.uuid || tx?.id);
       return {
         ...state,
         speculateTransactionInProgress: false,
@@ -532,6 +534,7 @@ export const speculateTransaction = (
       throw new Error('Expected a resource in the speculate response');
     }
     const tx = entities[0];
+    console.log('[duck] privileged speculative success:', tx?.id?.uuid || tx?.id);
     dispatch(speculateTransactionSuccess(tx));
   };
 

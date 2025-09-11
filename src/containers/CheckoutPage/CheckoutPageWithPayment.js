@@ -523,13 +523,20 @@ export const CheckoutPageWithPayment = props => {
   const [submitting, setSubmitting] = useState(false);
   // Initialized stripe library is saved to state - if it's needed at some point here too.
   const [stripe, setStripe] = useState(null);
+  // Payment element completion state
+  const [paymentElementComplete, setPaymentElementComplete] = useState(false);
+  // Stripe element mounting state
+  const [stripeElementMounted, setStripeElementMounted] = useState(false);
+  // Form validity state
+  const [formValid, setFormValid] = useState(false);
   // Ref to prevent speculative transaction loops
   const prevKeyRef = useRef(null);
 
   const {
     scrollingDisabled,
     speculateTransactionError,
-    speculatedTransaction: speculatedTransactionMaybe,
+    speculatedTransaction: speculativeTransaction, // normalize name
+    speculateTransactionInProgress: speculativeInProgress, // normalize name
     isClockInSync,
     initiateOrderError,
     confirmPaymentError,
@@ -558,14 +565,14 @@ export const CheckoutPageWithPayment = props => {
 
   const { listing, transaction, orderData } = pageData;
   const existingTransaction = ensureTransaction(transaction);
-  const speculatedTransaction = ensureTransaction(speculatedTransactionMaybe, {}, null);
+  const normalizedSpeculativeTransaction = ensureTransaction(speculativeTransaction, {}, null);
 
   // If existing transaction has line-items, it has gone through one of the request-payment transitions.
-  // Otherwise, we try to rely on speculatedTransaction for order breakdown data.
+  // Otherwise, we try to rely on normalizedSpeculativeTransaction for order breakdown data.
   const tx =
     existingTransaction?.attributes?.lineItems?.length > 0
       ? existingTransaction
-      : speculatedTransaction;
+      : normalizedSpeculativeTransaction;
   const timeZone = listing?.attributes?.availabilityPlan?.timezone;
   const transactionProcessAlias = listing?.attributes?.publicData?.transactionProcessAlias;
 
@@ -716,38 +723,87 @@ export const CheckoutPageWithPayment = props => {
             {errorMessages.paymentExpiredMessage}
 
             {showPaymentForm ? (
-              <StripePaymentForm
-                className={css.paymentForm}
-                onSubmit={values =>
-                  handleSubmit(values, process, props, stripe, submitting, setSubmitting)
-                }
-                inProgress={submitting}
-                formId="CheckoutPagePaymentForm"
-                authorDisplayName={listing?.author?.attributes?.profile?.displayName}
-                showInitialMessageInput={showInitialMessageInput}
-                initialValues={initialValuesForStripePayment}
-                initiateOrderError={initiateOrderError}
-                confirmCardPaymentError={confirmCardPaymentError}
-                confirmPaymentError={confirmPaymentError}
-                hasHandledCardPayment={hasPaymentIntentUserActionsDone}
-                loadingData={!stripeCustomerFetched}
-                defaultPaymentMethod={
-                  hasDefaultPaymentMethod(stripeCustomerFetched, currentUser)
-                    ? currentUser.stripeCustomer.defaultPaymentMethod
-                    : null
-                }
-                paymentIntent={paymentIntent}
-                onStripeInitialized={stripe => setStripe(stripe)}
-                askShippingDetails={askShippingDetails}
-                showPickUplocation={orderData?.deliveryMethod === 'pickup'}
-                listingLocation={listing?.attributes?.publicData?.location}
-                totalPrice={totalPrice}
-                locale={config.localization.locale}
-                stripePublishableKey={config.stripe.publishableKey}
-                marketplaceName={config.marketplaceName}
-                isBooking={isBookingProcessAlias(transactionProcessAlias)}
-                isFuzzyLocation={config.maps.fuzzy.enabled}
-              />
+              <>
+                {(() => {
+                  // Canonical gating (parent)
+                  const tx = props.speculativeTransaction;
+                  const hasTxId = !!(tx?.id?.uuid || tx?.id);
+
+                  const gates = {
+                    hasSpeculativeTx: hasTxId,
+                    stripeReady: stripeElementMounted,           // real readiness
+                    paymentElementComplete: !!paymentElementComplete,
+                    formValid: formValid,                   // ✅ bubbled up from child form
+                    notSubmitting: !submitting,      // local state (no duck submitInProgress available)
+                    notSpeculating: !props.speculativeInProgress
+                  };
+
+                  const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
+                  const submitDisabled = !!disabledReason;
+
+                  console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
+
+                  return (
+                    <>
+                      {submitDisabled && (
+                        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
+                          Can't submit yet: <code>{disabledReason}</code>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+                <StripePaymentForm
+                  onPaymentElementChange={setPaymentElementComplete}
+                  className={css.paymentForm}
+                  onSubmit={values =>
+                    handleSubmit(values, process, props, stripe, submitting, setSubmitting)
+                  }
+                  inProgress={submitting}
+                  formId="CheckoutPagePaymentForm"
+                  authorDisplayName={listing?.author?.attributes?.profile?.displayName}
+                  showInitialMessageInput={showInitialMessageInput}
+                  initialValues={initialValuesForStripePayment}
+                  initiateOrderError={initiateOrderError}
+                  confirmCardPaymentError={confirmCardPaymentError}
+                  confirmPaymentError={confirmPaymentError}
+                  hasHandledCardPayment={hasPaymentIntentUserActionsDone}
+                  loadingData={!stripeCustomerFetched}
+                  defaultPaymentMethod={
+                    hasDefaultPaymentMethod(stripeCustomerFetched, currentUser)
+                      ? currentUser.stripeCustomer.defaultPaymentMethod
+                      : null
+                  }
+                  paymentIntent={paymentIntent}
+                  onStripeInitialized={stripe => setStripe(stripe)}
+                  onStripeElementMounted={setStripeElementMounted}
+                  onPaymentElementChange={setPaymentElementComplete}
+                  onFormValidityChange={setFormValid}
+                  submitInProgress={submitting}  // spinner only
+                  submitDisabled={(() => {
+                    const tx = props.speculativeTransaction;
+                    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                    const gates = {
+                      hasSpeculativeTx: hasTxId,
+                      stripeReady: stripeElementMounted,
+                      paymentElementComplete: !!paymentElementComplete,
+                      formValid: formValid,
+                      notSubmitting: !submitting,
+                      notSpeculating: !props.speculativeInProgress,
+                    };
+                    return !!Object.entries(gates).find(([, ok]) => !ok)?.[0];
+                  })()}
+                  askShippingDetails={askShippingDetails}
+                  showPickUplocation={orderData?.deliveryMethod === 'pickup'}
+                  listingLocation={listing?.attributes?.publicData?.location}
+                  totalPrice={totalPrice}
+                  locale={config.localization.locale}
+                  stripePublishableKey={config.stripe.publishableKey}
+                  marketplaceName={config.marketplaceName}
+                  isBooking={isBookingProcessAlias(transactionProcessAlias)}
+                  isFuzzyLocation={config.maps.fuzzy.enabled}
+                />
+              </>
             ) : null}
           </section>
         </div>

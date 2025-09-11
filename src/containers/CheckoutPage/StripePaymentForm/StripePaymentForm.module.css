@@ -178,6 +178,10 @@
   }
 }
 
+.submitButtonDisabled {
+  cursor: default;
+}
+
 .missingStripeKey {
   color: var(--colorFail);
 }
