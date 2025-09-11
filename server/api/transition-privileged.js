@@ -8,10 +8,12 @@ const {
   fetchCommission,
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
+const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
   Object.fromEntries(keys.map(k => [k, obj && typeof obj === 'object' ? obj[k] : undefined]));
+
 
 const maskUrl = (u) => {
   try {
@@ -118,20 +120,30 @@ async function persistWithRetry(id, data, { retries = 3, delayMs = 250 } = {}) {
 console.log('🚦 transition-privileged endpoint is wired up');
 
 // Helper function to get borrower phone number with fallbacks
-const getBorrowerPhone = (params, tx) =>
-  params?.protectedData?.customerPhone ??
-  tx?.protectedData?.customerPhone ??
-  tx?.relationships?.customer?.attributes?.profile?.protectedData?.phone ??
-  tx?.relationships?.customer?.attributes?.protectedData?.phone ??
-  null;
+const getBorrowerPhone = (params, tx) => {
+  const txPD = tx?.protectedData || tx?.attributes?.protectedData || {};
+  const cust = tx?.relationships?.customer?.attributes;
+  return (
+    params?.protectedData?.customerPhone ??
+    txPD.customerPhone ??
+    cust?.profile?.protectedData?.phone ??
+    cust?.protectedData?.phone ??
+    null
+  );
+};
 
 // Helper function to get lender phone number with fallbacks
-const getLenderPhone = (params, tx) =>
-  params?.protectedData?.providerPhone ??
-  tx?.protectedData?.providerPhone ??
-  tx?.relationships?.provider?.attributes?.profile?.protectedData?.phone ??
-  tx?.relationships?.provider?.attributes?.protectedData?.phone ??
-  null;
+const getLenderPhone = (params, tx) => {
+  const txPD = tx?.protectedData || tx?.attributes?.protectedData || {};
+  const prov = tx?.relationships?.provider?.attributes;
+  return (
+    params?.protectedData?.providerPhone ??
+    txPD.providerPhone ??
+    prov?.profile?.protectedData?.phone ??
+    prov?.protectedData?.phone ??
+    null
+  );
+};
 
 // --- Shippo label creation logic extracted to a function ---
 async function createShippingLabels({ 
@@ -142,7 +154,8 @@ async function createShippingLabels({
   integrationSdk, 
   sendSMS, 
   normalizePhone, 
-  selectedRate 
+  selectedRate,
+  transaction
 }) {
   console.log('🚀 [SHIPPO] Starting label creation for transaction:', txId);
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
@@ -365,9 +378,17 @@ async function createShippingLabels({
       const toPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
       const itemTitle = listing?.attributes?.title || 'your item';
       
-      // Carrier-friendly message: short, one link, no emojis, no long URLs
-      const shippingUrl = `https://sherbrt.com/ship/${txId}`;
-      const msg = `Sherbrt: your shipping label for "${itemTitle}" is ready. Open ${shippingUrl}`;
+      // Carrier-friendly message: short, one link, include ship-by if computable
+      const base = process.env.SITE_URL || 'https://sherbrt.com';
+      const shipUrl = `${base}/ship/${txId}`;
+
+      // Compute ship-by using centralized logic
+      const shipBy = computeShipByDate(transaction);
+      const shipByStr = formatShipBy(shipBy);
+      const shipByPart = shipByStr ? ` Please ship by ${shipByStr}.` : '';
+      const msg = `Sherbrt: your shipping label for "${itemTitle}" is ready.${shipByPart} Open ${shipUrl}`;
+
+      console.log('[sms] sending lender_label_ready', { txId, shipUrl });
 
       if (!toPhone || !msg) {
         console.warn('[SHIPPO][SMS] Missing phone or message for provider SMS', { hasPhone: !!toPhone, hasMsg: !!msg });
@@ -378,11 +399,12 @@ async function createShippingLabels({
           {
             role: 'provider',
             transactionId: txId,
-            transition: 'transition/accept',
-            tag: 'outbound_label_to_lender',
+            transition: 'label_created',
+            tag: `outbound_label_to_lender:${txId}`,
             meta: { listingId: listing?.id?.uuid || listing?.id }
           }
         );
+        console.log('[sms] label ready shipBy:', shipByStr || '(none)');
         console.log('[SHIPPO][SMS] Provider carrier-friendly SMS sent');
       }
     } catch (e) {
@@ -1050,26 +1072,29 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             console.warn('[sms] borrower phone not found; skipped borrower accept SMS');
           }
           
-          // Lender SMS: check if we have label/QR URL
-          // For now, we'll send informational SMS without QR since label creation happens later
-          if (lenderPhone) {
-            console.log('[sms] sending lender_accept_no_label ...');
-            const lenderMessage = `✅ Your Sherbrt item "${listingTitle}" was accepted! Please prepare for shipping.`;
-            
-            try {
-              await sendSMS(lenderPhone, lenderMessage, { 
-                role: 'lender',
-                transactionId: transactionId,
-                transition: 'transition/accept',
-                tag: 'accept_to_lender',
-                meta: { listingId: listing?.id?.uuid || listing?.id }
-              });
-              console.log('✅ SMS sent successfully to lender');
-            } catch (err) {
-              console.error('❌ Lender SMS send error:', err.message);
+          // Lender SMS: only send on accept if explicitly enabled
+          if (process.env.SMS_LENDER_ON_ACCEPT === '1') {
+            if (lenderPhone) {
+              console.log('[sms] sending lender_accept_no_label ...');
+              const lenderMessage = `✅ Your Sherbrt item "${listingTitle}" was accepted! Please prepare for shipping.`;
+              
+              try {
+                await sendSMS(lenderPhone, lenderMessage, { 
+                  role: 'lender',
+                  transactionId: transactionId,
+                  transition: 'transition/accept',
+                  tag: 'accept_to_lender',
+                  meta: { listingId: listing?.id?.uuid || listing?.id }
+                });
+                console.log('✅ SMS sent successfully to lender');
+              } catch (err) {
+                console.error('❌ Lender SMS send error:', err.message);
+              }
+            } else {
+              console.warn('[sms] lender phone not found; skipped lender SMS');
             }
           } else {
-            console.warn('[sms] lender phone not found; skipped lender SMS');
+            console.log('[sms] lender-on-accept suppressed (by flag).');
           }
           
         } catch (smsError) {
@@ -1147,7 +1172,8 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             if (!digits) return null;
             return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
           },
-          selectedRate: null // Will be set inside the function
+          selectedRate: null, // Will be set inside the function
+          transaction: response?.data?.data
         })
           .then(result => {
             if (result.success) {
