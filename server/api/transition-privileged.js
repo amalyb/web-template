@@ -650,7 +650,8 @@ module.exports = async (req, res) => {
   });
 
   // Verify we have the required parameters before making the API call
-  if (!listingId) {
+  // For accept, we only need the transactionId. For other transitions we expect listingId.
+  if (!listingId && bodyParams?.transition !== 'transition/accept') {
     console.error('❌ EARLY RETURN: Missing required listingId parameter');
     return res.status(400).json({
       errors: [{
@@ -814,11 +815,11 @@ module.exports = async (req, res) => {
     // Defensive log for id
     console.log('🟢 Using id for Flex API call:', id);
 
-    // Use the updated bodyParams.params for the Flex API call
+    // IMPORTANT: use the merged params object we built above
     const body = {
       id,
       transition: bodyParams?.transition,
-      params: bodyParams.params,
+      params, // merged / cleaned / validated
     };
 
     // Log the final body before transition
@@ -839,11 +840,15 @@ module.exports = async (req, res) => {
       
       // Validate required provider and customer address fields before making the SDK call
       const requiredProviderFields = [
-        'providerStreet', 'providerCity', 'providerState', 'providerZip', 'providerEmail', 'providerPhone'
+        'providerStreet',
+        'providerCity',
+        'providerState',
+        'providerZip',
+        'providerEmail',
+        'providerPhone',
       ];
-      const requiredCustomerFields = [
-        'customerEmail', 'customerName'
-      ];
+      // Customer fields are NOT required at accept; they're optional.
+      const requiredCustomerFields = [];
       
       console.log('🔍 [DEBUG] Required provider fields:', requiredProviderFields);
       console.log('🔍 [DEBUG] Required customer fields:', requiredCustomerFields);
@@ -865,43 +870,22 @@ module.exports = async (req, res) => {
         customerPhone: params.customerPhone
       });
       
-      // Only require provider shipping details when transition is 'transition/accept'
-      if (transition !== ACCEPT_TRANSITION) {
-        console.log('✅ Skipping provider address validation for transition:', transition);
-      } else {
-        console.log('🔍 [DEBUG] Validating provider address fields for transition/accept');
-        // Provider fields validation removed - will be handled by merged PD validation
-      }
-      
-      // Only require customer validation when transition is 'transition/accept'
+      // Validate only PROVIDER fields on accept.
       if (transition === ACCEPT_TRANSITION) {
-        console.log('🔍 [DEBUG] Validating customer fields for transition/accept');
-        
-        // For accept, validate against merged protectedData (what's actually stored on the transaction)
-        const dataToValidate = params.protectedData || params;
-        
-        // Check required customer address fields after merge
-        const required = ['customerStreet','customerCity','customerState','customerZip','customerPhone'];
-        const missing = required.filter(k => !dataToValidate[k] || dataToValidate[k] === '');
-        
-        if (missing.length) {
-          console.log('❌ [server][accept] missing after merge:', missing);
-          console.log('❌ Customer data available in merged protectedData:', {
-            customerName: dataToValidate.customerName,
-            customerEmail: dataToValidate.customerEmail,
-            customerStreet: dataToValidate.customerStreet,
-            customerCity: dataToValidate.customerCity,
-            customerState: dataToValidate.customerState,
-            customerZip: dataToValidate.customerZip,
-            customerPhone: dataToValidate.customerPhone
-          });
-          return res.status(400).json({ 
-            error: 'missing_customer_address', 
-            missing 
+        console.log('🔍 [DEBUG] Validating provider fields for transition/accept');
+        // Check both the flattened params and params.protectedData
+        const pd = params?.protectedData || {};
+        const missingProvider = requiredProviderFields.filter(
+          k => !(params?.[k] ?? pd?.[k])
+        );
+        if (missingProvider.length) {
+          console.error('❌ [server][accept] missing provider fields:', missingProvider);
+          return res.status(422).json({
+            code: 'transition/accept-missing-provider',
+            message: 'Missing provider fields for accept transition.',
+            missing: missingProvider,
           });
         }
-      } else {
-        console.log(`✅ Skipping customer field validation for transition: ${transition}`);
       }
       
       console.log('✅ Validation completed successfully');

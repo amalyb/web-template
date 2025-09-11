@@ -745,8 +745,13 @@ export const makeTransition = (txId, transitionName, params) => (dispatch, getSt
       providerEmail: params.providerEmail,
     };
 
-    // Merge customer fields from transaction with provider fields
-    const outgoingPD = { ...txPD, ...providerPD };
+    // Clean provider fields - don't send empty strings that could overwrite existing data
+    const cleanedProviderPD = Object.fromEntries(
+      Object.entries(providerPD).filter(([, v]) => v != null && String(v).trim() !== '')
+    );
+
+    // Merge customer fields from transaction with cleaned provider fields
+    const outgoingPD = { ...txPD, ...cleanedProviderPD };
     console.log('[accept] outgoing protectedData keys:', Object.keys(outgoingPD));
 
     const request = {
