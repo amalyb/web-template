@@ -81,6 +81,11 @@ app.head('/healthz', (_req, res) => res.status(200).send('ok'));
 
 // SSR info endpoint - reads build/asset-manifest.json and lists /static/js bundles
 app.get('/__ssr-info', (_req, res) => {
+  // Guard: only show in non-production or when SHOW_SSR_INFO=1
+  if (process.env.NODE_ENV === 'production' && process.env.SHOW_SSR_INFO !== '1') {
+    return res.status(404).json({ ok: false, error: 'Not found' });
+  }
+  
   try {
     const manifest = require(path.join(buildDir, 'asset-manifest.json'));
     const files = manifest.files || {};
