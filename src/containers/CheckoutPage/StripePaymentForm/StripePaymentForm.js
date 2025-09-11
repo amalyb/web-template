@@ -28,6 +28,7 @@ import ShippingDetails from '../ShippingDetails/ShippingDetails';
 import AddressForm from '../../../components/AddressForm/AddressForm';
 
 import css from './StripePaymentForm.module.css';
+import { __DEV__ } from '../../../util/envFlags';
 
 const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
 
@@ -478,6 +479,18 @@ function StripePaymentForm(props) {
       ...values,
       ...(ADDR_ENABLED && Object.keys(customerPD).length > 0 ? customerPD : {})
     };
+
+    // Debug logging for form submission (production-safe, browser-safe)
+    if (__DEV__) {
+      try {
+        console.log('[StripePaymentForm] Submit - Form values with PD:', formValuesWithPD);
+        if (ADDR_ENABLED) {
+          console.log('[StripePaymentForm] Submit - Mapped customer PD:', customerPD);
+        }
+      } catch (_) {
+        // never block submission on logging
+      }
+    }
 
     const params = {
       message: initialMessage ? initialMessage.trim() : null,

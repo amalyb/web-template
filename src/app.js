@@ -8,6 +8,7 @@ import loadable from '@loadable/component';
 import difference from 'lodash/difference';
 import mapValues from 'lodash/mapValues';
 import moment from 'moment';
+import { __DEV__, IS_TEST } from './util/envFlags';
 
 // Configs and store setup
 import defaultConfig from './config/configDefault';
