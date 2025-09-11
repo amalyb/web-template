@@ -247,7 +247,9 @@ export const loadInitialDataForStripePayments = ({
   const optionalPaymentParams = {};
   const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
 
-  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, { current: null });
+  // Use a more robust guard to prevent duplicate calls
+  const prevKeyRef = { current: null };
+  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 };
 
 const handleSubmit = (values, process, props, stripe, submitting, setSubmitting) => {
@@ -729,9 +731,13 @@ export const CheckoutPageWithPayment = props => {
                   const tx = speculativeTransaction; // ✅ use normalized name
                   const hasTxId = !!(tx?.id?.uuid || tx?.id);
 
+                  // Compute stripe readiness - handle default payment methods
+                  const hasDefaultPM = hasDefaultPaymentMethod(stripeCustomerFetched, currentUser);
+                  const stripeReadyComputed = stripeElementMounted || hasDefaultPM || hasPaymentIntentUserActionsDone;
+
                   const gates = {
                     hasSpeculativeTx: hasTxId,
-                    stripeReady: stripeElementMounted,           // real readiness
+                    stripeReady: stripeReadyComputed,                 // 👈 updated
                     paymentElementComplete: !!paymentElementComplete,
                     formValid: formValid,                   // ✅ bubbled up from child form
                     notSubmitting: !submitting,      // local state (no duck submitInProgress available)
@@ -754,7 +760,6 @@ export const CheckoutPageWithPayment = props => {
                   );
                 })()}
                 <StripePaymentForm
-                  onPaymentElementChange={setPaymentElementComplete}
                   className={css.paymentForm}
                   onSubmit={values =>
                     handleSubmit(values, process, props, stripe, submitting, setSubmitting)
@@ -776,16 +781,24 @@ export const CheckoutPageWithPayment = props => {
                   }
                   paymentIntent={paymentIntent}
                   onStripeInitialized={stripe => setStripe(stripe)}
-                  onStripeElementMounted={setStripeElementMounted}
+                  onStripeElementMounted={(v) => { 
+                    console.log('[Stripe] element mounted:', v);
+                    setStripeElementMounted(v);
+                  }}
                   onPaymentElementChange={setPaymentElementComplete}
                   onFormValidityChange={setFormValid}
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
                     const tx = speculativeTransaction; // ✅ use normalized name
                     const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                    
+                    // Compute stripe readiness - handle default payment methods
+                    const hasDefaultPM = hasDefaultPaymentMethod(stripeCustomerFetched, currentUser);
+                    const stripeReadyComputed = stripeElementMounted || hasDefaultPM || hasPaymentIntentUserActionsDone;
+                    
                     const gates = {
                       hasSpeculativeTx: hasTxId,
-                      stripeReady: stripeElementMounted,
+                      stripeReady: stripeReadyComputed,                 // 👈 updated
                       paymentElementComplete: !!paymentElementComplete,
                       formValid: formValid,
                       notSubmitting: !submitting,

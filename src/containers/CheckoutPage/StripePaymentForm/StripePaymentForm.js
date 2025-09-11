@@ -423,7 +423,15 @@ class StripePaymentForm extends Component {
 
     if (!this.card) {
       this.card = elements.create('card', { style: cardStyles });
-      this.card.mount(element || this.cardContainer);
+      
+      // Ensure the target element exists before mounting
+      const targetElement = element || this.cardContainer;
+      if (!targetElement) {
+        console.warn('[Stripe] No target element available for mounting');
+        return;
+      }
+      
+      this.card.mount(targetElement);
       this.card.addEventListener('change', this.handleCardValueChange);
       
       // Notify parent that Stripe element is mounted
@@ -621,7 +629,7 @@ class StripePaymentForm extends Component {
       hasHandledCardPayment
     );
 
-    const submitDisabled = props.submitDisabled;   // single source of truth
+    const submitDisabled = this.props.submitDisabled;   // single source of truth
     const hasCardError = this.state.error && !submitInProgress;
     const hasPaymentErrors = confirmCardPaymentError || confirmPaymentError;
     const classes = classNames(rootClassName || css.root, className);
@@ -770,7 +778,7 @@ class StripePaymentForm extends Component {
           <PrimaryButton
             className={classNames(css.submitButton, { [css.submitButtonDisabled]: submitDisabled })}
             type="submit"
-            inProgress={props.submitInProgress}  // just a spinner flag, not a gate
+            inProgress={this.props.submitInProgress}  // just a spinner flag, not a gate
             disabled={submitDisabled}
             aria-disabled={submitDisabled}
           >
