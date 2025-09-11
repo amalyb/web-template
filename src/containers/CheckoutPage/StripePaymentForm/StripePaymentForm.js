@@ -586,6 +586,25 @@ class StripePaymentForm extends Component {
       shippingSameAsBilling: values.shippingSameAsBilling || false,
     };
 
+    // Debug logging for form submission
+    if (process?.env?.NODE_ENV !== 'production') {
+      console.log('[StripePaymentForm] Submit - Raw form values:', {
+        billing: rawBilling,
+        shipping: rawShipping,
+        shippingSameAsBilling: values.shippingSameAsBilling
+      });
+      console.log('[StripePaymentForm] Submit - Normalized values:', {
+        billing: billing,
+        shipping: shipping
+      });
+      console.log('[StripePaymentForm] Submit - Mapped customer values:', {
+        customerName: mappedFormValues.customerName,
+        customerStreet: mappedFormValues.customerStreet,
+        customerZip: mappedFormValues.customerZip,
+        customerPhone: mappedFormValues.customerPhone
+      });
+    }
+
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: this.card,
@@ -676,6 +695,21 @@ class StripePaymentForm extends Component {
         shipping: values.shipping || {},
         shippingSameAsBilling: values.shippingSameAsBilling || false,
       };
+      
+      // Debug logging for form values
+      if (process?.env?.NODE_ENV !== 'production') {
+        console.log('[StripePaymentForm] Raw form values:', {
+          billing: values.billing,
+          shipping: values.shipping,
+          shippingSameAsBilling: values.shippingSameAsBilling
+        });
+        console.log('[StripePaymentForm] Mapped customer values:', {
+          customerName: mappedValues.customerName,
+          customerStreet: mappedValues.customerStreet,
+          customerZip: mappedValues.customerZip,
+          customerPhone: mappedValues.customerPhone
+        });
+      }
       
       this.props.onFormValuesChange?.(mappedValues);
     }
@@ -801,7 +835,7 @@ class StripePaymentForm extends Component {
                 <AddressForm
                   namespace="billing"
                   title="Billing details"
-                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: false }}
+                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: true }}
                   countryAfterZipForUSCA
                 />
 
