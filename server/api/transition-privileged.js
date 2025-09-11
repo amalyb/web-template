@@ -340,13 +340,20 @@ async function createShippingLabels({
       service: qrPayload.service,
     });
 
+    // DEBUG: prove we got here
+    console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
+
     // Calculate ship-by date using centralized helper
+    console.log('[label-ready] bookingStart:', tx?.attributes?.booking?.attributes?.start);
     const shipByDate = computeShipByDate({ 
       attributes: { 
         bookingStart: listing?.attributes?.bookingStart,
         protectedData: protectedData 
       } 
     });
+    console.log('[label-ready] shipBy ISO:', shipByDate?.toISOString?.());
+    const shipByStr = formatShipBy(shipByDate);
+    console.log('[label-ready] shipByStr:', shipByStr);
     
     // Persist to Flex protectedData using txId
     try {
@@ -377,40 +384,34 @@ async function createShippingLabels({
       console.error('[SHIPPO] Failed to persist outbound label details to protectedData', e);
     }
 
-    // Provider SMS block – carrier-friendly messaging
+    // Lender SMS block – carrier-friendly messaging
     try {
-      const toPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
-      const itemTitle = listing?.attributes?.title || 'your item';
+      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
+      const listingTitle = listing?.attributes?.title || 'Item';
       
       // Carrier-friendly message: short, one link, include ship-by if computable
-      const base = process.env.SITE_URL || 'https://sherbrt.com';
-      const shipUrl = `${base}/ship/${txId}`;
-
-      // Compute ship-by using centralized logic
-      const shipBy = computeShipByDate(transaction);
-      const shipByStr = formatShipBy(shipBy);
-      const shipByPart = shipByStr ? ` Please ship by ${shipByStr}.` : '';
-      const msg = `Sherbrt: your shipping label for "${itemTitle}" is ready.${shipByPart} Open ${shipUrl}`;
+      const shipUrl = `${process.env.SITE_URL || 'https://sherbrt.com'}/ship/${txId}`;
+      
+      // Build SMS using the ship-by calculation from above
+      const body = `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`;
+      console.log('[label-ready] sms body preview:', body);
 
       console.log('[sms] sending lender_label_ready', { txId, shipUrl });
 
-      if (!toPhone || !msg) {
-        console.warn('[SHIPPO][SMS] Missing phone or message for provider SMS', { hasPhone: !!toPhone, hasMsg: !!msg });
+      if (!lenderPhone || !body) {
+        console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
       } else {
         await sendSMS(
-          toPhone,
-          msg,
+          lenderPhone,
+          body,
           {
-            role: 'provider',
+            role: 'lender',
             transactionId: txId,
-            transition: 'label_created',
-            tag: `outbound_label_to_lender:${txId}`,
+            tag: 'label_ready_to_lender',
             meta: { listingId: listing?.id?.uuid || listing?.id }
           }
         );
-        console.log('[SMS] Label created; sending lender label-ready SMS');
-        console.log('[sms] label ready shipBy:', shipByStr || '(none)');
-        console.log('[SHIPPO][SMS] Provider carrier-friendly SMS sent');
+        console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
       }
     } catch (e) {
       console.error('[SHIPPO][SMS] Failed to send provider SMS', e);
