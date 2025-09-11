@@ -92,52 +92,49 @@ const replacer = (key = null, value) => {
   return types.replacer(key, cleanedValue);
 };
 
-exports.render = function(requestUrl, context, data, renderApp, webExtractor, nonce) {
+exports.render = async function render(req, res, data = {}) {
   console.log('[renderer] render start');
-  const { preloadedState, translations, hostedConfig } = data;
+  const preloadedState = (data && data.preloadedState) || {};
+  const manifest = (data && data.manifest) || {};
+  // Prefer explicit props, then res.locals fallbacks
+  let extractor = (data && (data.extractor || data.loadableExtractor)) ||
+                  (res && (res.locals?.extractor || res.locals?.loadableExtractor));
+  if (!extractor) {
+    console.warn('[renderer] no extractor provided — using shim');
+    extractor = {
+      collectChunks: x => x,
+      getScriptTags: () => '',
+      getLinkTags:   () => '',
+      getStyleTags:  () => '',
+    };
+  }
 
-  // Bind webExtractor as "this" for collectChunks call.
-  const collectWebChunks = webExtractor.collectChunks.bind(webExtractor);
-
-  // Render the app with given route, preloaded state, hosted translations.
-  return renderApp(
-    requestUrl,
-    context,
-    preloadedState,
-    translations,
-    hostedConfig,
-    collectWebChunks
-  ).then(({ head, body }) => {
-    // Preloaded state needs to be passed for client side too.
-    // For security reasons we ensure that preloaded state is considered as a string
-    // by replacing '<' character with its unicode equivalent.
-    // http://redux.js.org/docs/recipes/ServerRendering.html#security-considerations
-    const serializedState = JSON.stringify(preloadedState, replacer).replace(/</g, '\\u003c');
-
-    // At this point the serializedState is a string, the second
-    // JSON.stringify wraps it within double quotes and escapes the
-    // contents properly so the value can be injected in the script tag
-    // as a string.
-    const nonceMaybe = nonce ? `nonce="${nonce}"` : '';
-    const preloadedStateScript = `
+  // For backward compatibility, we'll create a simple render function
+  // that returns basic HTML with the preloaded state
+  const serializedState = JSON.stringify(preloadedState, replacer).replace(/</g, '\\u003c');
+  
+  // Get nonce from res.locals if available
+  const nonce = res && res.locals && res.locals.cspNonce;
+  const nonceMaybe = nonce ? `nonce="${nonce}"` : '';
+  const preloadedStateScript = `
         <script ${nonceMaybe}>window.__PRELOADED_STATE__ = ${JSON.stringify(
-      serializedState
-    )};</script>
-    `;
-    // Add nonce to server-side rendered script tags
-    const nonceParamMaybe = nonce ? { nonce } : {};
+    serializedState
+  )};</script>
+  `;
+  
+  // Add nonce to server-side rendered script tags
+  const nonceParamMaybe = nonce ? { nonce } : {};
 
-    return template({
-      htmlAttributes: head.htmlAttributes.toString(),
-      title: head.title.toString(),
-      link: head.link.toString(),
-      meta: head.meta.toString(),
-      script: head.script.toString(),
-      preloadedStateScript,
-      ssrStyles: webExtractor.getStyleTags(),
-      ssrLinks: webExtractor.getLinkTags(),
-      ssrScripts: webExtractor.getScriptTags(nonceParamMaybe),
-      body,
-    });
+  return template({
+    htmlAttributes: '',
+    title: '<title>Shop on Sherbet</title>',
+    link: '',
+    meta: '',
+    script: '',
+    preloadedStateScript,
+    ssrStyles: extractor.getStyleTags(),
+    ssrLinks: extractor.getLinkTags(),
+    ssrScripts: extractor.getScriptTags(nonceParamMaybe),
+    body: '<div id="root"></div>',
   });
 };

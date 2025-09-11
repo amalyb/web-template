@@ -409,9 +409,12 @@ app.get('*', async (req, res, next) => {
         getLinkTags:   () => '',
         getStyleTags:  () => '',
       };
-      data.extractor = extractor || shim;
-      // Some templates look for a different key:
-      data.loadableExtractor = data.extractor;
+      const finalExtractor = extractor || shim;
+      data.extractor = finalExtractor;
+      data.loadableExtractor = finalExtractor; // alt key some templates use
+      // Also expose on res.locals in case renderer reads from there
+      res.locals.extractor = finalExtractor;
+      res.locals.loadableExtractor = finalExtractor;
     } catch (e) {
       console.warn('[ssr] extractor init failed; using shim', e);
       const shim = {
@@ -422,6 +425,8 @@ app.get('*', async (req, res, next) => {
       };
       data.extractor = shim;
       data.loadableExtractor = shim;
+      res.locals.extractor = shim;
+      res.locals.loadableExtractor = shim;
     }
 
     let html;
