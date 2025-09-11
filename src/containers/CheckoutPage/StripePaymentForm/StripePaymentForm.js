@@ -398,11 +398,6 @@ class StripePaymentForm extends Component {
       } = this.props;
       this.stripe = window.Stripe(publishableKey);
       onStripeInitialized(this.stripe);
-      
-      // Notify parent that Stripe element is mounted
-      if (this.props.onStripeElementMounted) {
-        this.props.onStripeElementMounted(true);
-      }
 
       if (!(hasHandledCardPayment || defaultPaymentMethod || loadingData)) {
         this.initializeStripeElement();
@@ -416,6 +411,11 @@ class StripePaymentForm extends Component {
       this.card.unmount();
       this.card = null;
     }
+    
+    // Notify parent that Stripe element is unmounted
+    if (this.props.onStripeElementMounted) {
+      this.props.onStripeElementMounted(false);
+    }
   }
 
   initializeStripeElement(element) {
@@ -425,6 +425,12 @@ class StripePaymentForm extends Component {
       this.card = elements.create('card', { style: cardStyles });
       this.card.mount(element || this.cardContainer);
       this.card.addEventListener('change', this.handleCardValueChange);
+      
+      // Notify parent that Stripe element is mounted
+      if (this.props.onStripeElementMounted) {
+        this.props.onStripeElementMounted(true);
+      }
+      
       // EventListener is the only way to simulate breakpoints with Stripe.
       window.addEventListener('resize', () => {
         if (this.card) {
