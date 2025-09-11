@@ -886,12 +886,17 @@ class StripePaymentForm extends Component {
     
     const validate = values => {
       const errors = {};
-      const billErr = validateAddress(values.billing || {}, { requirePhone: false });
-      if (Object.keys(billErr).length) errors.billing = billErr;
-      if (!values.shippingSameAsBilling) {
-        const shipErr = validateAddress(values.shipping || {}, { requirePhone: true });
-        if (Object.keys(shipErr).length) errors.shipping = shipErr;
+      
+      // Only validate billing/shipping if they're collected within this form
+      if (this.props.requireInPaymentForm) {
+        const billErr = validateAddress(values.billing || {}, { requirePhone: false });
+        if (Object.keys(billErr).length) errors.billing = billErr;
+        if (!values.shippingSameAsBilling) {
+          const shipErr = validateAddress(values.shipping || {}, { requirePhone: true });
+          if (Object.keys(shipErr).length) errors.shipping = shipErr;
+        }
       }
+      
       return errors;
     };
 

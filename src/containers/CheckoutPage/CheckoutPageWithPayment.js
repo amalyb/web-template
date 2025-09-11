@@ -731,9 +731,13 @@ export const CheckoutPageWithPayment = props => {
                   const tx = speculativeTransaction; // ✅ use normalized name
                   const hasTxId = !!(tx?.id?.uuid || tx?.id);
 
-                  // Compute stripe readiness - handle default payment methods
+                  // Compute stripe readiness - handle default payment methods (strict boolean)
                   const hasDefaultPM = hasDefaultPaymentMethod(stripeCustomerFetched, currentUser);
-                  const stripeReadyComputed = stripeElementMounted || hasDefaultPM || hasPaymentIntentUserActionsDone;
+                  const stripeReadyComputed = !!(
+                    stripeElementMounted ||
+                    hasDefaultPM ||
+                    hasPaymentIntentUserActionsDone
+                  );
 
                   const gates = {
                     hasSpeculativeTx: hasTxId,
@@ -790,14 +794,19 @@ export const CheckoutPageWithPayment = props => {
                     console.log('[Form] parent sees valid:', v); 
                     setFormValid(v); 
                   }}
+                  requireInPaymentForm={false}  // billing/shipping collected outside this form
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
                     const tx = speculativeTransaction; // ✅ use normalized name
                     const hasTxId = !!(tx?.id?.uuid || tx?.id);
                     
-                    // Compute stripe readiness - handle default payment methods
+                    // Compute stripe readiness - handle default payment methods (strict boolean)
                     const hasDefaultPM = hasDefaultPaymentMethod(stripeCustomerFetched, currentUser);
-                    const stripeReadyComputed = stripeElementMounted || hasDefaultPM || hasPaymentIntentUserActionsDone;
+                    const stripeReadyComputed = !!(
+                      stripeElementMounted ||
+                      hasDefaultPM ||
+                      hasPaymentIntentUserActionsDone
+                    );
                     
                     const gates = {
                       hasSpeculativeTx: hasTxId,
