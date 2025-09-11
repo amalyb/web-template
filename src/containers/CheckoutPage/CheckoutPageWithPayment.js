@@ -265,7 +265,7 @@ export const loadInitialDataForStripePayments = ({
   fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 };
 
-const handleSubmit = (values, process, props, stripe, submitting, setSubmitting) => {
+const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting) => {
   if (submitting) {
     return;
   }
@@ -352,12 +352,12 @@ const handleSubmit = (values, process, props, stripe, submitting, setSubmitting)
     protectedData.providerPhone = providerPhone.trim();
   }
 
-  // Log the protected data for debugging
-  console.log('🔐 Protected data constructed from formValues:', protectedData);
-  console.log('📦 Raw formValues:', formValues);
-  
-  // Quick instrumentation (keep until green)
-  console.log('[checkout] sending protectedData:', Object.entries(customerPD));
+  // Log the protected data for debugging (production-safe)
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('🔐 Protected data constructed from formValues:', protectedData);
+    console.log('📦 Raw formValues:', formValues);
+    console.log('[checkout] sending protectedData:', Object.entries(protectedData));
+  }
 
   // Calculate pricing and booking duration
   const unitPrice = pageData?.listing?.attributes?.price;
@@ -480,28 +480,39 @@ const handleSubmit = (values, process, props, stripe, submitting, setSubmitting)
   };
 
   console.log('🚦 processCheckoutWithPayment called:', { orderParams, requestPaymentParams });
-  processCheckoutWithPayment(orderParams, requestPaymentParams)
-    .then(response => {
-      const { orderId, messageSuccess, paymentMethodSaved } = response;
-      setSubmitting(false);
+  
+  try {
+    const response = await processCheckoutWithPayment(orderParams, requestPaymentParams);
+    const { orderId, messageSuccess, paymentMethodSaved } = response;
+    setSubmitting(false);
 
-      const initialMessageFailedToTransaction = messageSuccess ? null : orderId;
-      const orderDetailsPath = pathByRouteName('OrderDetailsPage', routeConfiguration, {
-        id: orderId.uuid,
-      });
-      const initialValues = {
-        initialMessageFailedToTransaction,
-        savePaymentMethodFailed: !paymentMethodSaved,
-      };
-
-      setOrderPageInitialValues(initialValues, routeConfiguration, dispatch);
-      onSubmitCallback();
-      history.push(orderDetailsPath);
-    })
-    .catch(err => {
-      console.error(err);
-      setSubmitting(false);
+    const initialMessageFailedToTransaction = messageSuccess ? null : orderId;
+    const orderDetailsPath = pathByRouteName('OrderDetailsPage', routeConfiguration, {
+      id: orderId.uuid,
     });
+    const initialValues = {
+      initialMessageFailedToTransaction,
+      savePaymentMethodFailed: !paymentMethodSaved,
+    };
+
+    setOrderPageInitialValues(initialValues, routeConfiguration, dispatch);
+    onSubmitCallback();
+    history.push(orderDetailsPath);
+  } catch (err) {
+    console.error('[Checkout] processCheckoutWithPayment failed:', err);
+    setSubmitting(false);
+    
+    // Show error notification if available
+    if (typeof props.addMarketplaceNotification === 'function') {
+      props.addMarketplaceNotification({
+        type: 'error',
+        message: 'We couldn\'t start the checkout. Please check your info and try again.',
+      });
+    }
+    
+    // Re-throw to ensure form submission state is properly reset
+    throw err;
+  }
 };
 
 /**

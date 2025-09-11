@@ -45,8 +45,17 @@ module.exports = (req, res) => {
   
   const { isSpeculative, orderData, bodyParams, queryParams } = req.body;
   
-  // Quick instrumentation (keep until green)
-  console.log('🔎 initiate body.protectedData:', req.body?.params?.protectedData);
+  // Accept PD from either top-level or the nested Sharetribe pattern
+  const topLevelPD = (req.body && req.body.protectedData) || {};
+  const nestedPD = bodyParams?.params?.protectedData || {};
+  const protectedData = Object.keys(nestedPD).length ? nestedPD : topLevelPD;
+
+  console.log('🔎 initiate body.protectedData is object:', typeof protectedData === 'object');
+  try {
+    console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
+  } catch (_) {
+    console.log('[initiate] forwarding PD keys: (unavailable)');
+  }
   
   // Normalize listingId to string if present
   if (bodyParams?.params?.listingId) {
@@ -99,15 +108,16 @@ module.exports = (req, res) => {
 
       // Prepare transaction body
       const { params } = bodyParams;
-      const protectedData = params.protectedData || {};
+      // Use the safely extracted protectedData from req.body
+      const finalProtectedData = protectedData || {};
       
-      console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
+      console.log('[initiate] forwarding PD keys:', Object.keys(finalProtectedData));
       
       const body = {
         ...bodyParams,
         params: {
           ...params,
-          protectedData, // keep PD
+          protectedData: finalProtectedData, // use safely extracted PD
           lineItems,
         },
       };
