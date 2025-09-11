@@ -99,10 +99,15 @@ module.exports = (req, res) => {
 
       // Prepare transaction body
       const { params } = bodyParams;
+      const protectedData = params.protectedData || {};
+      
+      console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
+      
       const body = {
         ...bodyParams,
         params: {
           ...params,
+          protectedData, // keep PD
           lineItems,
         },
       };

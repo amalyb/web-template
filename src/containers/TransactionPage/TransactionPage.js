@@ -165,6 +165,9 @@ export const TransactionPageComponent = props => {
 
   const { listing, provider, customer, booking } = transaction || {};
   const txTransitions = transaction?.attributes?.transitions || [];
+  
+  // Quick sanity hooks
+  console.log('[tx page] tx protectedData keys:', Object.keys(transaction?.attributes?.protectedData || {}));
   const isProviderRole = transactionRole === PROVIDER;
   const isCustomerRole = transactionRole === CUSTOMER;
 

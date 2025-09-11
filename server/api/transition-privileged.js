@@ -787,31 +787,6 @@ module.exports = async (req, res) => {
           Object.assign(params, mergedProtectedData); // Overwrite top-level fields with merged values
           // Log the final params before validation
           console.log('🟢 Params before validation:', params);
-          // Validation: check all required fields on params, treat empty string as missing
-          const requiredFields = [
-            'providerStreet', 'providerCity', 'providerState', 'providerZip', 'providerEmail', 'providerPhone',
-            'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'
-          ];
-          const missing = requiredFields.filter(key => !params[key] || params[key] === '');
-          if (missing.length > 0) {
-            console.error('❌ EARLY RETURN: Missing required fields:', missing);
-            console.log('❌ Customer address fields are empty - this suggests a frontend issue');
-            console.log('❌ Available params:', {
-              providerStreet: params.providerStreet,
-              providerCity: params.providerCity,
-              providerState: params.providerState,
-              providerZip: params.providerZip,
-              providerEmail: params.providerEmail,
-              providerPhone: params.providerPhone,
-              customerStreet: params.customerStreet,
-              customerCity: params.customerCity,
-              customerState: params.customerState,
-              customerZip: params.customerZip,
-              customerEmail: params.customerEmail,
-              customerPhone: params.customerPhone
-            });
-            return res.status(400).json({ error: `Missing required customer address fields: ${missing.join(', ')}. Please ensure customer shipping information is filled out.` });
-          }
           // Debug log for final merged provider fields
           console.log('✅ [MERGE FIX] Final merged provider fields:', {
             providerStreet: mergedProtectedData.providerStreet,
@@ -895,36 +870,22 @@ module.exports = async (req, res) => {
         console.log('✅ Skipping provider address validation for transition:', transition);
       } else {
         console.log('🔍 [DEBUG] Validating provider address fields for transition/accept');
-        // Check provider fields (required for shipping)
-        const missingProviderFields = requiredProviderFields.filter(key => !params[key] || params[key] === '');
-        if (missingProviderFields.length > 0) {
-          console.error('❌ EARLY RETURN: Missing required provider address fields:', missingProviderFields);
-          console.log('❌ Provider params available:', {
-            providerStreet: params.providerStreet,
-            providerCity: params.providerCity,
-            providerState: params.providerState,
-            providerZip: params.providerZip,
-            providerEmail: params.providerEmail,
-            providerPhone: params.providerPhone
-          });
-          return res.status(400).json({ 
-            error: 'Missing required provider address fields',
-            fields: missingProviderFields
-          });
-        }
+        // Provider fields validation removed - will be handled by merged PD validation
       }
       
       // Only require customer validation when transition is 'transition/accept'
       if (transition === ACCEPT_TRANSITION) {
         console.log('🔍 [DEBUG] Validating customer fields for transition/accept');
-        const requiredCustomerFields = ['customerEmail', 'customerName'];
         
         // For accept, validate against merged protectedData (what's actually stored on the transaction)
         const dataToValidate = params.protectedData || params;
-        const missingCustomerFields = requiredCustomerFields.filter(key => !dataToValidate[key] || dataToValidate[key] === '');
         
-        if (missingCustomerFields.length > 0) {
-          console.error('❌ EARLY RETURN: Missing required customer fields:', missingCustomerFields);
+        // Check required customer address fields after merge
+        const required = ['customerStreet','customerCity','customerState','customerZip','customerPhone'];
+        const missing = required.filter(k => !dataToValidate[k] || dataToValidate[k] === '');
+        
+        if (missing.length) {
+          console.log('❌ [server][accept] missing after merge:', missing);
           console.log('❌ Customer data available in merged protectedData:', {
             customerName: dataToValidate.customerName,
             customerEmail: dataToValidate.customerEmail,
@@ -934,9 +895,9 @@ module.exports = async (req, res) => {
             customerZip: dataToValidate.customerZip,
             customerPhone: dataToValidate.customerPhone
           });
-          return res.status(400).json({
-            error: 'Missing required customer fields',
-            fields: missingCustomerFields
+          return res.status(400).json({ 
+            error: 'missing_customer_address', 
+            missing 
           });
         }
       } else {

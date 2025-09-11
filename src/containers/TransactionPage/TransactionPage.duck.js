@@ -745,26 +745,20 @@ export const makeTransition = (txId, transitionName, params) => (dispatch, getSt
       providerEmail: params.providerEmail,
     };
 
-    // Drop undefined/null/blank strings:
-    // (prevents blanks from overwriting good data)
-    const cleanedProviderPD = Object.fromEntries(
-      Object.entries(providerPD).filter(([, v]) => v != null && String(v).trim() !== '')
-    );
+    // Merge customer fields from transaction with provider fields
+    const outgoingPD = { ...txPD, ...providerPD };
+    console.log('[accept] outgoing protectedData keys:', Object.keys(outgoingPD));
 
-    // IMPORTANT: do NOT include any customer* fields in outgoing payload
-    // (previous code was bundling empty customer fields)
-    const protectedData = {
-      ...txPD,            // keep what the checkout stored
-      ...cleanedProviderPD
+    const request = {
+      transition: 'transition/accept',
+      params: { transactionId },
+      bodyParams: { protectedData: outgoingPD },
+      queryParams: { expand: true },
     };
-
-    console.log('🔐 [transition/accept] txPD keys:', Object.keys(txPD));
-    console.log('🔐 [transition/accept] cleanedProviderPD keys:', Object.keys(cleanedProviderPD));
-    console.log('🔐 [transition/accept] final protectedData keys:', Object.keys(protectedData));
 
     updatedParams = {
       ...params,
-      protectedData,
+      protectedData: outgoingPD,
       // Add required IDs
       listingId,
       transactionId
