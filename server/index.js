@@ -366,19 +366,36 @@ const noCacheHeaders = {
 app.get('*', async (req, res, next) => {
   try {
     console.log('[trace] SSR handler for', req.path);
+    // ---- Collect SSR data for renderer (and provide safe defaults) ----
+    let data = {};
+    try {
+      if (renderer && typeof renderer.getData === 'function') {
+        console.log('[trace] renderer.getData start');
+        data = await renderer.getData(req, res);
+      } else if (renderer && typeof renderer.loadData === 'function') {
+        console.log('[trace] renderer.loadData start');
+        data = await renderer.loadData(req, res);
+      }
+    } catch (e) {
+      console.warn('[ssr] data loader failed; continuing with empty preloadedState', e);
+      data = {};
+    }
+    if (!data || typeof data !== 'object') data = {};
+    if (!data.preloadedState) data.preloadedState = {};
+    // Some templates expect the manifest for script/style injection
+    try {
+      data.manifest = require(path.join(buildDir, 'asset-manifest.json'));
+    } catch (_) {}
+
     let html;
     if (renderer && typeof renderer.renderApp === 'function') {
-      // Newer templates export renderApp(req, res)
-      html = await renderer.renderApp(req, res);
+      html = await renderer.renderApp(req, res, data);
     } else if (renderer && typeof renderer.render === 'function') {
-      // Your current template exports { render }
-      html = await renderer.render(req, res);
+      html = await renderer.render(req, res, data);
     } else if (typeof renderer === 'function') {
-      // Some templates export the renderer as a bare function
-      html = await renderer(req, res);
+      html = await renderer(req, res, data);
     } else if (renderer && typeof renderer.default === 'function') {
-      // ESM default export fallback
-      html = await renderer.default(req, res);
+      html = await renderer.default(req, res, data);
     } else {
       html = null;
     }
