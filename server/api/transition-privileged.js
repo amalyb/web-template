@@ -340,8 +340,7 @@ async function createShippingLabels({
       service: qrPayload.service,
     });
 
-    // Calculate ship-by date
-    const { computeShipByDate } = require('../scripts/sendShipByReminders');
+    // Calculate ship-by date using centralized helper
     const shipByDate = computeShipByDate({ 
       attributes: { 
         bookingStart: listing?.attributes?.bookingStart,

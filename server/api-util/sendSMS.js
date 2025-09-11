@@ -15,42 +15,14 @@ const DUPLICATE_WINDOW_MS = 60000; // 60 seconds
 // Helper function to normalize phone number to E.164 format
 function normalizePhoneNumber(phone) {
   if (!phone) return null;
-  
-  // Remove all non-digit characters
-  const digits = phone.replace(/\D/g, '');
-  
-  // If it's already in E.164 format (starts with +), return as is
-  if (phone.startsWith('+')) {
-    return phone;
-  }
-  
-  // If it's 10 digits, assume US number and add +1
-  if (digits.length === 10) {
-    return `+1${digits}`;
-  }
-  
-  // If it's 11 digits and starts with 1, add +
-  if (digits.length === 11 && digits.startsWith('1')) {
-    return `+${digits}`;
-  }
-  
-  // If it's 11 digits and doesn't start with 1, assume it's already international
-  if (digits.length === 11) {
-    return `+${digits}`;
-  }
-  
-  // If it's 12 digits and starts with 1, add +
-  if (digits.length === 12 && digits.startsWith('1')) {
-    return `+${digits}`;
-  }
-  
-  // For any other format, try to make it work
-  if (digits.length >= 10) {
-    return `+${digits}`;
-  }
-  
-  console.warn(`📱 Could not normalize phone number: ${phone}`);
-  return null;
+  const digits = String(phone).replace(/\D/g, '');
+  if (!digits) return null;
+
+  // US default if 10 digits
+  if (digits.length === 10) return `+1${digits}`;
+
+  // If it already includes country code
+  return `+${digits}`;
 }
 
 // E.164 validation
@@ -117,15 +89,21 @@ async function sendSMS(to, message, opts = {}) {
     return Promise.resolve();
   }
 
+  // Normalize the phone number to E.164 first
+  const toE164 = normalizePhoneNumber(to);
+  
+  // ONLY_PHONE filter - compare normalized numbers
+  if (ONLY_PHONE) {
+    const onlyE164 = normalizePhoneNumber(ONLY_PHONE);
+    if (onlyE164 && toE164 !== onlyE164) {
+      console.log('[sms] ONLY_PHONE set, skipping', { to: maskPhone(toE164), ONLY_PHONE: maskPhone(onlyE164), template: tag });
+      return Promise.resolve();
+    }
+  }
+
   // DRY_RUN guard - log what would be sent
   if (DRY_RUN) {
     console.log('[sms][DRY_RUN] would send:', { to, template: tag, body: message });
-    return Promise.resolve();
-  }
-
-  // ONLY_PHONE filter - only send to specific phone for testing
-  if (ONLY_PHONE && to !== ONLY_PHONE) {
-    console.log('[sms] ONLY_PHONE set, skipping', { to, ONLY_PHONE, template: tag });
     return Promise.resolve();
   }
 
@@ -142,8 +120,7 @@ async function sendSMS(to, message, opts = {}) {
     }
   }
 
-  // Normalize the phone number to E.164
-  const toE164 = normalizePhoneNumber(to);
+  // toE164 already computed above for ONLY_PHONE check
   if (!toE164) {
     console.warn(`📱 Invalid phone number format: ${to}`);
     if (role) failed(role, 'invalid_format');
@@ -154,7 +131,7 @@ async function sendSMS(to, message, opts = {}) {
   if (!isE164(toE164)) {
     console.warn('[SMS] invalid phone, aborting:', to ? maskPhone(to) : 'null');
     if (role) failed(role, 'invalid_e164');
-    throw new Error('Invalid E.164 phone');
+    return Promise.resolve();
   }
 
   // Check STOP list
@@ -239,4 +216,6 @@ async function sendSMS(to, message, opts = {}) {
     });
 }
 
-module.exports = { sendSMS }; 
+// Backward-compatible export
+module.exports = sendSMS;        // default export (existing callers)
+module.exports.sendSMS = sendSMS; // named export (new callers can use { sendSMS }) 

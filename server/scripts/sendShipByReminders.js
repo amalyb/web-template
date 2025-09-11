@@ -1,6 +1,7 @@
 const { getTrustedSdk } = require('../api-util/sdk');
-const { sendSMS } = require('../api-util/sendSMS');
+let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
+const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -83,23 +84,7 @@ function isMorningOf(date) {
   return isSameDay(now, target) && now.getUTCHours() >= 6 && now.getUTCHours() < 12;
 }
 
-function computeShipByDate(tx) {
-  const bookingStart = tx?.attributes?.bookingStart;
-  const acceptedAt = tx?.attributes?.protectedData?.outbound?.acceptedAt;
-  
-  if (!bookingStart || !acceptedAt) {
-    console.warn('Missing bookingStart or acceptedAt for ship-by calculation');
-    return null;
-  }
-  
-  const bookingStartDate = new Date(bookingStart);
-  const acceptedDate = new Date(acceptedAt);
-  const twoDaysBeforeBooking = addDays(bookingStartDate, -2);
-  const fiveDaysAfterAccept = addDays(acceptedDate, 5);
-  
-  // Return the earlier of the two dates
-  return twoDaysBeforeBooking < fiveDaysAfterAccept ? twoDaysBeforeBooking : fiveDaysAfterAccept;
-}
+// Removed local computeShipByDate - now using centralized helper from server/lib/shipping.js
 
 async function sendShipByReminders() {
   console.log('🚀 Starting ship-by reminder SMS script...');
@@ -137,14 +122,19 @@ async function sendShipByReminders() {
       const protectedData = tx?.attributes?.protectedData || {};
       const outbound = protectedData.outbound || {};
       
-      // Skip if no ship-by date or already scanned
-      if (!outbound.shipByDate || outbound.firstScanAt) {
+      // Skip if already scanned
+      if (outbound.firstScanAt) {
         continue;
       }
       
-      const shipByDate = new Date(outbound.shipByDate);
-      const acceptedAt = outbound.acceptedAt ? new Date(outbound.acceptedAt) : null;
+      // Use centralized ship-by calculation
+      const shipByDate = computeShipByDate(tx);
+      if (!shipByDate) {
+        console.warn(`⚠️ Could not compute ship-by date for tx ${tx?.id?.uuid || '(no id)'}`);
+        continue;
+      }
       
+      const acceptedAt = outbound.acceptedAt ? new Date(outbound.acceptedAt) : null;
       if (!acceptedAt) {
         console.warn(`⚠️ No acceptedAt for tx ${tx?.id?.uuid || '(no id)'}`);
         continue;
@@ -191,15 +181,18 @@ async function sendShipByReminders() {
         const t24Date = addDays(shipByDate, -1);
         
         if (isSameDay(todayDate, t48Date) && !reminders.t48) {
-          message = `⏰ Reminder: please ship "${title}" by ${yyyymmdd(shipByDate)}. QR: ${qrUrl}`;
+          const shipByStr = formatShipBy(shipByDate);
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
           tag = 'shipby_t48_to_lender';
           reminderKey = 't48';
         } else if (isSameDay(todayDate, t24Date) && !reminders.t24) {
-          message = `⏰ Reminder: please ship "${title}" by ${yyyymmdd(shipByDate)}. QR: ${qrUrl}`;
+          const shipByStr = formatShipBy(shipByDate);
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
           tag = 'shipby_t24_to_lender';
           reminderKey = 't24';
         } else if (isMorningOf(shipByDate) && !reminders.morning) {
-          message = `🌅 Today's the ship-by date for "${title}". QR: ${qrUrl}`;
+          const shipByStr = formatShipBy(shipByDate);
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
           tag = 'shipby_morning_to_lender';
           reminderKey = 'morning';
         }
@@ -210,15 +203,18 @@ async function sendShipByReminders() {
         const t24Date = addDays(shipByDate, -1);
         
         if (isSameDay(todayDate, plus24Date) && !reminders.short24) {
-          message = `⏰ Reminder: please ship "${title}". QR: ${qrUrl}`;
+          const shipByStr = formatShipBy(shipByDate);
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
           tag = 'shipby_short24_to_lender';
           reminderKey = 'short24';
         } else if (isSameDay(todayDate, plus48Date) && !reminders.short48) {
-          message = `⏰ Reminder: please ship "${title}". QR: ${qrUrl}`;
+          const shipByStr = formatShipBy(shipByDate);
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
           tag = 'shipby_short48_to_lender';
           reminderKey = 'short48';
         } else if (isSameDay(todayDate, t24Date) && !reminders.t24) {
-          message = `⏰ Ship by ${yyyymmdd(shipByDate)}. QR: ${qrUrl}`;
+          const shipByStr = formatShipBy(shipByDate);
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
           tag = 'shipby_t24_to_lender';
           reminderKey = 't24';
         }
@@ -289,10 +285,10 @@ function testTimeWindows() {
   const shipByDate = new Date('2024-01-20');
   
   console.log('🧪 Testing time windows:');
-  console.log(`Lead days: ${diffDays(shipByDate, acceptedAt)}`);
-  console.log(`T-48 date: ${yyyymmdd(addDays(shipByDate, -2))}`);
-  console.log(`T-24 date: ${yyyymmdd(addDays(shipByDate, -1))}`);
-  console.log(`Morning check: ${isMorningOf(shipByDate)}`);
+  console.log(`Lead days: ${diffDays('2024-01-20', '2024-01-10')}`);
+  console.log(`T-48 date: ${yyyymmdd(addDays('2024-01-20', -2))}`);
+  console.log(`T-24 date: ${yyyymmdd(addDays('2024-01-20', -1))}`);
+  console.log(`Morning check: ${isMorningOf('2024-01-20')}`);
 }
 
 function testIdempotency() {
@@ -324,4 +320,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { sendShipByReminders, computeShipByDate, testTimeWindows, testIdempotency };
+module.exports = { sendShipByReminders, testTimeWindows, testIdempotency };
