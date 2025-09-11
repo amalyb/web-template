@@ -53,6 +53,8 @@ module.exports = (req, res) => {
   console.log('🔎 initiate body.protectedData is object:', typeof protectedData === 'object');
   try {
     console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
+    console.log('[initiate] customerStreet:', protectedData.customerStreet);
+    console.log('[initiate] customerZip:', protectedData.customerZip);
   } catch (_) {
     console.log('[initiate] forwarding PD keys: (unavailable)');
   }
@@ -134,6 +136,8 @@ module.exports = (req, res) => {
       }
       
       console.log('[initiate] forwarding PD keys:', Object.keys(finalProtectedData));
+      console.log('[initiate] merged finalProtectedData customerStreet:', finalProtectedData.customerStreet);
+      console.log('[initiate] merged finalProtectedData customerZip:', finalProtectedData.customerZip);
       
       const body = {
         ...bodyParams,

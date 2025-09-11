@@ -14,6 +14,11 @@ const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 const safePick = (obj, keys = []) =>
   Object.fromEntries(keys.map(k => [k, obj && typeof obj === 'object' ? obj[k] : undefined]));
 
+// Helper to check if customer has complete shipping address
+const hasCustomerShipAddress = (pd) => {
+  return !!(pd?.customerStreet?.trim() && pd?.customerZip?.trim());
+};
+
 
 const maskUrl = (u) => {
   try {
@@ -404,6 +409,7 @@ async function createShippingLabels({
             meta: { listingId: listing?.id?.uuid || listing?.id }
           }
         );
+        console.log('[SMS] Label created; sending lender label-ready SMS');
         console.log('[sms] label ready shipBy:', shipByStr || '(none)');
         console.log('[SHIPPO][SMS] Provider carrier-friendly SMS sent');
       }
@@ -1158,6 +1164,20 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
         // Use the validated and merged protectedData from params
         const finalProtectedData = params.protectedData || {};
         console.log('📋 [SHIPPO] Final protectedData for label creation:', finalProtectedData);
+        
+        // Hard guard: Check for required customer address fields before Shippo
+        if (!hasCustomerShipAddress(finalProtectedData)) {
+          const missingFields = [];
+          if (!finalProtectedData.customerStreet?.trim()) missingFields.push('customerStreet');
+          if (!finalProtectedData.customerZip?.trim()) missingFields.push('customerZip');
+          
+          console.log(`[SHIPPO] Missing address fields; aborting label creation and transition: ${missingFields.join(', ')}`);
+          return res.status(400).json({ 
+            code: 'incomplete_customer_address',
+            message: 'Customer address is incomplete for shipping',
+            missingFields 
+          });
+        }
         
         // Trigger Shippo label creation asynchronously (don't await to avoid blocking response)
         createShippingLabels({

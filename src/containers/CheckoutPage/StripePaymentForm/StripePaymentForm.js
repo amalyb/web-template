@@ -29,6 +29,48 @@ import ShippingDetails from '../ShippingDetails/ShippingDetails';
 import css from './StripePaymentForm.module.css';
 import { __DEV__ } from '../../../util/envFlags';
 
+// Extract a single string from either shipping.* or billing.* based on shippingSameAsBilling
+const pickFromShippingOrBilling = (values, field) => {
+  const ship = values?.shipping || {};
+  const bill = values?.shippingSameAsBilling ? (values?.billing || {}) : (values?.shipping || {});
+  // preference: if user filled shipping block, use that; otherwise use billing
+  const fromShipping = ship?.[field];
+  const fromBilling  = (values?.shippingSameAsBilling ? (values?.billing || {}) : (values?.billing || {}))?.[field];
+  return fromShipping ?? fromBilling ?? '';
+};
+
+// Build the flat customer* payload from form values
+const mapToCustomerProtectedData = (values) => {
+  // AddressForm typical keys: name, line1, line2, city, state, postalCode, phone, email
+  const v = values || {};
+  const customerName   = pickFromShippingOrBilling(v, 'name');
+  const customerStreet = pickFromShippingOrBilling(v, 'line1');
+  const customerStreet2= pickFromShippingOrBilling(v, 'line2');
+  const customerCity   = pickFromShippingOrBilling(v, 'city');
+  const customerState  = pickFromShippingOrBilling(v, 'state');
+  const customerZip    = pickFromShippingOrBilling(v, 'postalCode');
+  const customerPhone  = pickFromShippingOrBilling(v, 'phone');
+  const customerEmail  = pickFromShippingOrBilling(v, 'email');
+
+  const pd = {
+    customerName,
+    customerStreet,
+    customerStreet2,
+    customerCity,
+    customerState,
+    customerZip,
+    customerPhone,
+    customerEmail,
+  };
+
+  if (__DEV__) {
+    const filled = Object.entries(pd).filter(([_, val]) => !!val).map(([k]) => k);
+    // eslint-disable-next-line no-console
+    console.log('[StripePaymentForm] mapped customer PD:', pd, 'filled:', filled.length, filled);
+  }
+  return pd;
+};
+
 /**
  * Translate a Stripe API error object.
  *
@@ -606,11 +648,33 @@ class StripePaymentForm extends Component {
       });
     }
 
+    // Build customer protected data and merge into params
+    const customerPD = mapToCustomerProtectedData(values);
+    const nextProtectedData = { ...customerPD };
+    
+    // Verify required address fields are present
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.log('[StripePaymentForm] onSubmit protectedData keys:', Object.keys(nextProtectedData));
+      console.log('[StripePaymentForm] customerStreet:', nextProtectedData.customerStreet);
+      console.log('[StripePaymentForm] customerZip:', nextProtectedData.customerZip);
+    }
+    
+    // Assert required fields and abort if missing
+    if (!nextProtectedData.customerStreet?.trim() || !nextProtectedData.customerZip?.trim()) {
+      const missingFields = [];
+      if (!nextProtectedData.customerStreet?.trim()) missingFields.push('Street Address');
+      if (!nextProtectedData.customerZip?.trim()) missingFields.push('ZIP Code');
+      
+      throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
+    }
+
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: this.card,
       formId,
       formValues: mappedFormValues,
+      protectedData: nextProtectedData,
       paymentMethod: getPaymentMethod(
         paymentMethod,
         ensurePaymentMethodCard(defaultPaymentMethod).id

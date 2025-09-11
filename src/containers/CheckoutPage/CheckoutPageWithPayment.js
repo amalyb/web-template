@@ -353,20 +353,43 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     protectedData.providerPhone = providerPhone.trim();
   }
 
+  // Add customer protected data from form values (inline mapping)
+  const customerPD = (function(v){
+    const s = v?.shipping || {};
+    const b = v?.billing || {};
+    const use = v?.shipping && !v?.shippingSameAsBilling ? s : (Object.keys(s||{}).length ? s : b);
+    return {
+      customerName:   use?.name        || '',
+      customerStreet: use?.line1       || '',
+      customerStreet2:use?.line2       || '',
+      customerCity:   use?.city        || '',
+      customerState:  use?.state       || '',
+      customerZip:    use?.postalCode  || '',
+      customerPhone:  use?.phone       || '',
+      customerEmail:  use?.email       || '',
+    };
+  })(formValues);
+
+  const mergedPD = { ...protectedData, ...customerPD };
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log('[checkout→request-payment] Customer PD about to send:', mergedPD);
+  }
+
   // Log the protected data for debugging (production-safe, browser-safe)
   if (__DEV__) {
     try {
-      console.log('🔐 Protected data constructed from formValues:', protectedData);
+      console.log('🔐 Protected data constructed from formValues:', mergedPD);
       console.log('📦 Raw formValues:', formValues);
-      console.log('[checkout] sending protectedData:', Object.entries(protectedData));
+      console.log('[checkout] sending protectedData:', Object.entries(mergedPD));
       
       // Verify customer fields are populated
       const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
-      const missingFields = customerFields.filter(field => !protectedData[field]?.trim());
+      const missingFields = customerFields.filter(field => !mergedPD[field]?.trim());
       if (missingFields.length > 0) {
         console.warn('⚠️ Missing customer fields:', missingFields);
       } else {
-        console.log('✅ All customer fields populated:', customerFields.map(field => `${field}: "${protectedData[field]}"`));
+        console.log('✅ All customer fields populated:', customerFields.map(field => `${field}: "${mergedPD[field]}"`));
       }
     } catch (_) {
       // never block submission on logging
@@ -457,12 +480,28 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     bookingStart,
     bookingEnd,
     lineItems,
-    protectedData,  // Now built from form fields
+    protectedData: mergedPD,  // Use merged protected data with customer fields
     ...optionalPaymentParams,
   };
 
+  // Verify required address fields before API call
+  if (__DEV__) {
+    console.log('[checkout→request-payment] customerStreet:', mergedPD.customerStreet);
+    console.log('[checkout→request-payment] customerZip:', mergedPD.customerZip);
+  }
+  
+  // Assert required fields and abort if missing
+  if (!mergedPD.customerStreet?.trim() || !mergedPD.customerZip?.trim()) {
+    const missingFields = [];
+    if (!mergedPD.customerStreet?.trim()) missingFields.push('Street Address');
+    if (!mergedPD.customerZip?.trim()) missingFields.push('ZIP Code');
+    
+    setSubmitting(false);
+    throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
+  }
+
   // One-time logs right before the API call
-  console.log('[checkout→request-payment] protectedData keys:', Object.keys(protectedData));
+  console.log('[checkout→request-payment] protectedData keys:', Object.keys(mergedPD));
   console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
   
   // Verify customer data is included in the request
