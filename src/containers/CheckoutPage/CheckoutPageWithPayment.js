@@ -313,26 +313,32 @@ const handleSubmit = (values, process, props, stripe, submitting, setSubmitting)
   console.log('Form values on submit:', formValues);
 
   // Construct protectedData directly from shipping form fields using correct field names
-  const protectedData = {
-    // Customer shipping info from custom shipping form fields (not ShippingDetails form)
-    customerName: formValues.customerName || '',
-    customerStreet: formValues.customerStreet || '',
-    customerStreet2: formValues.customerStreet2 || '',
-    customerCity: formValues.customerCity || '',
-    customerState: formValues.customerState || '',
-    customerZip: formValues.customerZip || '',
-    customerEmail: formValues.customerEmail || currentUser?.attributes?.email || '',
-    customerPhone: formValues.customerPhone || '',
-    
-    // Provider info from current user
-    providerName: currentUser?.attributes?.profile?.displayName || '',
-    providerStreet: '', // Will be filled by provider in TransactionPanel
-    providerCity: '',
-    providerState: '',
-    providerZip: '',
-    providerEmail: currentUser?.attributes?.email || '',
-    providerPhone: currentUser?.attributes?.profile?.protectedData?.phoneNumber || currentUser?.attributes?.profile?.publicData?.phoneNumber || '',
-  };
+  // Only include fields that have non-empty values to avoid sending empty strings
+  const protectedData = {};
+  
+  // Customer shipping info from custom shipping form fields (not ShippingDetails form)
+  if (formValues.customerName?.trim()) protectedData.customerName = formValues.customerName.trim();
+  if (formValues.customerStreet?.trim()) protectedData.customerStreet = formValues.customerStreet.trim();
+  if (formValues.customerStreet2?.trim()) protectedData.customerStreet2 = formValues.customerStreet2.trim();
+  if (formValues.customerCity?.trim()) protectedData.customerCity = formValues.customerCity.trim();
+  if (formValues.customerState?.trim()) protectedData.customerState = formValues.customerState.trim();
+  if (formValues.customerZip?.trim()) protectedData.customerZip = formValues.customerZip.trim();
+  if (formValues.customerEmail?.trim()) protectedData.customerEmail = formValues.customerEmail.trim();
+  else if (currentUser?.attributes?.email?.trim()) protectedData.customerEmail = currentUser.attributes.email.trim();
+  if (formValues.customerPhone?.trim()) protectedData.customerPhone = formValues.customerPhone.trim();
+  
+  // Provider info from current user (only include if non-empty)
+  if (currentUser?.attributes?.profile?.displayName?.trim()) {
+    protectedData.providerName = currentUser.attributes.profile.displayName.trim();
+  }
+  if (currentUser?.attributes?.email?.trim()) {
+    protectedData.providerEmail = currentUser.attributes.email.trim();
+  }
+  const providerPhone = currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
+                       currentUser?.attributes?.profile?.publicData?.phoneNumber;
+  if (providerPhone?.trim()) {
+    protectedData.providerPhone = providerPhone.trim();
+  }
 
   // Log the protected data for debugging
   console.log('🔐 Protected data constructed from formValues:', protectedData);

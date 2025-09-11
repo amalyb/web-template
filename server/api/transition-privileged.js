@@ -731,6 +731,15 @@ module.exports = async (req, res) => {
     // Defensive check for bodyParams and .transition
     if (bodyParams && (bodyParams.transition === 'transition/request-payment' || bodyParams.transition === 'transition/confirm-payment')) {
       id = transactionId;
+      
+      // Sanitize incoming protectedData for request-payment to avoid blank strings overwriting existing values
+      if (params.protectedData) {
+        const cleaned = Object.fromEntries(
+          Object.entries(params.protectedData).filter(([, v]) => v != null && String(v).trim() !== '')
+        );
+        params.protectedData = cleaned;
+        console.log('🧹 [request-payment] Sanitized protectedData keys:', Object.keys(cleaned));
+      }
     } else if (bodyParams && bodyParams.transition === 'transition/accept') {
       id = transactionId;
       // --- [AI EDIT] Fetch protectedData from transaction and robustly merge with incoming params ---
@@ -909,18 +918,21 @@ module.exports = async (req, res) => {
       if (transition === ACCEPT_TRANSITION) {
         console.log('🔍 [DEBUG] Validating customer fields for transition/accept');
         const requiredCustomerFields = ['customerEmail', 'customerName'];
-        const missingCustomerFields = requiredCustomerFields.filter(key => !params[key] || params[key] === '');
+        
+        // For accept, validate against merged protectedData (what's actually stored on the transaction)
+        const dataToValidate = params.protectedData || params;
+        const missingCustomerFields = requiredCustomerFields.filter(key => !dataToValidate[key] || dataToValidate[key] === '');
         
         if (missingCustomerFields.length > 0) {
           console.error('❌ EARLY RETURN: Missing required customer fields:', missingCustomerFields);
-          console.log('❌ Customer params available:', {
-            customerName: params.customerName,
-            customerEmail: params.customerEmail,
-            customerStreet: params.customerStreet,
-            customerCity: params.customerCity,
-            customerState: params.customerState,
-            customerZip: params.customerZip,
-            customerPhone: params.customerPhone
+          console.log('❌ Customer data available in merged protectedData:', {
+            customerName: dataToValidate.customerName,
+            customerEmail: dataToValidate.customerEmail,
+            customerStreet: dataToValidate.customerStreet,
+            customerCity: dataToValidate.customerCity,
+            customerState: dataToValidate.customerState,
+            customerZip: dataToValidate.customerZip,
+            customerPhone: dataToValidate.customerPhone
           });
           return res.status(400).json({
             error: 'Missing required customer fields',
