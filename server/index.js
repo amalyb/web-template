@@ -366,16 +366,21 @@ const noCacheHeaders = {
 app.get('*', async (req, res, next) => {
   try {
     console.log('[trace] SSR handler for', req.path);
-
     let html;
-    if (renderer.renderApp) {
+    if (renderer && typeof renderer.renderApp === 'function') {
+      // Newer templates export renderApp(req, res)
       html = await renderer.renderApp(req, res);
-    } else if (renderer.render) {
+    } else if (renderer && typeof renderer.render === 'function') {
+      // Your current template exports { render }
       html = await renderer.render(req, res);
     } else if (typeof renderer === 'function') {
+      // Some templates export the renderer as a bare function
       html = await renderer(req, res);
-    } else if (renderer.default) {
+    } else if (renderer && typeof renderer.default === 'function') {
+      // ESM default export fallback
       html = await renderer.default(req, res);
+    } else {
+      html = null;
     }
 
     if (!html) throw new Error('Renderer returned empty');
