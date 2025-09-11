@@ -752,34 +752,24 @@ module.exports = async (req, res) => {
           console.log('🔍 [DEBUG] Incoming protectedData:', incomingProtectedData);
           console.log('🔍 [DEBUG] Transaction customer relationship:', transaction?.data?.data?.relationships?.customer);
           
-          // Helper: prefer non-empty value from params, else from transaction, else ''
-          function preferNonEmpty(paramVal, txVal) {
-            return (paramVal !== undefined && paramVal !== '') ? paramVal : (txVal !== undefined && txVal !== '') ? txVal : '';
+          // Remove blank updates from incoming data
+          const cleaned = Object.fromEntries(
+            Object.entries(incomingProtectedData).filter(([, v]) => v != null && String(v).trim() !== '')
+          );
+          
+          // Now merge: transaction first, then cleaned updates
+          const mergedProtectedData = { ...txProtectedData, ...cleaned };
+          
+          // Explicitly protect customer* fields from being overwritten by blank strings:
+          const CUSTOMER_KEYS = [
+            'customerName','customerStreet','customerStreet2','customerCity',
+            'customerState','customerZip','customerEmail','customerPhone'
+          ];
+          for (const k of CUSTOMER_KEYS) {
+            if ((mergedProtectedData[k] == null || mergedProtectedData[k] === '') && txProtectedData[k]) {
+              mergedProtectedData[k] = txProtectedData[k];
+            }
           }
-          // Merge protectedData from transaction with incoming protectedData
-          const mergedProtectedData = {
-            // Customer fields
-            customerName: preferNonEmpty(incomingProtectedData.customerName, txProtectedData.customerName),
-            customerStreet: preferNonEmpty(incomingProtectedData.customerStreet, txProtectedData.customerStreet),
-            customerStreet2: preferNonEmpty(incomingProtectedData.customerStreet2, txProtectedData.customerStreet2),
-            customerCity: preferNonEmpty(incomingProtectedData.customerCity, txProtectedData.customerCity),
-            customerState: preferNonEmpty(incomingProtectedData.customerState, txProtectedData.customerState),
-            customerZip: preferNonEmpty(incomingProtectedData.customerZip, txProtectedData.customerZip),
-            customerEmail: preferNonEmpty(incomingProtectedData.customerEmail, txProtectedData.customerEmail),
-            customerPhone: preferNonEmpty(incomingProtectedData.customerPhone, txProtectedData.customerPhone),
-            // Provider fields
-            providerName: preferNonEmpty(incomingProtectedData.providerName, txProtectedData.providerName),
-            providerStreet: preferNonEmpty(incomingProtectedData.providerStreet, txProtectedData.providerStreet),
-            providerStreet2: preferNonEmpty(incomingProtectedData.providerStreet2, txProtectedData.providerStreet2),
-            providerCity: preferNonEmpty(incomingProtectedData.providerCity, txProtectedData.providerCity),
-            providerState: preferNonEmpty(incomingProtectedData.providerState, txProtectedData.providerState),
-            providerZip: preferNonEmpty(incomingProtectedData.providerZip, txProtectedData.providerZip),
-            providerEmail: preferNonEmpty(incomingProtectedData.providerEmail, txProtectedData.providerEmail),
-            providerPhone: preferNonEmpty(incomingProtectedData.providerPhone, txProtectedData.providerPhone),
-            // ...any other fields
-            ...txProtectedData,
-            ...incomingProtectedData,
-          };
           
           console.log('[server accept] merged PD keys:', Object.keys(mergedProtectedData));
 
