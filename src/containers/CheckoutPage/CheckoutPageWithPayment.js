@@ -352,11 +352,19 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     protectedData.providerPhone = providerPhone.trim();
   }
 
-  // Log the protected data for debugging (production-safe)
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('🔐 Protected data constructed from formValues:', protectedData);
-    console.log('📦 Raw formValues:', formValues);
-    console.log('[checkout] sending protectedData:', Object.entries(protectedData));
+  // Log the protected data for debugging (production-safe, browser-safe)
+  const isProd =
+    typeof process !== 'undefined' &&
+    process.env &&
+    process.env.NODE_ENV === 'production';
+  if (!isProd) {
+    try {
+      console.log('🔐 Protected data constructed from formValues:', protectedData);
+      console.log('📦 Raw formValues:', formValues);
+      console.log('[checkout] sending protectedData:', Object.entries(protectedData));
+    } catch (_) {
+      // never block submission on logging
+    }
   }
 
   // Calculate pricing and booking duration
