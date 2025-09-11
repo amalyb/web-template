@@ -780,6 +780,8 @@ module.exports = async (req, res) => {
             ...txProtectedData,
             ...incomingProtectedData,
           };
+          
+          console.log('[server accept] merged PD keys:', Object.keys(mergedProtectedData));
 
           // Set both params.protectedData and top-level fields from mergedProtectedData
           params.protectedData = mergedProtectedData;

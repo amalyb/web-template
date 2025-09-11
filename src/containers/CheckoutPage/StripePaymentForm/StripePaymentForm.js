@@ -614,19 +614,23 @@ class StripePaymentForm extends Component {
     } = formRenderProps;
 
     // Detailed form validation logging
-    console.log('[Form] invalid:', invalid,
-      'hasValidationErrors:', hasValidationErrors,
-      'submitFailed:', submitFailed,
-      'dirtySinceLastSubmit:', dirtySinceLastSubmit,
-      'errors:', errors,
-      'values:', values
-    );
+    console.log('[Form] invalid:', invalid, 'hasValidationErrors:', hasValidationErrors, 'errors keys:', Object.keys(errors||{}));
 
     this.finalFormAPI = formApi;
 
-    // Bubble up form validity to parent
+    // Bubble up form values to parent
+    if (this.props.onFormValuesChange) {
+      this.props.onFormValuesChange(values);
+    }
+
+    // Compute effective validity when addresses are handled outside
+    const requireInPaymentForm = this.props.requireInPaymentForm ?? true;
+    const hasAddressErrors = !!(errors?.billing || errors?.shipping);
+    const effectiveInvalid = requireInPaymentForm ? invalid : (invalid && !hasAddressErrors);
+    
+    // Bubble up effective form validity to parent
     if (this.props.onFormValidityChange) {
-      this.props.onFormValidityChange(!invalid);
+      this.props.onFormValidityChange(!effectiveInvalid);
     }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);

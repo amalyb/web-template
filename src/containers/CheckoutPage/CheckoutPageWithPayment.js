@@ -95,7 +95,7 @@ const prefixPriceVariantProperties = priceVariant => {
  * @param {Object} config app-wide configs. This contains hosted configs too.
  * @returns orderParams.
  */
-const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config) => {
+const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config, formValues = {}) => {
   const quantity = pageData.orderData?.quantity;
   const quantityMaybe = quantity ? { quantity } : {};
   const seats = pageData.orderData?.seats;
@@ -116,14 +116,15 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   // Manually construct protectedData with shipping and contact info
   const protectedDataMaybe = {
     protectedData: {
-      // Customer info from shippingDetails (using correct field names)
-      customerName: shippingInfo?.name || '',
-      customerStreet: shippingAddress?.line1 || '',
-      customerCity: shippingAddress?.city || '',
-      customerState: shippingAddress?.state || '',
-      customerZip: shippingAddress?.postalCode || '',
-      customerEmail: currentUser?.attributes?.email || '',
-      customerPhone: shippingInfo?.phoneNumber || '',
+      // Customer info from formValues and shippingDetails (using correct field names)
+      customerName: formValues.name || shippingInfo?.name || '',
+      customerStreet: formValues.shipping?.street || shippingAddress?.line1 || '',
+      customerStreet2: formValues.shipping?.street2 || '',
+      customerCity: formValues.shipping?.city || shippingAddress?.city || '',
+      customerState: formValues.shipping?.state || shippingAddress?.state || '',
+      customerZip: formValues.shipping?.zip || shippingAddress?.postalCode || '',
+      customerEmail: formValues.email || currentUser?.attributes?.email || '',
+      customerPhone: formValues.phone || shippingInfo?.phoneNumber || '',
 
       // Provider info from currentUser
       providerName: currentUser?.attributes?.profile?.displayName || '',
@@ -142,7 +143,7 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   };
 
   // Log the constructed protected data for debugging
-  console.log('🔐 Constructed protectedData in getOrderParams:', protectedDataMaybe.protectedData);
+  console.log('[checkout] protectedData keys:', Object.keys(protectedDataMaybe.protectedData));
   console.log('📦 Raw shipping details:', shippingDetails);
   console.log('📦 Extracted shipping info:', shippingInfo);
   console.log('📦 Extracted shipping address:', shippingAddress);
@@ -245,7 +246,7 @@ export const loadInitialDataForStripePayments = ({
   const shippingDetails = {};
   console.log('📬 shippingDetails in loadInitialData:', shippingDetails);
   const optionalPaymentParams = {};
-  const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
+  const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config, formValues);
 
   // Use a more robust guard to prevent duplicate calls
   const prevKeyRef = { current: null };
@@ -531,6 +532,8 @@ export const CheckoutPageWithPayment = props => {
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   // Form validity state
   const [formValid, setFormValid] = useState(false);
+  // Form values state for building protectedData
+  const [formValues, setFormValues] = useState({});
   // Ref to prevent speculative transaction loops
   const prevKeyRef = useRef(null);
 
@@ -751,7 +754,9 @@ export const CheckoutPageWithPayment = props => {
                   const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
                   const submitDisabled = !!disabledReason;
 
-                  console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
+                  console.log('[Checkout] submit disabled gates:', {
+                    hasSpeculativeTx, stripeReady: stripeReadyComputed, paymentElementComplete, formValid, notSubmitting: !submitting, notSpeculating: !speculativeInProgress
+                  }, 'disabledReason:', disabledReason);
 
                   return (
                     <>
@@ -787,8 +792,9 @@ export const CheckoutPageWithPayment = props => {
                   onStripeInitialized={stripe => setStripe(stripe)}
                   onStripeElementMounted={(v) => { 
                     console.log('[Stripe] element mounted:', v);
-                    setStripeElementMounted(v);
+                    setStripeElementMounted(!!v);
                   }}
+                  onFormValuesChange={setFormValues}
                   onPaymentElementChange={setPaymentElementComplete}
                   onFormValidityChange={(v) => { 
                     console.log('[Form] parent sees valid:', v); 

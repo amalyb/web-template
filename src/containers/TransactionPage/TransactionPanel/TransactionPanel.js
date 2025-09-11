@@ -299,6 +299,8 @@ export class TransactionPanelComponent extends Component {
                 providerEmail,
                 providerName,
               };
+              console.log('[accept] outgoingPD keys:', Object.keys(mergedProtectedData));
+              
               // --- FRONTEND FIX: Add all required fields at top-level of params as well ---
               Object.assign(params, {
                 protectedData: mergedProtectedData,
