@@ -8,6 +8,7 @@ import loadable from '@loadable/component';
 import difference from 'lodash/difference';
 import mapValues from 'lodash/mapValues';
 import moment from 'moment';
+import { __DEV__, IS_TEST } from './util/envFlags';
 
 // Configs and store setup
 import defaultConfig from './config/configDefault';
@@ -96,7 +97,7 @@ const addMissingTranslations = (sourceLangTranslations, targetLangTranslations) 
 // Note: Locale should not affect the tests. We ensure this by providing
 //       messages with the key as the value of each message and discard the value.
 //       { 'My.translationKey1': 'My.translationKey1', 'My.translationKey2': 'My.translationKey2' }
-const isTestEnv = process.env.NODE_ENV === 'test';
+const isTestEnv = IS_TEST;
 const localeMessages = isTestEnv
   ? mapValues(defaultMessages, (val, key) => key)
   : addMissingTranslations(defaultMessages, messagesInLocale);

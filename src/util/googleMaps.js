@@ -1,8 +1,9 @@
 import { types as sdkTypes } from '../util/sdkLoader';
 
 const { LatLng: SDKLatLng, LatLngBounds: SDKLatLngBounds } = sdkTypes;
+import { IS_DEV } from './envFlags';
 
-const isDev = process.env.NODE_ENV === 'development';
+const isDev = IS_DEV;
 
 /**
  * Extracts the geographic location (origin) from a Google Maps Place object

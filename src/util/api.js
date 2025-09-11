@@ -6,10 +6,11 @@ import axios from 'axios';
 import appSettings from '../config/settings';
 import { types as sdkTypes, transit } from './sdkLoader';
 import Decimal from 'decimal.js';
+import { IS_DEV } from './envFlags';
 
 export const apiBaseUrl = marketplaceRootURL => {
   const port = process.env.REACT_APP_DEV_API_SERVER_PORT;
-  const useDevApiServer = process.env.NODE_ENV === 'development' && !!port;
+  const useDevApiServer = IS_DEV && !!port;
 
   // In development, the dev API server is running in a different port
   if (useDevApiServer) {

@@ -27,6 +27,7 @@ import AddressForm from '../../../components/AddressForm/AddressForm';
 import ShippingDetails from '../ShippingDetails/ShippingDetails';
 
 import css from './StripePaymentForm.module.css';
+import { __DEV__ } from '../../../util/envFlags';
 
 /**
  * Translate a Stripe API error object.
@@ -587,7 +588,7 @@ class StripePaymentForm extends Component {
     };
 
     // Debug logging for form submission
-    if (process?.env?.NODE_ENV !== 'production') {
+    if (__DEV__) {
       console.log('[StripePaymentForm] Submit - Raw form values:', {
         billing: rawBilling,
         shipping: rawShipping,
@@ -697,7 +698,7 @@ class StripePaymentForm extends Component {
       };
       
       // Debug logging for form values
-      if (process?.env?.NODE_ENV !== 'production') {
+      if (__DEV__) {
         console.log('[StripePaymentForm] Raw form values:', {
           billing: values.billing,
           shipping: values.shipping,

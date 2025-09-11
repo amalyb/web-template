@@ -34,6 +34,7 @@ import MobileListingImage from './MobileListingImage';
 import MobileOrderBreakdown from './MobileOrderBreakdown';
 
 import css from './CheckoutPage.module.css';
+import { __DEV__ } from '../../util/envFlags';
 
 // Stripe PaymentIntent statuses, where user actions are already completed
 // https://stripe.com/docs/payments/payment-intents/status
@@ -353,11 +354,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   }
 
   // Log the protected data for debugging (production-safe, browser-safe)
-  const isProd =
-    typeof process !== 'undefined' &&
-    process.env &&
-    process.env.NODE_ENV === 'production';
-  if (!isProd) {
+  if (__DEV__) {
     try {
       console.log('🔐 Protected data constructed from formValues:', protectedData);
       console.log('📦 Raw formValues:', formValues);
@@ -469,7 +466,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
   
   // Verify customer data is included in the request
-  if (!isProd) {
+  if (__DEV__) {
     try {
       const customerDataInRequest = orderParams.protectedData;
       const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
