@@ -91,6 +91,10 @@ function isDuplicateSend(transactionId, transition, role) {
 // Optional in-memory STOP list (resets on restart)
 const stopList = new Set();
 
+// DRY_RUN and ONLY_PHONE guards
+const DRY_RUN = process.env.SMS_DRY_RUN === '1';
+const ONLY_PHONE = process.env.ONLY_PHONE || null;
+
 /**
  * sendSMS(phone, message, opts?)
  * opts: { 
@@ -110,6 +114,18 @@ async function sendSMS(to, message, opts = {}) {
 
   if (!to || !message) {
     console.warn('📭 Missing phone number or message');
+    return Promise.resolve();
+  }
+
+  // DRY_RUN guard - log what would be sent
+  if (DRY_RUN) {
+    console.log('[sms][DRY_RUN] would send:', { to, template: tag, body: message });
+    return Promise.resolve();
+  }
+
+  // ONLY_PHONE filter - only send to specific phone for testing
+  if (ONLY_PHONE && to !== ONLY_PHONE) {
+    console.log('[sms] ONLY_PHONE set, skipping', { to, ONLY_PHONE, template: tag });
     return Promise.resolve();
   }
 

@@ -109,7 +109,29 @@ module.exports = (req, res) => {
       // Prepare transaction body
       const { params } = bodyParams;
       // Use the safely extracted protectedData from req.body
-      const finalProtectedData = protectedData || {};
+      const finalProtectedData = { ...(protectedData || {}) };
+
+      // 🔁 Borrower phone fallback: if missing in PD, copy from current user's profile
+      if (!finalProtectedData.customerPhone) {
+        try {
+          const me = await sdk.currentUser.show({ include: ['profile'] });
+          const prof = me?.data?.data?.attributes?.profile;
+          const profilePhone =
+            prof?.protectedData?.phone ??
+            prof?.protectedData?.phoneNumber ??
+            prof?.publicData?.phone ??
+            prof?.publicData?.phoneNumber ??
+            null;
+          if (profilePhone) {
+            finalProtectedData.customerPhone = profilePhone;
+            console.log('[initiate] filled customerPhone from profile');
+          } else {
+            console.log('[initiate] no phone found in profile; leaving customerPhone unset');
+          }
+        } catch (e) {
+          console.warn('[initiate] could not read currentUser profile for phone fallback:', e?.message);
+        }
+      }
       
       console.log('[initiate] forwarding PD keys:', Object.keys(finalProtectedData));
       

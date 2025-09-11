@@ -121,7 +121,16 @@ console.log('🚦 transition-privileged endpoint is wired up');
 const getBorrowerPhone = (params, tx) =>
   params?.protectedData?.customerPhone ??
   tx?.protectedData?.customerPhone ??
-  tx?.relationships?.customer?.attributes?.profile?.protectedData?.phone ?? // last resort if we have it
+  tx?.relationships?.customer?.attributes?.profile?.protectedData?.phone ??
+  tx?.relationships?.customer?.attributes?.protectedData?.phone ??
+  null;
+
+// Helper function to get lender phone number with fallbacks
+const getLenderPhone = (params, tx) =>
+  params?.protectedData?.providerPhone ??
+  tx?.protectedData?.providerPhone ??
+  tx?.relationships?.provider?.attributes?.profile?.protectedData?.phone ??
+  tx?.relationships?.provider?.attributes?.protectedData?.phone ??
   null;
 
 // --- Shippo label creation logic extracted to a function ---
@@ -997,56 +1006,78 @@ module.exports = async (req, res) => {
         }
         
         try {
-          // Use the helper function to get borrower phone with fallbacks
-          const borrowerPhone = getBorrowerPhone(params, response?.data?.data);
+          // Resolve phone numbers with robust fallbacks
+          const pd = params?.protectedData || {};
+          const txPD = response?.data?.data?.protectedData || {};
+          const tx = response?.data?.data;
           
-          // Log the selected phone number and role for debugging
-          console.log('📱 Selected borrower phone:', maskPhone(borrowerPhone));
-          console.log('📱 SMS role: customer');
-          console.log('🔍 Transition: transition/accept');
+          const borrowerPhone = getBorrowerPhone(params, tx);
+          const lenderPhone = getLenderPhone(params, tx);
           
-          if (borrowerPhone) {
-            // Get listing title and provider name for the message
+          console.log('[sms] resolved phones:', { 
+            borrowerPhone: maskPhone(borrowerPhone), 
+            lenderPhone: maskPhone(lenderPhone) 
+          });
+          
+          // Get listing info for messages
           const listingTitle = listing?.attributes?.title || 'your item';
           const providerName = params?.protectedData?.providerName || 'the lender';
           
-                  // Build dynamic site base for borrower inbox link (SMS/email need absolute URLs)
-        const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
-        if (!siteBase) {
-          console.warn('[BORROWER_SMS] No ROOT_URL and no req — skipping link build');
-          return { success: false, reason: 'no_base_url_available' };
-        }
-        const buyerLink = `${siteBase}/inbox/purchases`;
+          // Build site base for borrower inbox link
+          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
+          const buyerLink = siteBase ? `${siteBase}/inbox/purchases` : '';
           
-          const message = `🎉 Your Sherbrt request was accepted! 🍧
+          // Borrower acceptance SMS: always try if borrowerPhone exists
+          if (borrowerPhone) {
+            console.log('[sms] sending borrower_accept ...');
+            const borrowerMessage = `🎉 Your Sherbrt request was accepted! 🍧
 "${listingTitle}" from ${providerName} is confirmed. 
 You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
-          
-          // Wrap sendSMS in try/catch with logs
-          try {
-            await sendSMS(borrowerPhone, message, { 
-              role: 'customer',
-              transactionId: transactionId,
-              transition: 'transition/accept',
-              tag: 'accept_to_borrower',
-              meta: { listingId: listing?.id?.uuid || listing?.id }
-            });
-            console.log('✅ SMS sent successfully to borrower');
-            console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for accepted request`);
-          } catch (err) {
-            console.error('❌ SMS send error:', err.message);
-            console.error('❌ SMS send error stack:', err.stack);
+            
+            try {
+              await sendSMS(borrowerPhone, borrowerMessage, { 
+                role: 'customer',
+                transactionId: transactionId,
+                transition: 'transition/accept',
+                tag: 'accept_to_borrower',
+                meta: { listingId: listing?.id?.uuid || listing?.id }
+              });
+              console.log('✅ SMS sent successfully to borrower');
+            } catch (err) {
+              console.error('❌ Borrower SMS send error:', err.message);
+            }
+          } else {
+            console.warn('[sms] borrower phone not found; skipped borrower accept SMS');
           }
-        } else {
-          console.warn('⚠️ Borrower phone number not found - cannot send acceptance SMS');
-          console.warn('⚠️ Check params.protectedData.customerPhone or transaction data');
+          
+          // Lender SMS: check if we have label/QR URL
+          // For now, we'll send informational SMS without QR since label creation happens later
+          if (lenderPhone) {
+            console.log('[sms] sending lender_accept_no_label ...');
+            const lenderMessage = `✅ Your Sherbrt item "${listingTitle}" was accepted! Please prepare for shipping.`;
+            
+            try {
+              await sendSMS(lenderPhone, lenderMessage, { 
+                role: 'lender',
+                transactionId: transactionId,
+                transition: 'transition/accept',
+                tag: 'accept_to_lender',
+                meta: { listingId: listing?.id?.uuid || listing?.id }
+              });
+              console.log('✅ SMS sent successfully to lender');
+            } catch (err) {
+              console.error('❌ Lender SMS send error:', err.message);
+            }
+          } else {
+            console.warn('[sms] lender phone not found; skipped lender SMS');
+          }
+          
+        } catch (smsError) {
+          console.error('❌ Failed to send SMS notification:', smsError.message);
+          console.error('❌ SMS error stack:', smsError.stack);
+          // Don't fail the transaction if SMS fails
         }
-      } catch (smsError) {
-        console.error('❌ Failed to send SMS notification:', smsError.message);
-        console.error('❌ SMS error stack:', smsError.stack);
-        // Don't fail the transaction if SMS fails
       }
-    }
 
       if (effectiveTransition === 'transition/decline') {
         console.log('📨 Preparing to send SMS for transition/decline');
