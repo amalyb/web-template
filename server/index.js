@@ -387,6 +387,43 @@ app.get('*', async (req, res, next) => {
       data.manifest = require(path.join(buildDir, 'asset-manifest.json'));
     } catch (_) {}
 
+    // Create a Loadable ChunkExtractor (or a harmless shim) for SSR chunk collection
+    try {
+      const statsFile = path.join(buildDir, 'loadable-stats.json');
+      let extractor = null;
+      try {
+        const { ChunkExtractor } = require('@loadable/server');
+        if (fs.existsSync(statsFile)) {
+          extractor = new ChunkExtractor({ statsFile });
+          console.log('[ssr] loadable-stats.json found, using ChunkExtractor');
+        } else {
+          console.warn('[ssr] loadable-stats.json missing — proceeding without real extractor');
+        }
+      } catch (e) {
+        console.warn('[ssr] @loadable/server not available — using extractor shim:', e.message);
+      }
+      // Shim so renderer can safely call collectChunks/get*Tags even if stats are missing
+      const shim = {
+        collectChunks: x => x,
+        getScriptTags: () => '',
+        getLinkTags:   () => '',
+        getStyleTags:  () => '',
+      };
+      data.extractor = extractor || shim;
+      // Some templates look for a different key:
+      data.loadableExtractor = data.extractor;
+    } catch (e) {
+      console.warn('[ssr] extractor init failed; using shim', e);
+      const shim = {
+        collectChunks: x => x,
+        getScriptTags: () => '',
+        getLinkTags:   () => '',
+        getStyleTags:  () => '',
+      };
+      data.extractor = shim;
+      data.loadableExtractor = shim;
+    }
+
     let html;
     if (renderer && typeof renderer.renderApp === 'function') {
       html = await renderer.renderApp(req, res, data);
