@@ -45,6 +45,9 @@ module.exports = (req, res) => {
   
   const { isSpeculative, orderData, bodyParams, queryParams } = req.body;
   
+  // Quick instrumentation (keep until green)
+  console.log('🔎 initiate body.protectedData:', req.body?.params?.protectedData);
+  
   // Normalize listingId to string if present
   if (bodyParams?.params?.listingId) {
     const originalListingId = bodyParams.params.listingId;

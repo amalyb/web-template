@@ -54,6 +54,18 @@ const paymentFlow = (selectedPaymentMethod, saveAfterOnetimePayment) => {
     : ONETIME_PAYMENT;
 };
 
+// Helper to build customer protectedData from shipping form
+const buildCustomerPD = (shipping, currentUser) => ({
+  customerName: shipping?.recipientName || shipping?.name || '',
+  customerStreet: shipping?.streetAddress || shipping?.street || '',
+  customerStreet2: shipping?.streetAddress2 || shipping?.street2 || '',
+  customerCity: shipping?.city || '',
+  customerState: shipping?.state || '',
+  customerZip: shipping?.zip || shipping?.postalCode || shipping?.zipCode || '',
+  customerPhone: shipping?.phone || '',
+  customerEmail: shipping?.email || currentUser?.attributes?.email || '',
+});
+
 const capitalizeString = s => `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
 
 /**
@@ -312,20 +324,19 @@ const handleSubmit = (values, process, props, stripe, submitting, setSubmitting)
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
 
-  // Construct protectedData directly from shipping form fields using correct field names
+  // Build customer protectedData from shipping form, not from Stripe form
+  const shippingDetails = formValues.shipping || {};
+  const customerPD = buildCustomerPD(shippingDetails, currentUser);
+  
   // Only include fields that have non-empty values to avoid sending empty strings
   const protectedData = {};
   
-  // Customer shipping info from custom shipping form fields (not ShippingDetails form)
-  if (formValues.customerName?.trim()) protectedData.customerName = formValues.customerName.trim();
-  if (formValues.customerStreet?.trim()) protectedData.customerStreet = formValues.customerStreet.trim();
-  if (formValues.customerStreet2?.trim()) protectedData.customerStreet2 = formValues.customerStreet2.trim();
-  if (formValues.customerCity?.trim()) protectedData.customerCity = formValues.customerCity.trim();
-  if (formValues.customerState?.trim()) protectedData.customerState = formValues.customerState.trim();
-  if (formValues.customerZip?.trim()) protectedData.customerZip = formValues.customerZip.trim();
-  if (formValues.customerEmail?.trim()) protectedData.customerEmail = formValues.customerEmail.trim();
-  else if (currentUser?.attributes?.email?.trim()) protectedData.customerEmail = currentUser.attributes.email.trim();
-  if (formValues.customerPhone?.trim()) protectedData.customerPhone = formValues.customerPhone.trim();
+  // Add customer fields only if they have values
+  Object.entries(customerPD).forEach(([key, value]) => {
+    if (value && value.trim()) {
+      protectedData[key] = value.trim();
+    }
+  });
   
   // Provider info from current user (only include if non-empty)
   if (currentUser?.attributes?.profile?.displayName?.trim()) {
@@ -343,6 +354,9 @@ const handleSubmit = (values, process, props, stripe, submitting, setSubmitting)
   // Log the protected data for debugging
   console.log('🔐 Protected data constructed from formValues:', protectedData);
   console.log('📦 Raw formValues:', formValues);
+  
+  // Quick instrumentation (keep until green)
+  console.log('[checkout] sending protectedData:', Object.entries(customerPD));
 
   // Calculate pricing and booking duration
   const unitPrice = pageData?.listing?.attributes?.price;
