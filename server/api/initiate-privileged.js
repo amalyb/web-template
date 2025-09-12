@@ -112,6 +112,21 @@ module.exports = (req, res) => {
       const { params } = bodyParams;
       // Use the safely extracted protectedData from req.body
       const finalProtectedData = { ...(protectedData || {}) };
+      
+      // Add booking start date to protectedData as durable fallback
+      const bookingStartISO =
+        params?.booking?.attributes?.start ||
+        params?.bookingStart ||
+        bodyParams?.params?.protectedData?.customerBookingStartISO ||
+        finalProtectedData.bookingStartISO ||
+        null;
+      
+      finalProtectedData.bookingStartISO = bookingStartISO;
+      if (bookingStartISO) {
+        console.log('[initiate] Added bookingStartISO to protectedData:', bookingStartISO);
+      } else {
+        console.log('[initiate] No booking start date found to store in protectedData');
+      }
 
       // 🔁 Borrower phone fallback: if missing in PD, copy from current user's profile
       if (!finalProtectedData.customerPhone) {

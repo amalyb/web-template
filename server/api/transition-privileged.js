@@ -344,8 +344,8 @@ async function createShippingLabels({
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
     // Calculate ship-by date using hardened centralized helper
-    const bookingStartISO = getBookingStartISO(tx);
-    const shipByDate = computeShipByDate(tx);
+    const bookingStartISO = getBookingStartISO(transaction);
+    const shipByDate = computeShipByDate(transaction);
     const shipByStr = shipByDate && formatShipBy(shipByDate);
 
     // Debug so we can see inputs/outputs clearly
@@ -971,6 +971,25 @@ module.exports = async (req, res) => {
         transition: response?.data?.data?.attributes?.transition
       });
       
+      // After successful transition, fetch fully expanded transaction for ship-by calculations
+      let expandedTx = response?.data?.data;
+      if (bodyParams?.transition === 'transition/accept') {
+        try {
+          const txId = bodyParams?.params?.transactionId?.uuid || bodyParams?.id || id;
+          console.log('🔍 Fetching expanded transaction for ship-by calculations:', txId);
+          
+          const { data: expandedResponse } = await sdk.transactions.show({ id: txId }, { 
+            include: ['booking', 'listing', 'provider', 'customer'], 
+            expand: true 
+          });
+          
+          expandedTx = expandedResponse?.data;
+          console.log('✅ Expanded transaction fetched successfully for ship-by calculations');
+        } catch (expandError) {
+          console.warn('⚠️ Failed to fetch expanded transaction, using original response:', expandError.message);
+        }
+      }
+      
       // Set acceptedAt for transition/accept if not already set
       if (bodyParams?.transition === 'transition/accept' && response?.data?.data) {
         const transaction = response.data.data;
@@ -1194,7 +1213,7 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
           },
           selectedRate: null, // Will be set inside the function
-          transaction: response?.data?.data
+          transaction: expandedTx || response?.data?.data
         })
           .then(result => {
             if (result.success) {

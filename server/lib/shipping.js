@@ -1,13 +1,11 @@
 // server/lib/shipping.js
 function getBookingStartISO(tx) {
-  // Try a bunch of shapes defensively
+  // Try a bunch of shapes defensively, including protectedData fallbacks
   return (
     tx?.attributes?.booking?.attributes?.start ||
-    tx?.attributes?.booking?.start ||
     tx?.booking?.attributes?.start ||
-    tx?.booking?.start ||
-    tx?.bookingStart ||
-    tx?.attributes?.start ||
+    tx?.attributes?.protectedData?.bookingStartISO ||
+    tx?.protectedData?.bookingStartISO ||
     null
   );
 }
