@@ -8,6 +8,7 @@ const {
   fetchCommission,
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
+const { computeShipByDate, getBookingStartISO, formatShipBy, createShippingLabels } = require('../lib/shipping');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -305,10 +306,29 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     });
 
     console.log('📦 [SHIPPO] Label purchased successfully!');
-    console.log('📦 [SHIPPO] Label URL:', labelUrl);
-    console.log('📦 [SHIPPO] QR Code URL:', qrCodeUrl);
-    console.log('📦 [SHIPPO] Tracking URL:', trackingUrl);
-    console.log('📦 [SHIPPO] Transaction ID:', transactionRes.data.object_id);
+    console.log('📦 [SHIPPO] Transaction ID:', shippoTx.object_id);
+    console.log('📦 [SHIPPO] QR payload built:', {
+      hasTrackingNumber: !!qrPayload.trackingNumber,
+      hasTrackingUrl: !!qrPayload.trackingUrl,
+      hasLabelUrl: !!qrPayload.labelUrl,
+      hasQrUrl: !!qrPayload.qrUrl,
+      carrier: qrPayload.carrier,
+      service: qrPayload.service,
+    });
+
+    // DEBUG: prove we got here
+    console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
+
+    // Calculate ship-by date using hardened centralized helper
+    const bookingStartISO = getBookingStartISO(transaction);
+    const shipByDate = computeShipByDate(transaction);
+    const shipByStr = shipByDate && formatShipBy(shipByDate);
+
+    // Debug so we can see inputs/outputs clearly
+    console.log('[label-ready] bookingStartISO:', bookingStartISO);
+    console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
+    console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
+    console.log('[label-ready] shipByStr:', shipByStr);
     
     // Parse expiry from QR code URL
     function parseExpiresParam(url) {
@@ -321,45 +341,102 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       }
     }
     
-    const qrExpiry = parseExpiresParam(qrCodeUrl);
+    // Persist to Flex protectedData using txId
+    try {
+      const patch = {
+        outboundTrackingNumber: trackingNumber,
+        outboundTrackingUrl: trackingUrl,
+        outboundLabelUrl: labelUrl,
+        outboundQrUrl: qrUrl,
+        outboundCarrier: carrier,
+        outboundService: service,
+        outboundQrExpiry: parseExpiresParam(qrUrl),
+        outboundPurchasedAt: new Date().toISOString(),
+        outbound: {
+          ...protectedData.outbound,
+          shipByDate: shipByDate ? shipByDate.toISOString() : null
+        }
+      };
+      const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
+      if (result && result.success === false) {
+        console.warn('📝 [SHIPPO] Persistence not available, but SMS will continue:', result.reason);
+      } else {
+        console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+        if (shipByDate) {
+          console.log('📅 [SHIPPO] Set ship-by date:', shipByDate.toISOString());
+        }
+      }
+    } catch (e) {
+      console.error('[SHIPPO] Failed to persist outbound label details to protectedData', e);
+    }
+
+    const qrExpiry = parseExpiresParam(qrUrl);
     console.log('📦 [SHIPPO] QR code expiry:', qrExpiry ? new Date(qrExpiry * 1000).toISOString() : 'unknown');
 
     // after outbound purchase success:
     logTx('[SHIPPO][TX]', transactionRes.data);
 
-    // Build short URL from live host (no hardcoding)
-    const txIdStr = String(transactionId);
-    const base =
-      process.env.ROOT_URL ||
-      (req ? `${req.protocol}://${req.get('host')}` : null);
-
-    if (!base) {
-      console.warn('[LENDER_SMS] No ROOT_URL and no req — skipping link build');
-      return { success: false, reason: 'no_base_url_available' };
-    }
-
-    const shortUrl = `${base}/api/qr/${txIdStr}`;
-
-    // Resolve lender phone
-    const lenderPhone = protectedData?.providerPhone;
-
-    if (lenderPhone) {
-      // unique dedupe key for lender on this transition
-      const dedupeKey = `${txIdStr}:transition/accept:lender`;
-
-      // Prefer branded short link if available, else fall back to Shippo URL
-      const qrShort = `${base}/api/qr/${txIdStr}`;
-      const finalQrUrl = qrCache.has(transactionId) ? qrShort : qrCodeUrl;
+    // Lender SMS block – carrier-friendly messaging with ship-by date
+    try {
+      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
       
-      await sendSMS(
-        lenderPhone,
-        `📬 Your Sherbrt shipping label is ready! ${finalQrUrl}`,
-        'lender',
-        dedupeKey
-      );
-      console.log('📱 [LENDER_SMS] sent', { to: `***${String(lenderPhone).slice(-4)}`, finalQrUrl });
-    } else {
-      console.warn('⚠️ [LENDER_SMS] skipped — no lender phone on transaction/profile');
+      // Build message defensively: omit "Please ship by …" if unknown
+      const base =
+        process.env.ROOT_URL ||
+        (req ? `${req.protocol}://${req.get('host')}` : null) ||
+        process.env.SITE_URL || 'https://sherbrt.com';
+      
+      const shipUrl = `${base}/ship/${txId}`;
+      const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+
+      const body = shipByStr
+        ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
+        : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
+
+      console.log('[label-ready] sms body preview:', body);
+
+      console.log('[sms] sending lender_label_ready', { txId, shipUrl });
+
+      if (!lenderPhone || !body) {
+        console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
+      } else {
+        // Check idempotency - skip if already sent
+        if (protectedData?.sms?.labelReadySentAt) {
+          console.log('⏭️ [SMS] Label ready SMS already sent, skipping');
+          return { success: true, reason: 'already_sent' };
+        }
+
+        await sendSMS(
+          lenderPhone,
+          body,
+          {
+            role: 'lender',
+            transactionId: txId,
+            tag: 'label_ready_to_lender',
+            meta: { listingId: listing?.id?.uuid || listing?.id }
+          }
+        );
+        console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
+
+        // Persist idempotency flag
+        try {
+          await txUpdateProtectedData({
+            id: txId,
+            protectedData: {
+              ...protectedData,
+              sms: { 
+                ...(protectedData?.sms || {}), 
+                labelReadySentAt: new Date().toISOString() 
+              }
+            }
+          });
+          console.log('💾 [SMS] Set labelReadySentAt for idempotency');
+        } catch (updateError) {
+          console.error('❌ [SMS] Failed to set idempotency flag:', updateError.message);
+        }
+      }
+    } catch (e) {
+      console.error('[SHIPPO][SMS] Failed to send provider SMS', e);
     }
 
     // Create return shipment (customer → provider) if we have return address
@@ -995,6 +1072,52 @@ module.exports = async (req, res) => {
         transition: response?.data?.data?.attributes?.transition
       });
       
+      // After successful transition, fetch fully expanded transaction for ship-by calculations
+      let expandedTx = response?.data?.data;
+      if (bodyParams?.transition === 'transition/accept') {
+        try {
+          const txId = bodyParams?.params?.transactionId?.uuid || bodyParams?.id || id;
+          console.log('🔍 Fetching expanded transaction for ship-by calculations:', txId);
+          
+          const { data: expandedResponse } = await sdk.transactions.show({ id: txId }, { 
+            include: ['booking', 'listing', 'provider', 'customer'], 
+            expand: true 
+          });
+          
+          expandedTx = expandedResponse?.data;
+          console.log('✅ Expanded transaction fetched successfully for ship-by calculations');
+        } catch (expandError) {
+          console.warn('⚠️ Failed to fetch expanded transaction, using original response:', expandError.message);
+        }
+      }
+      
+      // Set acceptedAt for transition/accept if not already set
+      if (bodyParams?.transition === 'transition/accept' && response?.data?.data) {
+        const transaction = response.data.data;
+        const protectedData = transaction.attributes.protectedData || {};
+        const outbound = protectedData.outbound || {};
+        
+        if (!outbound.acceptedAt) {
+          try {
+            await sdk.transactions.update({
+              id: transaction.id,
+              attributes: {
+                protectedData: {
+                  ...protectedData,
+                  outbound: {
+                    ...outbound,
+                    acceptedAt: new Date().toISOString()
+                  }
+                }
+              }
+            });
+            console.log('💾 Set outbound.acceptedAt for transition/accept');
+          } catch (updateError) {
+            console.error('❌ Failed to set acceptedAt:', updateError.message);
+          }
+        }
+      }
+      
       // After booking (request-payment), log the transaction's protectedData
       if (bodyParams && bodyParams.transition === 'transition/request-payment' && response && response.data && response.data.data && response.data.data.attributes) {
         console.log('🧾 Booking complete. Transaction protectedData:', response.data.data.attributes.protectedData);
@@ -1123,7 +1246,21 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
         console.log('📋 [SHIPPO] Final protectedData for label creation:', finalProtectedData);
         
         // Trigger Shippo label creation asynchronously (don't await to avoid blocking response)
-        createShippingLabels(finalProtectedData, transactionId, listing, sendSMS, sdk, req)
+        createShippingLabels({
+          txId: transactionId,
+          listing,
+          protectedData: finalProtectedData,
+          providerPhone: finalProtectedData?.providerPhone,
+          integrationSdk: sdk,
+          sendSMS,
+          normalizePhone: (p) => {
+            const digits = (p || '').replace(/\D/g, '');
+            if (!digits) return null;
+            return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
+          },
+          selectedRate: null, // Will be set inside the function
+          transaction: expandedTx || response?.data?.data
+        })
           .then(result => {
             if (result.success) {
               console.log('✅ [SHIPPO] Label creation completed successfully');
