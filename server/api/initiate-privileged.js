@@ -117,12 +117,25 @@ module.exports = (req, res) => {
       );
       
       // Add booking start date to protectedData as durable fallback
-      const bookingStartISO =
+      const startRaw =
         params?.booking?.attributes?.start ||
         params?.bookingStart ||
         bodyParams?.params?.protectedData?.customerBookingStartISO ||
-        protectedData?.bookingStartISO ||
-        null;
+        protectedData?.bookingStartISO;
+      
+      let bookingStartISO = null;
+      if (startRaw) {
+        // Handle both Date objects and ISO strings
+        if (startRaw instanceof Date) {
+          bookingStartISO = startRaw.toISOString();
+        } else if (typeof startRaw === 'string') {
+          // Validate it's a proper ISO string
+          const d = new Date(startRaw);
+          if (!isNaN(d.getTime())) {
+            bookingStartISO = d.toISOString();
+          }
+        }
+      }
       
       // Use the safely extracted protectedData from req.body and clean empty strings
       const finalProtectedData = clean({ ...(protectedData || {}), bookingStartISO });
