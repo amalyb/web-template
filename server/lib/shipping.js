@@ -1,31 +1,43 @@
 // server/lib/shipping.js
-const getInt = (k, d) => (Number.isFinite(+process.env[k]) ? +process.env[k] : d);
-
 function getBookingStartISO(tx) {
-  const pd = tx?.attributes?.protectedData || tx?.protectedData || {};
-  return pd.bookingStart || pd.startDate || null;
+  // Try a bunch of shapes defensively
+  return (
+    tx?.attributes?.booking?.attributes?.start ||
+    tx?.attributes?.booking?.start ||
+    tx?.booking?.attributes?.start ||
+    tx?.booking?.start ||
+    tx?.bookingStart ||
+    tx?.attributes?.start ||
+    null
+  );
 }
 
-function computeShipByDate(tx, opts = {}) {
-  const leadDays = opts.leadDays ?? getInt('SHIP_LEAD_DAYS', 2);
-  const startISO = opts.bookingStartISO ?? getBookingStartISO(tx);
+function computeShipByDate(tx) {
+  const leadDays = Number(process.env.SHIP_LEAD_DAYS || 2);
+  const startISO = getBookingStartISO(tx);
   if (!startISO) return null;
 
   const start = new Date(startISO);
-  if (isNaN(start)) return null;
+  if (Number.isNaN(+start)) return null;
+
+  // normalize to local midnight
+  start.setHours(0, 0, 0, 0);
 
   const shipBy = new Date(start);
-  shipBy.setUTCDate(shipBy.getUTCDate() - leadDays);
-
+  shipBy.setDate(shipBy.getDate() - leadDays);
   return shipBy;
 }
 
-function formatShipBy(date, locale = 'en-US') {
+function formatShipBy(date) {
   if (!date) return null;
-  const month = date.toLocaleString(locale, { month: 'short' });
-  const d = date.getUTCDate();
-  const ord = (n)=>{ const s=["th","st","nd","rd"], v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); };
-  return `${month} ${ord(d)}`;
+  try {
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return null;
+  }
 }
 
 module.exports = { computeShipByDate, formatShipBy, getBookingStartISO };

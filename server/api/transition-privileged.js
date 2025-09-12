@@ -8,7 +8,7 @@ const {
   fetchCommission,
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipByDate, formatShipBy } = require('../lib/shipping');
+const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -343,16 +343,15 @@ async function createShippingLabels({
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
-    // Calculate ship-by date using centralized helper
-    console.log('[label-ready] bookingStart:', tx?.attributes?.booking?.attributes?.start);
-    const shipByDate = computeShipByDate({ 
-      attributes: { 
-        bookingStart: listing?.attributes?.bookingStart,
-        protectedData: protectedData 
-      } 
-    });
-    console.log('[label-ready] shipBy ISO:', shipByDate?.toISOString?.());
-    const shipByStr = formatShipBy(shipByDate);
+    // Calculate ship-by date using hardened centralized helper
+    const bookingStartISO = getBookingStartISO(tx);
+    const shipByDate = computeShipByDate(tx);
+    const shipByStr = shipByDate && formatShipBy(shipByDate);
+
+    // Debug so we can see inputs/outputs clearly
+    console.log('[label-ready] bookingStartISO:', bookingStartISO);
+    console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
+    console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
     console.log('[label-ready] shipByStr:', shipByStr);
     
     // Persist to Flex protectedData using txId
@@ -387,13 +386,15 @@ async function createShippingLabels({
     // Lender SMS block – carrier-friendly messaging
     try {
       const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
-      const listingTitle = listing?.attributes?.title || 'Item';
       
-      // Carrier-friendly message: short, one link, include ship-by if computable
+      // Build message defensively: omit "Please ship by …" if unknown
       const shipUrl = `${process.env.SITE_URL || 'https://sherbrt.com'}/ship/${txId}`;
-      
-      // Build SMS using the ship-by calculation from above
-      const body = `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`;
+      const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+
+      const body = shipByStr
+        ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
+        : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
+
       console.log('[label-ready] sms body preview:', body);
 
       console.log('[sms] sending lender_label_ready', { txId, shipUrl });
