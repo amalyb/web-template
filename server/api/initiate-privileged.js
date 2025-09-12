@@ -110,18 +110,23 @@ module.exports = (req, res) => {
 
       // Prepare transaction body
       const { params } = bodyParams;
-      // Use the safely extracted protectedData from req.body
-      const finalProtectedData = { ...(protectedData || {}) };
+      
+      // Helper function to clean empty strings from protectedData
+      const clean = obj => Object.fromEntries(
+        Object.entries(obj || {}).filter(([,v]) => v !== '')
+      );
       
       // Add booking start date to protectedData as durable fallback
       const bookingStartISO =
         params?.booking?.attributes?.start ||
         params?.bookingStart ||
         bodyParams?.params?.protectedData?.customerBookingStartISO ||
-        finalProtectedData.bookingStartISO ||
+        protectedData?.bookingStartISO ||
         null;
       
-      finalProtectedData.bookingStartISO = bookingStartISO;
+      // Use the safely extracted protectedData from req.body and clean empty strings
+      const finalProtectedData = clean({ ...(protectedData || {}), bookingStartISO });
+      
       if (bookingStartISO) {
         console.log('[initiate] Added bookingStartISO to protectedData:', bookingStartISO);
       } else {
@@ -329,30 +334,16 @@ module.exports = (req, res) => {
         .end();
     })
     .catch(e => {
-      // Extract as much as possible from the error
-      const status =
-        e?.status ||
-        e?.response?.status ||
-        e?.statusCode ||
-        500;
-
-      const data = e?.response?.data || e?.data;
       console.error('[initiate-privileged] failed', {
-        status,
+        status: e?.status,
         message: e?.message,
-        data,
+        data: e?.data,
         stack: e?.stack,
         transition: bodyParams?.transition,
         listingId: bodyParams?.params?.listingId,
       });
 
-      // Propagate the real status (400/409/etc) so UI can show a meaningful message
-      return res.status(status).json({
-        error: 'initiate-privileged-failed',
-        status,
-        data,
-        message: e?.message,
-      });
+      return handleError(res, e);
     });
 };
 
