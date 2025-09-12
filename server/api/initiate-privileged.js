@@ -117,7 +117,7 @@ module.exports = (req, res) => {
       );
       
       // Add booking start date to protectedData as durable fallback
-      const startRaw =
+      const startRaw = 
         params?.booking?.attributes?.start ||
         params?.bookingStart ||
         bodyParams?.params?.protectedData?.customerBookingStartISO ||
