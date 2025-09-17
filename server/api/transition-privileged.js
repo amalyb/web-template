@@ -8,7 +8,7 @@ const {
   fetchCommission,
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipByDate, getBookingStartISO, formatShipBy, createShippingLabels } = require('../lib/shipping');
+const { computeShipByDate, getBookingStartISO, formatShipBy } = require('../lib/shipping');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -52,7 +52,7 @@ try {
 }
 
 // QR delivery reliability: in-memory cache for transaction QR data
-const qrCache = new Map(); // key: transactionId, value: { qrCodeUrl, labelUrl, expiresAt, savedAt }
+const qrCache = new Map(); // key: transactionId, value: { qrUrl, labelUrl, expiresAt, savedAt }
 
 // Evict entries older than 24h on an interval
 setInterval(() => {
@@ -129,7 +129,7 @@ const getBorrowerPhone = (params, tx) =>
   null;
 
 // --- Shippo label creation logic extracted to a function ---
-async function createShippingLabels(protectedData, transactionId, listing, sendSMS, sharetribeSdk, req) {
+async function createShippingLabels(protectedData, transactionId, listing, sendSMS, sdk, req) {
   console.log('🚀 [SHIPPO] Starting label creation for transaction:', transactionId);
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
   
@@ -163,8 +163,8 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
   console.log('🏷️ [SHIPPO] Customer address:', customerAddress);
   
   // Validate that we have complete address information
-  const hasCompleteProviderAddress = providerAddress.street1 && providerAddress.city && providerAddress.state && providerAddress.zip;
-  const hasCompleteCustomerAddress = customerAddress.street1 && customerAddress.city && customerAddress.state && customerAddress.zip;
+  const hasCompleteProviderAddress = !!(providerAddress.street1 && providerAddress.city && providerAddress.state && providerAddress.zip);
+  const hasCompleteCustomerAddress = !!(customerAddress.street1 && customerAddress.city && customerAddress.state && customerAddress.zip);
   
   if (!hasCompleteProviderAddress) {
     console.warn('⚠️ [SHIPPO] Incomplete provider address — skipping label creation');
@@ -317,12 +317,22 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
     });
 
     // DEBUG: prove we got here
-    console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
+    console.log('✅ [SHIPPO] Label created successfully for tx:', transactionId);
 
-    // Calculate ship-by date using hardened centralized helper
-    const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = computeShipByDate(transaction);
-    const shipByStr = shipByDate && formatShipBy(shipByDate);
+    // Calculate ship-by date using the transaction entity
+    let txEntity = null;
+    try {
+      const { data: txShow } = await sdk.transactions.show(
+        { id: transactionId },
+        { include: ['booking'], expand: true }
+      );
+      txEntity = txShow?.data || null;
+    } catch (e) {
+      console.warn('[label-ready] failed to fetch transaction for ship-by calc:', e.message);
+    }
+    const bookingStartISO = txEntity ? getBookingStartISO(txEntity) : null;
+    const shipByDate = bookingStartISO ? computeShipByDate(txEntity) : null;
+    const shipByStr = shipByDate ? formatShipBy(shipByDate) : null;
 
     // Debug so we can see inputs/outputs clearly
     console.log('[label-ready] bookingStartISO:', bookingStartISO);
@@ -341,7 +351,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       }
     }
     
-    // Persist to Flex protectedData using txId
+    // Persist to Flex protectedData using transactionId
     try {
       const patch = {
         outboundTrackingNumber: trackingNumber,
@@ -357,11 +367,11 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
           shipByDate: shipByDate ? shipByDate.toISOString() : null
         }
       };
-      const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
+      const result = await sdk.transactions.update({ id: transactionId, protectedData: patch });
       if (result && result.success === false) {
         console.warn('📝 [SHIPPO] Persistence not available, but SMS will continue:', result.reason);
       } else {
-        console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+        console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { transactionId, fields: Object.keys(patch) });
         if (shipByDate) {
           console.log('📅 [SHIPPO] Set ship-by date:', shipByDate.toISOString());
         }
@@ -378,15 +388,12 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
 
     // Lender SMS block – carrier-friendly messaging with ship-by date
     try {
-      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
+      const lenderPhone = providerAddress.phone; // sendSMS() will format/validate to E.164
       
       // Build message defensively: omit "Please ship by …" if unknown
-      const base =
-        process.env.ROOT_URL ||
-        (req ? `${req.protocol}://${req.get('host')}` : null) ||
-        process.env.SITE_URL || 'https://sherbrt.com';
+      const base = process.env.PUBLIC_BASE_URL || 'https://sherbrt.com';
       
-      const shipUrl = `${base}/ship/${txId}`;
+      const shipUrl = `${base}/ship/${transactionId}`;
       const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
 
       const body = shipByStr
@@ -395,7 +402,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
 
       console.log('[label-ready] sms body preview:', body);
 
-      console.log('[sms] sending lender_label_ready', { txId, shipUrl });
+      console.log('[sms] sending lender_label_ready', { transactionId, shipUrl });
 
       if (!lenderPhone || !body) {
         console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
@@ -406,22 +413,27 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
           return { success: true, reason: 'already_sent' };
         }
 
-        await sendSMS(
-          lenderPhone,
-          body,
-          {
-            role: 'lender',
-            transactionId: txId,
-            tag: 'label_ready_to_lender',
-            meta: { listingId: listing?.id?.uuid || listing?.id }
-          }
-        );
-        console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
+        try {
+          await sendSMS(
+            lenderPhone,
+            body,
+            {
+              role: 'lender',
+              transactionId: transactionId,
+              tag: 'label_ready_to_lender',
+              meta: { listingId: listing?.id?.uuid || listing?.id }
+            }
+          );
+          console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
+        } catch (smsError) {
+          console.error('❌ [SMS] Failed to send label ready SMS to lender:', smsError.message);
+          // Don't fail label creation if SMS fails
+        }
 
         // Persist idempotency flag
         try {
-          await txUpdateProtectedData({
-            id: txId,
+          await sdk.transactions.update({
+            id: transactionId,
             protectedData: {
               ...protectedData,
               sms: { 
@@ -509,7 +521,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
               console.log('[SHIPPO][RETURN_RATE]', safePick(returnSelectedRate || {}, ['provider', 'servicelevel', 'object_id']));
             }
             
-            returnQrCodeUrl = returnTransactionRes.data.qr_code_url;
+            returnQrUrl = returnTransactionRes.data.qr_code_url;
             returnTrackingUrl = returnTransactionRes.data.tracking_url_provider || returnTransactionRes.data.tracking_url;
             
             console.log('📦 [SHIPPO] Return label purchased successfully!');
@@ -539,7 +551,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         let trackingUrl = transactionRes.data.tracking_url_provider || transactionRes.data.tracking_url;
         
         // Construct tracking URL if missing for USPS
-        if (!trackingUrl && selectedRate.provider === 'usps' && trackingNumber) {
+        if (!trackingUrl && selectedRate.provider === 'USPS' && trackingNumber) {
           trackingUrl = `https://tools.usps.com/go/TrackConfirmAction_input?origTrackNum=${trackingNumber}`;
           console.log('📦 [SHIPPO] Constructed USPS tracking URL fallback');
         }
@@ -553,7 +565,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         
         // Store in QR cache for immediate availability
         const qrData = {
-          qrCodeUrl,
+          qrUrl,
           labelUrl,
           expiresAt: qrExpiry,
           savedAt: Date.now()
@@ -563,12 +575,12 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
         
         // Use persistWithRetry for robust Flex persistence
         const persistSuccess = await persistWithRetry(transactionId, {
-          sdk: sharetribeSdk,
+          sdk: sdk,
           shippoData: {
-            txId: transactionRes.data.object_id,
+            transactionId: transactionRes.data.object_id,
             trackingNumber,
             labelUrl,
-            qrCodeUrl,
+            qrUrl,
             expiresAt: qrExpiry,
             carrier: selectedRate.provider
           }
@@ -607,7 +619,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
             `Sherbrt: your item will ship soon. Track at ${trackingUrl}`,
             { 
               role: 'customer',
-              transactionId: txId,
+              transactionId: transactionId,
               transition: 'transition/accept'
             }
           );
@@ -615,8 +627,8 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
           
           // Mark as sent in protectedData
           try {
-            const notificationResult = await txUpdateProtectedData({
-              id: txId,
+            const notificationResult = await sdk.transactions.update({
+              id: transactionId,
               protectedData: {
                 shippingNotification: {
                   labelCreated: { sent: true, sentAt: new Date().toISOString() }
@@ -626,7 +638,7 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
             if (notificationResult && notificationResult.success === false) {
               console.warn('📝 [SHIPPO] Notification state update not available:', notificationResult.reason);
             } else {
-              console.log(`💾 Updated shippingNotification.labelCreated for transaction: ${txId}`);
+              console.log(`💾 Updated shippingNotification.labelCreated for transaction: ${transactionId}`);
             }
           } catch (updateError) {
             console.warn(`⚠️ Failed to update labelCreated notification state:`, updateError.message);
@@ -638,11 +650,16 @@ async function createShippingLabels(protectedData, transactionId, listing, sendS
       
       // Trigger 5: Borrower receives text when item is shipped (include tracking link)
       if (borrowerPhone && trackingUrl) {
-        await sendSMS(
-          borrowerPhone,
-          `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`
-        );
-        console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for item shipped with tracking: ${trackingUrl}`);
+        try {
+          await sendSMS(
+            borrowerPhone,
+            `🚚 Your Sherbrt item has been shipped! Track it here: ${trackingUrl}`
+          );
+          console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for item shipped with tracking: ${trackingUrl}`);
+        } catch (smsError) {
+          console.error('❌ [SMS] Failed to send shipped notification to borrower:', smsError.message);
+          // Don't fail label creation if SMS fails
+        }
       } else if (borrowerPhone) {
         console.warn('⚠️ Borrower phone found but no tracking URL available');
       } else {
@@ -1169,7 +1186,7 @@ module.exports = async (req, res) => {
           const providerName = params?.protectedData?.providerName || 'the lender';
           
           // Build dynamic site base for borrower inbox link
-          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : 'https://sherbrt.com');
+          const siteBase = process.env.PUBLIC_BASE_URL || 'https://sherbrt.com';
           const buyerLink = `${siteBase}/inbox/purchases`;
           
           const message = `🎉 Your Sherbrt request was accepted! 🍧
@@ -1246,21 +1263,14 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
         console.log('📋 [SHIPPO] Final protectedData for label creation:', finalProtectedData);
         
         // Trigger Shippo label creation asynchronously (don't await to avoid blocking response)
-        createShippingLabels({
-          txId: transactionId,
+        createShippingLabels(
+          finalProtectedData,
+          transactionId,
           listing,
-          protectedData: finalProtectedData,
-          providerPhone: finalProtectedData?.providerPhone,
-          integrationSdk: sdk,
           sendSMS,
-          normalizePhone: (p) => {
-            const digits = (p || '').replace(/\D/g, '');
-            if (!digits) return null;
-            return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
-          },
-          selectedRate: null, // Will be set inside the function
-          transaction: expandedTx || response?.data?.data
-        })
+          sdk,
+          req
+        )
           .then(result => {
             if (result.success) {
               console.log('✅ [SHIPPO] Label creation completed successfully');
@@ -1345,8 +1355,13 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           if (sendSMS) {
             const message = `👗🍧 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
             
-            await sendSMS(providerPhone, message);
-            console.log(`✅ [SMS][booking-request] SMS sent to provider ${providerPhone}`);
+            try {
+              await sendSMS(providerPhone, message);
+              console.log(`✅ [SMS][booking-request] SMS sent to provider ${providerPhone}`);
+            } catch (smsError) {
+              console.error('❌ [SMS][booking-request] Failed to send lender notification:', smsError.message);
+              // Don't fail the transaction if SMS fails
+            }
           } else {
             console.warn('⚠️ [SMS][booking-request] sendSMS unavailable');
           }

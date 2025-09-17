@@ -22,7 +22,7 @@ console.log('🚦 initiate-privileged endpoint is wired up');
 
 // Helper function to build carrier-friendly lender SMS message
 function buildLenderMsg(tx, listingTitle) {
-  const lenderInboxUrl = process.env.ROOT_URL ? `${process.env.ROOT_URL}/inbox/sales` : '/inbox/sales';
+  const lenderInboxUrl = process.env.PUBLIC_BASE_URL ? `${process.env.PUBLIC_BASE_URL}/inbox/sales` : '/inbox/sales';
   const lenderMsg =
     `👗🍧 New Sherbrt booking request! ` +
     `Someone wants to borrow your listing "${listingTitle}". ` +
@@ -78,71 +78,6 @@ module.exports = (req, res) => {
 
       // Prepare transaction body
       const { params } = bodyParams;
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
-      
-      // Helper function to clean empty strings from protectedData
-      const clean = obj => Object.fromEntries(
-        Object.entries(obj || {}).filter(([,v]) => v !== '')
-      );
-      
-      // Add booking start date to protectedData as durable fallback
-      const startRaw =
-        params?.booking?.attributes?.start ||
-        params?.bookingStart ||
-        bodyParams?.params?.protectedData?.customerBookingStartISO ||
-        protectedData?.bookingStartISO;
-      
-      let bookingStartISO = null;
-      if (startRaw) {
-        // Handle both Date objects and ISO strings
-        if (startRaw instanceof Date) {
-          bookingStartISO = startRaw.toISOString();
-        } else if (typeof startRaw === 'string') {
-          // Validate it's a proper ISO string
-          const d = new Date(startRaw);
-          if (!isNaN(d.getTime())) {
-            bookingStartISO = d.toISOString();
-          }
-        }
-      }
-      
-      // Use the safely extracted protectedData from req.body and clean empty strings
-      const finalProtectedData = clean({ ...(protectedData || {}), bookingStartISO });
-      if (bookingStartISO) {
-        console.log('[initiate] Added bookingStartISO to protectedData:', bookingStartISO);
-      } else {
-        console.log('[initiate] No booking start date found to store in protectedData');
-      }
-
-      // 🔁 Borrower phone fallback: if missing in PD, copy from current user's profile
-      if (!finalProtectedData.customerPhone) {
-        try {
-          const me = await sdk.currentUser.show({ include: ['profile'] });
-          const prof = me?.data?.data?.attributes?.profile;
-          const profilePhone =
-            prof?.protectedData?.phone ??
-            prof?.protectedData?.phoneNumber ??
-            prof?.publicData?.phone ??
-            prof?.publicData?.phoneNumber ??
-            null;
-          if (profilePhone) {
-            finalProtectedData.customerPhone = profilePhone;
-            console.log('[initiate] filled customerPhone from profile');
-          } else {
-            console.log('[initiate] no phone found in profile; leaving customerPhone unset');
-          }
-        } catch (e) {
-          console.warn('[initiate] could not read currentUser profile for phone fallback:', e?.message);
-        }
-      }
-      
-      console.log('[initiate] forwarding PD keys:', Object.keys(finalProtectedData));
-      console.log('[initiate] merged finalProtectedData customerStreet:', finalProtectedData.customerStreet);
-      console.log('[initiate] merged finalProtectedData customerZip:', finalProtectedData.customerZip);
-      
->>>>>>> 37d16369a (Reverted Catch Handler to Use handleError(res, e))
       const body = {
         ...bodyParams,
         params: {
@@ -252,12 +187,12 @@ module.exports = (req, res) => {
               console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
               
               const listingTitle = listing?.attributes?.title || 'your listing';
-              const borrowerInboxUrl = process.env.ROOT_URL ? `${process.env.ROOT_URL}/inbox/orders` : '/inbox/orders';
+              const borrowerInboxUrl = process.env.PUBLIC_BASE_URL ? `${process.env.PUBLIC_BASE_URL}/inbox/orders` : '/inbox/orders';
               const borrowerMsg =
                 `✅ Request sent! Your booking request for "${listingTitle}" was delivered. ` +
                 `Track and reply in your inbox: ${borrowerInboxUrl}`;
               
-              await sendSMS(borrowerPhone, customerMessage);
+              await sendSMS(borrowerPhone, borrowerMsg, { role: 'customer' });
               console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${borrowerPhone}`);
               
             } catch (customerSmsErr) {
