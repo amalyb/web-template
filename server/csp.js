@@ -43,6 +43,7 @@ const defaultDirectives = {
     'https://flex-api.sharetribe.com',
     'https://cdn.st-api.com',
     '*.st-api.com',
+    'https://cdn.st-api.com',
     'maps.googleapis.com',
     'places.googleapis.com',
     '*.tiles.mapbox.com',
@@ -70,7 +71,11 @@ const defaultDirectives = {
     'https://m.stripe.com',
     '*.stripe.com',
   ].filter(Boolean),
+<<<<<<< HEAD
   fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'https://assets-sharetribecom.sharetribe.com', 'https://api.mapbox.com', 'https://*.mapbox.com', 'fonts.gstatic.com'],
+=======
+  fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'fonts.gstatic.com'],
+>>>>>>> 36f102d36358c97057846ff90eeeffc3bfc3560f
   formAction: [self, 'https://hooks.stripe.com'],
   frameSrc: [
     self,
