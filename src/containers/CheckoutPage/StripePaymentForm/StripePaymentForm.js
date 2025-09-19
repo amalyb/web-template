@@ -3,7 +3,7 @@
  * Card is not a Final Form field so it's not available trough Final Form.
  * It's also handled separately in handleSubmit function.
  */
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Form as FinalForm } from 'react-final-form';
 import classNames from 'classnames';
 import { CardElement, useElements, useStripe } from '@stripe/react-stripe-js';
@@ -136,9 +136,18 @@ const OneTimePaymentWithCardElement = props => {
     label,
     intl,
     marketplaceName,
+    onStripeInitialized = () => {},
+    onStripeElementMounted = () => {},
+    onPaymentElementChange = () => {},
   } = props;
   const stripe = useStripe();
   const elements = useElements();
+  
+  useEffect(() => {
+    if (stripe) {
+      onStripeInitialized(stripe);
+    }
+  }, [stripe, onStripeInitialized]);
   
   const labelText =
     label || intl.formatMessage({ id: 'StripePaymentForm.saveAfterOnetimePayment' });
@@ -159,15 +168,11 @@ const OneTimePaymentWithCardElement = props => {
           id={`${formId}-card`}
           onReady={() => {
             console.log('[StripeForm] CardElement ready');
-            if (onStripeElementMounted) {
-              onStripeElementMounted(true);
-            }
+            onStripeElementMounted(true);
           }}
           onChange={(e) => {
             console.log('[StripeForm] change', {complete: e.complete, empty: e.empty});
-            if (onPaymentElementChange) {
-              onPaymentElementChange(e.complete);
-            }
+            onPaymentElementChange(e.complete);
           }}
         />
       </div>
@@ -204,6 +209,9 @@ const PaymentMethodSelector = props => {
     paymentMethod,
     intl,
     marketplaceName,
+    onStripeInitialized = () => {},
+    onStripeElementMounted = () => {},
+    onPaymentElementChange = () => {},
   } = props;
   const last4Digits = defaultPaymentMethod.attributes.card.last4Digits;
   const labelText = intl.formatMessage(
@@ -230,6 +238,9 @@ const PaymentMethodSelector = props => {
           label={labelText}
           intl={intl}
           marketplaceName={marketplaceName}
+          onStripeInitialized={onStripeInitialized}
+          onStripeElementMounted={onStripeElementMounted}
+          onPaymentElementChange={onPaymentElementChange}
         />
       ) : null}
     </React.Fragment>
@@ -360,11 +371,11 @@ function StripePaymentForm(props) {
 
   // Extract optional callback props
   const {
-    onFormValuesChange,
-    onFormValidityChange,
-    onPaymentElementChange,
-    onStripeInitialized,
-    onStripeElementMounted,
+    onFormValuesChange = () => {},
+    onFormValidityChange = () => {},
+    onPaymentElementChange = () => {},
+    onStripeInitialized = () => {},
+    onStripeElementMounted = () => {},
     ...otherProps
   } = props;
 
@@ -617,6 +628,9 @@ function StripePaymentForm(props) {
                 paymentMethod={selectedPaymentMethod}
                 intl={intl}
                 marketplaceName={marketplaceName}
+                onStripeInitialized={onStripeInitialized}
+                onStripeElementMounted={onStripeElementMounted}
+                onPaymentElementChange={onPaymentElementChange}
               />
             ) : (
               <React.Fragment>
@@ -630,6 +644,9 @@ function StripePaymentForm(props) {
                   error={state.error}
                   intl={intl}
                   marketplaceName={marketplaceName}
+                  onStripeInitialized={onStripeInitialized}
+                  onStripeElementMounted={onStripeElementMounted}
+                  onPaymentElementChange={onPaymentElementChange}
                 />
               </React.Fragment>
             )}
