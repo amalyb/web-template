@@ -12,6 +12,7 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
+import { __DEV__ } from '../../util/envFlags';
 
 // Import shared components
 import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
@@ -296,6 +297,18 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
 
+  // Client-side validation for required address fields
+  if (!formValues.customerStreet || !formValues.customerZip) {
+    if (__DEV__) {
+      console.log('🔍 Address validation failed:', {
+        customerStreet: formValues.customerStreet ? 'present' : 'missing',
+        customerZip: formValues.customerZip ? 'present' : 'missing'
+      });
+    }
+    setSubmitting(false);
+    throw new Error('Street address and ZIP code are required');
+  }
+
   // Construct protectedData directly from shipping form fields using correct field names
   const protectedData = {
     // Customer shipping info from custom shipping form fields (not ShippingDetails form)
@@ -317,6 +330,15 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     providerEmail: currentUser?.attributes?.email || '',
     providerPhone: currentUser?.attributes?.profile?.protectedData?.phoneNumber || currentUser?.attributes?.profile?.publicData?.phoneNumber || '',
   };
+
+  // Filter out empty strings from protectedData
+  const filteredProtectedData = Object.fromEntries(
+    Object.entries(protectedData).filter(([_, value]) => value !== '')
+  );
+
+  if (__DEV__) {
+    console.log('🔐 Protected data keys present:', Object.keys(filteredProtectedData));
+  }
 
   // Log the protected data for debugging
   console.log('🔐 Protected data constructed from formValues:', protectedData);
@@ -406,7 +428,7 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     bookingStart,
     bookingEnd,
     lineItems,
-    protectedData,  // Now built from form fields
+    protectedData: filteredProtectedData,  // Now built from form fields, filtered
     ...optionalPaymentParams,
   };
 
