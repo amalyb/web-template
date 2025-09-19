@@ -127,27 +127,23 @@ const cardStyles = {
   },
 };
 
-const OneTimePaymentWithCardElement = props => {
-  const {
-    cardClasses,
-    formId,
-    hasCardError,
-    error,
-    label,
-    intl,
-    marketplaceName,
-    onStripeInitialized = () => {},
-    onStripeElementMounted = () => {},
-    onPaymentElementChange = () => {},
-  } = props;
+const OneTimePaymentWithCardElement = (props) => {
+  const { cardClasses, formId, hasCardError, error, label, intl, marketplaceName } = props;
   const stripe = useStripe();
   const elements = useElements();
   
+  // StrictMode guard: prevent double onReady in dev
+  const mountedOnceRef = useRef(false);
+  
+  // Alias the init callback for proper effect deps
+  const initCb = props.onStripeInitialized;
+  
   useEffect(() => {
-    if (stripe) {
-      onStripeInitialized(stripe);
+    // call once stripe instance exists
+    if (typeof initCb === 'function' && typeof stripe !== 'undefined' && stripe) {
+      initCb(stripe);
     }
-  }, [stripe, onStripeInitialized]);
+  }, [stripe, initCb]);
   
   const labelText =
     label || intl.formatMessage({ id: 'StripePaymentForm.saveAfterOnetimePayment' });
@@ -166,13 +162,14 @@ const OneTimePaymentWithCardElement = props => {
       <div className={cardClasses}>
         <CardElement
           id={`${formId}-card`}
-          onReady={() => {
-            console.log('[StripeForm] CardElement ready');
-            onStripeElementMounted(true);
+          onReady={(el) => {
+            if (mountedOnceRef.current) return;
+            mountedOnceRef.current = true;
+            props.onStripeElementMounted?.(el);
           }}
           onChange={(e) => {
-            console.log('[StripeForm] change', {complete: e.complete, empty: e.empty});
-            onPaymentElementChange(e.complete);
+            // e.complete for CardElement; pass the event if needed by parent
+            props.onPaymentElementChange?.(e?.complete ?? e);
           }}
         />
       </div>
@@ -209,9 +206,6 @@ const PaymentMethodSelector = props => {
     paymentMethod,
     intl,
     marketplaceName,
-    onStripeInitialized = () => {},
-    onStripeElementMounted = () => {},
-    onPaymentElementChange = () => {},
   } = props;
   const last4Digits = defaultPaymentMethod.attributes.card.last4Digits;
   const labelText = intl.formatMessage(
@@ -238,9 +232,9 @@ const PaymentMethodSelector = props => {
           label={labelText}
           intl={intl}
           marketplaceName={marketplaceName}
-          onStripeInitialized={onStripeInitialized}
-          onStripeElementMounted={onStripeElementMounted}
-          onPaymentElementChange={onPaymentElementChange}
+          onStripeInitialized={props.onStripeInitialized}
+          onStripeElementMounted={props.onStripeElementMounted}
+          onPaymentElementChange={props.onPaymentElementChange}
         />
       ) : null}
     </React.Fragment>
@@ -373,9 +367,9 @@ function StripePaymentForm(props) {
   const {
     onFormValuesChange = () => {},
     onFormValidityChange = () => {},
-    onPaymentElementChange = () => {},
-    onStripeInitialized = () => {},
-    onStripeElementMounted = () => {},
+    onPaymentElementChange,
+    onStripeInitialized,
+    onStripeElementMounted,
     ...otherProps
   } = props;
 
@@ -383,10 +377,10 @@ function StripePaymentForm(props) {
 
   // Call optional callbacks if provided
   React.useEffect(() => {
-    if (onStripeInitialized && stripe) {
-      onStripeInitialized(stripe);
+    if (props.onStripeInitialized && stripe) {
+      props.onStripeInitialized(stripe);
     }
-  }, [stripe, onStripeInitialized]);
+  }, [stripe, props.onStripeInitialized]);
 
   const updateBillingDetailsToMatchShippingAddress = (shouldFill) => {
     const formApi = finalFormAPI.current;
@@ -628,9 +622,9 @@ function StripePaymentForm(props) {
                 paymentMethod={selectedPaymentMethod}
                 intl={intl}
                 marketplaceName={marketplaceName}
-                onStripeInitialized={onStripeInitialized}
-                onStripeElementMounted={onStripeElementMounted}
-                onPaymentElementChange={onPaymentElementChange}
+                onStripeInitialized={props.onStripeInitialized}
+                onStripeElementMounted={props.onStripeElementMounted}
+                onPaymentElementChange={props.onPaymentElementChange}
               />
             ) : (
               <React.Fragment>
@@ -644,9 +638,9 @@ function StripePaymentForm(props) {
                   error={state.error}
                   intl={intl}
                   marketplaceName={marketplaceName}
-                  onStripeInitialized={onStripeInitialized}
-                  onStripeElementMounted={onStripeElementMounted}
-                  onPaymentElementChange={onPaymentElementChange}
+                  onStripeInitialized={props.onStripeInitialized}
+                  onStripeElementMounted={props.onStripeElementMounted}
+                  onPaymentElementChange={props.onPaymentElementChange}
                 />
               </React.Fragment>
             )}
