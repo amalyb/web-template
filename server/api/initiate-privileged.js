@@ -8,6 +8,9 @@ const {
 } = require('../api-util/sdk');
 const { getIntegrationSdk } = require('../api-util/integrationSdk');
 
+// Helper function to normalize listingId to string
+const toUuidString = id => (typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null);
+
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
 try {
@@ -47,6 +50,46 @@ module.exports = (req, res) => {
   console.log('📱 sendSMS function available:', !!sendSMS);
   console.log('📱 sendSMS function type:', typeof sendSMS);
 
+  // Protected Data extraction & cleaning
+  let protectedData = {};
+  
+  // Accept PD from either req.body.protectedData or req.body.bodyParams?.params?.protectedData
+  const rawPD = req.body.protectedData || req.body.bodyParams?.params?.protectedData;
+  if (rawPD && typeof rawPD === 'object') {
+    // Filter out empty strings
+    protectedData = Object.fromEntries(
+      Object.entries(rawPD).filter(([_, value]) => value && value.toString().trim() !== '')
+    );
+  }
+
+  // Add bookingStartISO into PD if available
+  const bookingStart = bodyParams?.params?.booking?.attributes?.start || 
+                      bodyParams?.params?.bookingStart || 
+                      protectedData?.bookingStartISO;
+  
+  if (bookingStart) {
+    try {
+      const bookingDate = new Date(bookingStart);
+      if (!isNaN(bookingDate.getTime())) {
+        protectedData.bookingStartISO = bookingDate.toISOString();
+      }
+    } catch (e) {
+      console.warn('⚠️ Invalid bookingStart date:', bookingStart);
+    }
+  }
+
+  // Normalize listingId to string and validate
+  const rawListingId = bodyParams?.params?.listingId;
+  const listingId = toUuidString(rawListingId);
+  if (!listingId) {
+    return res.status(400).json({ error: 'Invalid listingId provided' });
+  }
+
+  // Log PD keys under __DEV__ only
+  if (process.env.NODE_ENV === 'development') {
+    console.log('🔐 Protected data keys present:', Object.keys(protectedData));
+  }
+
   // 🔧 FIXED: Remove unused state variables and client SDK usage
   // We'll get listing data and line items inside the trusted SDK chain
 
@@ -55,9 +98,9 @@ module.exports = (req, res) => {
     .then(async (trustedSdk) => {
       const sdk = trustedSdk; // Single SDK variable throughout
       
-      // Get listing data for line items and SMS
+      // Get listing data for line items and SMS using normalized listingId
       const listingResponse = await sdk.listings.show({ 
-        id: bodyParams?.params?.listingId,
+        id: listingId,
         include: ['author', 'author.profile']
       });
       const listing = listingResponse.data.data;
@@ -76,13 +119,33 @@ module.exports = (req, res) => {
         customerCommission
       );
 
-      // Prepare transaction body
+      // Fallback customerPhone if missing
+      if (!protectedData.customerPhone) {
+        try {
+          const currentUser = await sdk.users.show({ id: 'me' });
+          const userProfile = currentUser?.data?.data?.attributes?.profile;
+          const userPhone = userProfile?.protectedData?.phone || 
+                           userProfile?.protectedData?.phoneNumber ||
+                           userProfile?.publicData?.phone ||
+                           userProfile?.publicData?.phoneNumber;
+          
+          if (userPhone) {
+            protectedData.customerPhone = userPhone;
+            console.log('📱 Added fallback customerPhone from user profile');
+          }
+        } catch (err) {
+          console.warn('⚠️ Could not fetch current user for fallback phone:', err.message);
+        }
+      }
+
+      // Prepare transaction body with cleaned PD
       const { params } = bodyParams;
       const body = {
         ...bodyParams,
         params: {
           ...params,
           lineItems,
+          protectedData,
         },
       };
 

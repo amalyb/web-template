@@ -11,6 +11,7 @@ import { CardElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { FormattedMessage, injectIntl } from '../../../util/reactIntl';
 import { propTypes } from '../../../util/types';
 import { ensurePaymentMethodCard } from '../../../util/data';
+import { __DEV__ } from '../../../util/envFlags';
 
 import {
   Heading,
@@ -29,6 +30,39 @@ import AddressForm from '../../../components/AddressForm/AddressForm';
 import css from './StripePaymentForm.module.css';
 
 const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
+
+// Helper function to flatten AddressForm values to customer PD
+const mapAddressFormToCustomerPD = (values) => {
+  const customerPD = {};
+  
+  // Map billing address fields
+  if (values.billingName) customerPD.customerName = values.billingName;
+  if (values.billingLine1) customerPD.customerStreet = values.billingLine1;
+  if (values.billingLine2) customerPD.customerStreet2 = values.billingLine2;
+  if (values.billingCity) customerPD.customerCity = values.billingCity;
+  if (values.billingState) customerPD.customerState = values.billingState;
+  if (values.billingPostalCode) customerPD.customerZip = values.billingPostalCode;
+  
+  // Map shipping address fields (respecting "same as billing" when present)
+  const useShipping = values.shippingName || values.shippingLine1;
+  if (useShipping) {
+    if (values.shippingName) customerPD.customerName = values.shippingName;
+    if (values.shippingLine1) customerPD.customerStreet = values.shippingLine1;
+    if (values.shippingLine2) customerPD.customerStreet2 = values.shippingLine2;
+    if (values.shippingCity) customerPD.customerCity = values.shippingCity;
+    if (values.shippingState) customerPD.customerState = values.shippingState;
+    if (values.shippingPostalCode) customerPD.customerZip = values.shippingPostalCode;
+  }
+  
+  // Map email and phone if available
+  if (values.customerEmail) customerPD.customerEmail = values.customerEmail;
+  if (values.customerPhone) customerPD.customerPhone = values.customerPhone;
+  
+  // Filter out empty strings
+  return Object.fromEntries(
+    Object.entries(customerPD).filter(([_, value]) => value && value.trim() !== '')
+  );
+};
 
 /**
  * Translate a Stripe API error object.
@@ -123,8 +157,18 @@ const OneTimePaymentWithCardElement = props => {
       <div className={cardClasses}>
         <CardElement
           id={`${formId}-card`}
-          onReady={() => console.log('[StripeForm] CardElement ready')}
-          onChange={(e) => console.log('[StripeForm] change', {complete: e.complete, empty: e.empty})}
+          onReady={() => {
+            console.log('[StripeForm] CardElement ready');
+            if (onStripeElementMounted) {
+              onStripeElementMounted(true);
+            }
+          }}
+          onChange={(e) => {
+            console.log('[StripeForm] change', {complete: e.complete, empty: e.empty});
+            if (onPaymentElementChange) {
+              onPaymentElementChange(e.complete);
+            }
+          }}
         />
       </div>
       {hasCardError ? <span className={css.error}>{error}</span> : null}
@@ -314,7 +358,24 @@ function StripePaymentForm(props) {
   const [state, setState] = useState(initialState);
   const finalFormAPI = useRef(null);
 
+  // Extract optional callback props
+  const {
+    onFormValuesChange,
+    onFormValidityChange,
+    onPaymentElementChange,
+    onStripeInitialized,
+    onStripeElementMounted,
+    ...otherProps
+  } = props;
+
   console.log('[StripeForm] render start');
+
+  // Call optional callbacks if provided
+  React.useEffect(() => {
+    if (onStripeInitialized && stripe) {
+      onStripeInitialized(stripe);
+    }
+  }, [stripe, onStripeInitialized]);
 
   const updateBillingDetailsToMatchShippingAddress = (shouldFill) => {
     const formApi = finalFormAPI.current;
@@ -366,6 +427,21 @@ function StripePaymentForm(props) {
       return;
     }
 
+    // Validate required address fields when ADDR_ENABLED is true
+    if (ADDR_ENABLED) {
+      const customerPD = mapAddressFormToCustomerPD(values);
+      if (!customerPD.customerStreet || !customerPD.customerZip) {
+        if (__DEV__) {
+          console.log('🔍 Address validation failed in StripePaymentForm:', {
+            customerStreet: customerPD.customerStreet ? 'present' : 'missing',
+            customerZip: customerPD.customerZip ? 'present' : 'missing'
+          });
+        }
+        // Set form-level error - this will be handled by Final Form
+        throw new Error('Street address and ZIP code are required');
+      }
+    }
+
     if (!stripe || !elements) {
       console.warn('[StripeForm] Stripe/Elements not ready yet');
       return;
@@ -377,13 +453,20 @@ function StripePaymentForm(props) {
       return;
     }
 
+    // Map AddressForm values to customer PD when ADDR_ENABLED is true
+    const customerPD = ADDR_ENABLED ? mapAddressFormToCustomerPD(values) : {};
+    const formValuesWithPD = {
+      ...values,
+      ...(ADDR_ENABLED && Object.keys(customerPD).length > 0 ? customerPD : {})
+    };
+
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: card,
       stripe: stripe,
       elements: elements,
       formId,
-      formValues: values,
+      formValues: formValuesWithPD,
       paymentMethod: getPaymentMethod(
         paymentMethod,
         ensurePaymentMethodCard(defaultPaymentMethod).id
@@ -423,6 +506,20 @@ function StripePaymentForm(props) {
     } = formRenderProps;
 
     finalFormAPI.current = formApi;
+
+    // Call form values change callback if provided
+    React.useEffect(() => {
+      if (onFormValuesChange && values) {
+        onFormValuesChange(values);
+      }
+    }, [values, onFormValuesChange]);
+
+    // Call form validity change callback if provided
+    React.useEffect(() => {
+      if (onFormValidityChange) {
+        onFormValidityChange(!invalid);
+      }
+    }, [invalid, onFormValidityChange]);
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);
     const billingDetailsNeeded = !(hasHandledCardPayment || confirmPaymentError);
