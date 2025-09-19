@@ -146,7 +146,14 @@ app.use(
 // 1) Nonce generator (must be first)
 app.use(generateCSPNonce);
 
-// 2) Base Helmet (relax COEP/COOP to avoid third-party breakage)
+// 2) Safety: nuke any previously-set blocking CSP header
+app.use((req, res, next) => {
+  // Safety: nuke any previously-set blocking CSP header
+  res.removeHeader('Content-Security-Policy');
+  next();
+});
+
+// 3) Base Helmet (relax COEP/COOP to avoid third-party breakage)
 app.use(helmet({ 
   crossOriginEmbedderPolicy: false, 
   crossOriginOpenerPolicy: false 
@@ -190,6 +197,19 @@ if (cspPolicies.mode === 'block') {
   // Apply only reportOnly middleware (with optional API exclusion)
   app.use(cspRouteFilter, cspPolicies.reportOnly);
 }
+
+// Sanity check: ensure only report-only exists in report mode
+app.use((req, res, next) => {
+  // After CSP middleware ran, ensure only report-only exists in report mode
+  if ((process.env.CSP_MODE || 'report').toLowerCase() !== 'block') {
+    const blocking = res.getHeader('Content-Security-Policy');
+    if (blocking) {
+      console.warn('[CSP] Removing unexpected blocking CSP header in report mode');
+      res.removeHeader('Content-Security-Policy');
+    }
+  }
+  next();
+});
 
 // Redirect HTTP to HTTPS if REDIRECT_SSL is `true`.
 // This also works behind reverse proxies (load balancers) as they are for example used by Heroku.
@@ -311,6 +331,17 @@ app.get('/debug/headers', (req, res) => {
   res.type('text/plain').send(res.get('content-security-policy') || 'no csp header');
 });
 
+// CSP headers debug endpoint
+app.get('/debug/csp-headers', (req, res) => {
+  const blockingCSP = res.getHeader('Content-Security-Policy');
+  const reportOnlyCSP = res.getHeader('Content-Security-Policy-Report-Only');
+  res.json({
+    'Content-Security-Policy': blockingCSP || null,
+    'Content-Security-Policy-Report-Only': reportOnlyCSP || null,
+    mode: process.env.CSP_MODE || 'report'
+  });
+});
+
 app.get('/debug/html-tail', (req, res) => {
   const html = global.__lastRenderedHtml || '';
   res.type('text/plain').send(html.slice(-2000)); // last 2k chars to see scripts near </body>
@@ -392,7 +423,23 @@ app.post(cspReportUrl, (req, res) => {
   const effectiveDirective = reportValue(req, 'effective-directive');
   const blockedUri = reportValue(req, 'blocked-uri');
   const msg = `CSP: ${effectiveDirective} doesn't allow ${blockedUri}`;
-  log.error(new Error(msg), 'csp-violation');
+  
+  // determine report/block mode from env
+  const __cspMode = (process.env.CSP_MODE || 'report').toLowerCase() === 'block' ? 'block' : 'report';
+  
+  // Check for specific inline script violations
+  if (effectiveDirective === 'script-src-elem' && blockedUri === 'inline') {
+    const __msg = "CSP: script-src-elem does not allow inline";
+    if (__cspMode === 'report') {
+      console.warn(__msg + " (report mode; continuing)");
+    } else {
+      throw new Error(__msg);
+    }
+  } else {
+    // For other violations, just log
+    log.error(new Error(msg), 'csp-violation');
+  }
+  
   res.status(204).end();
 });
 
