@@ -153,10 +153,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// 3) Base Helmet (relax COEP/COOP to avoid third-party breakage)
+// 3) Base Helmet (relax COEP/COOP to avoid third-party breakage, disable CSP since we handle it ourselves)
 app.use(helmet({ 
   crossOriginEmbedderPolicy: false, 
-  crossOriginOpenerPolicy: false 
+  crossOriginOpenerPolicy: false,
+  contentSecurityPolicy: false  // Disable Helmet's default CSP since we have custom CSP middleware
 }));
 
 
