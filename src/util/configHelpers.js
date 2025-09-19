@@ -1,5 +1,6 @@
 import { subUnitDivisors } from '../config/settingsCurrency';
 import { getSupportedProcessesInfo } from '../transactions/transaction';
+import { IS_DEV } from './envFlags';
 
 // Generic helpers for validating config values
 
@@ -1105,7 +1106,7 @@ const union = (arr1, arr2, key) => {
 // Note: We don't want to expose this to production by default.
 //       If you customization relies on multiple listing types or custom listing fields, you need to change this.
 const mergeDefaultTypesAndFieldsForDebugging = isDebugging => {
-  const isDev = process.env.NODE_ENV === 'development';
+  const isDev = IS_DEV;
   return isDebugging && isDev;
 };
 

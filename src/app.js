@@ -18,6 +18,7 @@ import configureStore from './store';
 import { RouteConfigurationProvider } from './context/routeConfigurationContext';
 import { ConfigurationProvider } from './context/configurationContext';
 import { mergeConfig } from './util/configHelpers';
+import { IS_TEST } from './util/envFlags';
 import { IntlProvider } from './util/reactIntl';
 import { includeCSSProperties } from './util/style';
 import { IncludeScripts } from './util/includeScripts';
@@ -96,7 +97,7 @@ const addMissingTranslations = (sourceLangTranslations, targetLangTranslations) 
 // Note: Locale should not affect the tests. We ensure this by providing
 //       messages with the key as the value of each message and discard the value.
 //       { 'My.translationKey1': 'My.translationKey1', 'My.translationKey2': 'My.translationKey2' }
-const isTestEnv = process.env.NODE_ENV === 'test';
+const isTestEnv = IS_TEST;
 const localeMessages = isTestEnv
   ? mapValues(defaultMessages, (val, key) => key)
   : addMissingTranslations(defaultMessages, messagesInLocale);
