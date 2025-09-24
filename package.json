@@ -125,7 +125,8 @@
     "render-build": "npm run build",
     "postinstall": "patch-package",
     "translate": "node scripts/translations.js",
-    "jobs:reminders": "node server/scripts/sendShipByReminders.js"
+    "jobs:reminders": "node server/scripts/sendShipByReminders.js",
+    "smoke:wave3": "node server/scripts/smoke-wave3.js"
   },
   "browserslist": {
     "production": [

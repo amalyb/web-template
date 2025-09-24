@@ -40,16 +40,11 @@ const defaultDirectives = {
     self,
     baseUrl,
     assetCdnBaseUrl,
-    'https://flex-api.sharetribe.com',
-    'https://cdn.st-api.com',
     '*.st-api.com',
-    'https://cdn.st-api.com',
     'maps.googleapis.com',
     'places.googleapis.com',
     '*.tiles.mapbox.com',
     'api.mapbox.com',
-    'https://api.mapbox.com',
-    'https://*.mapbox.com',
     'events.mapbox.com',
 
     // Google Analytics
@@ -68,11 +63,10 @@ const defaultDirectives = {
     'sentry.io',
     '*.sentry.io',
     'https://api.stripe.com',
-    'https://m.stripe.com',
     '*.stripe.com',
-  ].filter(Boolean),
-  fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'https://assets-sharetribecom.sharetribe.com', 'https://api.mapbox.com', 'https://*.mapbox.com', 'fonts.gstatic.com'],
-  formAction: [self, 'https://hooks.stripe.com'],
+  ],
+  fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'fonts.gstatic.com'],
+  formAction: [self],
   frameSrc: [
     self,
     'https://js.stripe.com',
@@ -94,8 +88,6 @@ const defaultDirectives = {
     '*.picsum.photos',
 
     'api.mapbox.com',
-    'https://api.mapbox.com',
-    'https://*.mapbox.com',
     'https://*.tiles.mapbox.com',
     'maps.googleapis.com',
     '*.gstatic.com',
@@ -118,7 +110,6 @@ const defaultDirectives = {
 
     // Stripe
     'https://q.stripe.com',
-    'https://m.stripe.com',
     '*.stripe.com',
   ],
   scriptSrc: [
@@ -134,12 +125,10 @@ const defaultDirectives = {
     'js.stripe.com',
     'plausible.io',
   ],
-  "script-src-elem": [self, (req, res) => `'nonce-${res.locals.cspNonce}'`, blob, "https://js.stripe.com", "https://api.mapbox.com", "https://*.mapbox.com"],
+  "script-src-elem": [self, blob, "https://js.stripe.com", "https://api.mapbox.com", "https://*.mapbox.com"],
   "manifest-src": [self],
   "worker-src": [self, blob],
-  styleSrc: [self, unsafeInline, 'fonts.googleapis.com', 'api.mapbox.com', 'https://api.mapbox.com', 'https://*.mapbox.com'],
-  objectSrc: ["'none'"],
-  frameAncestors: [self],
+  styleSrc: [self, unsafeInline, 'fonts.googleapis.com', 'api.mapbox.com'],
 };
 
 /**
@@ -151,11 +140,6 @@ const defaultDirectives = {
  * @returns {Object} Object containing enforce and reportOnly middleware configurations
  */
 exports.csp = ({ mode = 'report', reportUri }) => {
-  // Single source of truth for header names and behavior
-  const cspMode = mode === 'block' ? 'block' : 'report';
-  const dualReport = String(process.env.CSP_DUAL_REPORT || '').toLowerCase() === 'true';
-  const enforceHeader = 'Content-Security-Policy';
-  const reportHeader = 'Content-Security-Policy-Report-Only';
   // ================ START CUSTOM CSP URLs ================ //
 
   // Add custom CSP whitelisted URLs here. See commented example
@@ -245,10 +229,5 @@ exports.csp = ({ mode = 'report', reportUri }) => {
       directives: reportOnlyDirectives,
       reportOnly: true,
     }),
-    // Metadata for debugging
-    mode: cspMode,
-    dualReport,
-    enforceHeader,
-    reportHeader,
   };
 };

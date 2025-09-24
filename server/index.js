@@ -19,6 +19,11 @@ require('source-map-support').install();
 // Configure process.env with .env.* files
 require('./env').configureEnv();
 
+// Log presence (not values) of critical envs at boot
+const hasIC = Boolean(process.env.INTEGRATION_CLIENT_ID);
+const hasIS = Boolean(process.env.INTEGRATION_CLIENT_SECRET);
+console.log('[server] Integration creds present?', { INTEGRATION_CLIENT_ID: hasIC, INTEGRATION_CLIENT_SECRET: hasIS });
+
 // Setup Sentry
 // Note 1: This needs to happen before other express requires
 // Note 2: this doesn't use instrument.js file but log.js
@@ -42,34 +47,20 @@ const webmanifestResourceRoute = require('./resources/webmanifest');
 const robotsTxtRoute = require('./resources/robotsTxt');
 const sitemapResourceRoute = require('./resources/sitemap');
 const { getExtractors } = require('./importer');
-const renderer = require('./renderer');
+
+// Import SSR renderer with fallback
+let renderer;
+try { renderer = require('./ssr/renderer'); }
+catch { renderer = require('./renderer'); }
+console.log('[server] renderer keys:', Object.keys(renderer || {}));
+
 const dataLoader = require('./dataLoader');
-const { generateCSPNonce, csp: cspDirectives } = require('./csp');
+const { generateCSPNonce, csp } = require('./csp');
 const sdkUtils = require('./api-util/sdk');
-const { getClientScripts, logAssets, BUILD_DIR } = require('./utils/assets');
 
-// Paths + helpers
-const exists = p => { try { return fs.existsSync(p); } catch { return false; } };
-const readHead = (p, n=20) => {
-  try { return fs.readFileSync(p, 'utf8').split('\n').slice(0,n).join('\n'); } catch { return null; }
-};
+const buildDir = path.join(__dirname, '..', 'build');
+console.log('[server] buildDir:', buildDir, 'exists:', fs.existsSync(buildDir));
 
-const buildDir  = path.join(__dirname, '..', 'build');
-const publicDir = path.join(__dirname, '..', 'public');
-
-console.info('[StaticDiag] buildDir:', buildDir, 'exists:', exists(buildDir));
-console.info('[StaticDiag] publicDir:', publicDir, 'exists:', exists(publicDir));
-console.info('[StaticDiag] build/index.html exists:', exists(path.join(buildDir,'index.html')));
-console.info('[StaticDiag] build/static exists:', exists(path.join(buildDir,'static')));
-console.info('[StaticDiag] manifest present:', exists(path.join(buildDir, 'asset-manifest.json')));
-try {
-  const idx = path.join(buildDir,'index.html');
-  const head = readHead(idx, 40);
-  console.info('[StaticDiag] build/index.html head:\n', head || '(missing)');
-} catch {}
-
-// Log asset information
-logAssets();
 const dev = process.env.REACT_APP_ENV === 'development';
 const PORT = process.env.PORT || 3000;
 const redirectSSL =
@@ -81,11 +72,31 @@ const TRUST_PROXY = process.env.SERVER_SHARETRIBE_TRUST_PROXY || null;
 const CSP = process.env.REACT_APP_CSP;
 const CSP_MODE = process.env.CSP_MODE || 'report'; // 'block' for prod, 'report' for test
 const cspReportUrl = '/csp-report';
+const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
 
-// Health first — must be at the very top
-app.get('/healthz', (_req, res) => res.sendStatus(204));
-app.head('/healthz', (_req, res) => res.sendStatus(204));
+// Health check - must return 200 for Render
+app.get('/healthz', (_req, res) => res.status(200).send('ok'));
+app.head('/healthz', (_req, res) => res.status(200).send('ok'));
+
+// SSR info endpoint - reads build/asset-manifest.json and lists /static/js bundles
+app.get('/__ssr-info', (_req, res) => {
+  // Guard: only show in non-production or when SHOW_SSR_INFO=1
+  if (process.env.NODE_ENV === 'production' && process.env.SHOW_SSR_INFO !== '1') {
+    return res.status(404).json({ ok: false, error: 'Not found' });
+  }
+  
+  try {
+    const manifest = require(path.join(buildDir, 'asset-manifest.json'));
+    const files = manifest.files || {};
+    const bundles = Object.values(files)
+      .filter(f => /\/static\/js\/.+\.js$/.test(f))
+      .slice(0, 5);
+    res.json({ ok: true, entrypoints: manifest.entrypoints || [], bundles });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // Boot-time Integration creds presence log
 console.log(
@@ -143,74 +154,71 @@ app.use(
   }
 );
 
-// 1) Nonce generator (must be first)
-app.use(generateCSPNonce);
+// The helmet middleware sets various HTTP headers to improve security.
+// See: https://www.npmjs.com/package/helmet
+// Helmet 4 doesn't disable CSP by default so we need to do that explicitly.
+// If csp is enabled we will add that separately.
 
-// 2) Safety: nuke any previously-set blocking CSP header
-app.use((req, res, next) => {
-  // Safety: nuke any previously-set blocking CSP header
-  res.removeHeader('Content-Security-Policy');
-  next();
-});
-
-// 3) Base Helmet (relax COEP/COOP to avoid third-party breakage, disable CSP since we handle it ourselves)
-app.use(helmet({ 
-  crossOriginEmbedderPolicy: false, 
-  crossOriginOpenerPolicy: false,
-  contentSecurityPolicy: false  // Disable Helmet's default CSP since we have custom CSP middleware
-}));
-
-
-// helper to avoid typos
-const SELF_ORIGINS = ["'self'", "https://sherbrt.com", "https://www.sherbrt.com"];
-
-// CSP configuration with proper nonce generation and mode switching
-
-// Optional: exclude /api/* routes from CSP (set CSP_EXCLUDE_API=true)
-const excludeAPI = String(process.env.CSP_EXCLUDE_API || '').toLowerCase() === 'true';
-const cspRouteFilter = excludeAPI ? /^(?!\/api).*/ : /.*/;
-
-// Apply nonce generation (with optional API exclusion)
-app.use(cspRouteFilter, generateCSPNonce);
-
-// When a CSP directive is violated, the browser posts a JSON body
-// to the defined report URL and we need to parse this body.
 app.use(
-  bodyParser.json({
-    type: ['json', 'application/csp-report'],
+  helmet({
+    contentSecurityPolicy: false,
+    referrerPolicy: {
+      policy: 'origin',
+    },
   })
 );
 
-// Build CSP policies
-const cspPolicies = cspDirectives({ mode: CSP_MODE, reportUri: cspReportUrl });
+if (cspEnabled) {
+  app.use(generateCSPNonce);
 
-// Log CSP mode at startup
-console.log(`🔐 CSP mode: ${cspPolicies.mode}, dual report: ${cspPolicies.dualReport}, exclude API: ${excludeAPI}`);
+  // When a CSP directive is violated, the browser posts a JSON body
+  // to the defined report URL and we need to parse this body.
+  app.use(
+    bodyParser.json({
+      type: ['json', 'application/csp-report'],
+    })
+  );
 
-if (cspPolicies.mode === 'block') {
-  // Apply enforce middleware (with optional API exclusion)
-  app.use(cspRouteFilter, cspPolicies.enforce);
-  // Apply report-only middleware if dual reporting is enabled
-  if (cspPolicies.dualReport) {
-    app.use(cspRouteFilter, cspPolicies.reportOnly);
+  // CSP can be turned on in report or block mode. In report mode, the
+  // browser checks the policy and calls the report URL when the
+  // policy is violated, but doesn't block any requests. In block
+  // mode, the browser also blocks the requests.
+
+  // Build CSP policies
+  const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
+  
+  // Log CSP mode at startup
+  console.log(`🔐 CSP mode: ${CSP_MODE}`);
+
+  if (CSP_MODE === 'block') {
+    // Apply both enforce and reportOnly middlewares (enforce first)
+    app.use(cspPolicies.enforce);
+    app.use(cspPolicies.reportOnly);
+  } else {
+    // Apply only reportOnly middleware
+    app.use(cspPolicies.reportOnly);
   }
-} else {
-  // Apply only reportOnly middleware (with optional API exclusion)
-  app.use(cspRouteFilter, cspPolicies.reportOnly);
 }
 
-// Sanity check: ensure only report-only exists in report mode
-app.use((req, res, next) => {
-  // After CSP middleware ran, ensure only report-only exists in report mode
-  if ((process.env.CSP_MODE || 'report').toLowerCase() !== 'block') {
-    const blocking = res.getHeader('Content-Security-Policy');
-    if (blocking) {
-      console.warn('[CSP] Removing unexpected blocking CSP header in report mode');
-      res.removeHeader('Content-Security-Policy');
+// Set up integration SDK for QR and other privileged operations
+const { getIntegrationSdk } = require('./api-util/integrationSdk');
+
+function buildIntegrationSdk() {
+  try {
+    const sdk = getIntegrationSdk();
+    if (sdk) {
+      app.set('integrationSdk', sdk);
+      console.log('✅ integrationSdk attached to app');
+      return sdk;
     }
+  } catch (err) {
+    console.warn('⚠️ Missing INTEGRATION_CLIENT_ID/INTEGRATION_CLIENT_SECRET – integrationSdk not set');
+    console.warn('   Error:', err.message);
   }
-  next();
-});
+  return null;
+}
+
+const integrationSdk = buildIntegrationSdk();
 
 // Redirect HTTP to HTTPS if REDIRECT_SSL is `true`.
 // This also works behind reverse proxies (load balancers) as they are for example used by Heroku.
@@ -222,138 +230,30 @@ if (REDIRECT_SSL) {
   app.use(enforceSsl());
 }
 
-// Set the TRUST_PROXY when running the app behind a reverse proxy.
-//
-// For example, when running the app in Heroku, set TRUST_PROXY to `true`.
-//
-// Read more: https://expressjs.com/en/guide/behind-proxies.html
-//
-if (TRUST_PROXY === 'true') {
-  app.enable('trust proxy');
-} else if (TRUST_PROXY === 'false') {
-  app.disable('trust proxy');
-} else if (TRUST_PROXY !== null) {
-  app.set('trust proxy', TRUST_PROXY);
+// Behind Render/Heroku, trust the proxy so req.protocol/host reflect original request.
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+} else if (process.env.TRUST_PROXY) {
+  app.set('trust proxy', process.env.TRUST_PROXY);
 }
 
 app.use(compression());
-
-// Explicit favicon route with cache busting - force Sherbrt icon (BEFORE static middleware)
-app.get('/favicon.ico', (req, res, next) => {
-  res.set('Cache-Control', 'no-cache');
-  const sherbrtFav = path.join(publicDir, 'favicon.ico'); // Sherbrt brand icon
-  res.sendFile(sherbrtFav, err => err ? next(err) : null);
-});
-
-// Bundle request logging middleware
-app.use((req,res,next) => {
-  // Log all bundle requests and 404s
-  if (req.url.startsWith('/static/')) {
-    res.on('finish', () => {
-      if (res.statusCode >= 400) {
-        console.error('[BundleDiag]', req.method, req.url, '→', res.statusCode);
-      }
-    });
-  }
-  next();
-});
-
-const setAssetHeaders = (res, filePath) => {
-  // long cache for hashed assets
-  if (/\.[0-9a-f]{8,}\.(js|css|png|jpg|svg|woff2?)$/i.test(filePath)) {
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  } else {
-    res.setHeader('Cache-Control', 'public, max-age=300');
-  }
-};
-
-// Serve built client and static assets FIRST
-app.use(express.static(buildDir,  { index: false, setHeaders: setAssetHeaders }));
-app.use(express.static(publicDir, { index: false, setHeaders: setAssetHeaders }));
+// Serve static assets from build directory
+app.use(express.static(buildDir, { index: false }));
 app.use(cookieParser());
 
-// Helper function for static routes
-function sendPreferringBuild(res, file, type) {
-  const p1 = path.join(buildDir, file);
-  const p2 = path.join(publicDir, file);
-  if (type) res.type(type);
-  if (exists(p1)) return res.sendFile(p1);
-  if (exists(p2)) return res.sendFile(p2);
-  return res.status(404).end();
-}
+// robots.txt is generated by resources/robotsTxt.js
+// It creates the sitemap URL with the correct marketplace URL
+app.get('/robots.txt', robotsTxtRoute);
 
-// Static diagnostics endpoints
-app.get('/__static/diag', (req, res) => {
-  const list = d => { try { return fs.readdirSync(d).slice(0,10); } catch { return []; } };
-  res.json({
-    buildIndex: fs.existsSync(path.join(buildDir,'index.html')),
-    buildStatic: fs.existsSync(path.join(buildDir,'static')),
-    sampleBuildStatic: list(path.join(buildDir,'static')),
-    faviconPublicExists: fs.existsSync(path.join(publicDir,'favicon.ico')),
-    faviconBuildExists: fs.existsSync(path.join(buildDir,'favicon.ico')),
-    time: new Date().toISOString()
-  });
-});
+// Handle different sitemap-* resources. E.g. /sitemap-index.xml
+app.get('/sitemap-:resource', sitemapResourceRoute);
 
-app.get('/__static/which-index', (req, res) => {
-  // Show which index we are about to send
-  const p = exists(path.join(buildDir,'index.html'))
-    ? path.join(buildDir,'index.html')
-    : path.join(publicDir,'index.html');
-  res.type('text/plain').send(p + '\n\n' + (readHead(p, 30) || '(missing)'));
-});
-
-// Health and assets diagnostic endpoints
-app.get('/__health', (req, res) => {
-  const buildExists = fs.existsSync(path.join(buildDir, 'index.html'));
-  const manifestExists = fs.existsSync(path.join(buildDir, 'asset-manifest.json'));
-  const { js } = getClientScripts();
-  res.json({ 
-    ok: buildExists && manifestExists && js.length > 0, 
-    buildExists, 
-    manifestExists, 
-    injectedScriptsCount: js.length 
-  });
-});
-
-app.get('/__assets', (req, res) => {
-  const { js, css, error } = getClientScripts();
-  res.json({ js, css, error });
-});
-
-// CSP debug endpoint
-app.get('/debug/csp', (req, res) => {
-  const n = res.locals.cspNonce || 'missing';
-  res.send(`<!doctype html><body><!-- n8=${n.slice(0,8)} --><script nonce="${n}">document.body.innerHTML='inline ok';</script></body>`);
-});
-
-// Headers debug endpoint
-app.get('/debug/headers', (req, res) => {
-  res.type('text/plain').send(res.get('content-security-policy') || 'no csp header');
-});
-
-// CSP headers debug endpoint
-app.get('/debug/csp-headers', (req, res) => {
-  const blockingCSP = res.getHeader('Content-Security-Policy');
-  const reportOnlyCSP = res.getHeader('Content-Security-Policy-Report-Only');
-  res.json({
-    'Content-Security-Policy': blockingCSP || null,
-    'Content-Security-Policy-Report-Only': reportOnlyCSP || null,
-    mode: process.env.CSP_MODE || 'report'
-  });
-});
-
-app.get('/debug/html-tail', (req, res) => {
-  const html = global.__lastRenderedHtml || '';
-  res.type('text/plain').send(html.slice(-2000)); // last 2k chars to see scripts near </body>
-});
-
-// Manifest/robots/sitemaps (prefer build, fallback public, correct type)
-app.get('/site.webmanifest', (req,res) => sendPreferringBuild(res, 'site.webmanifest', 'application/manifest+json'));
-app.get(['/robots.txt','/sitemap.xml','/sitemap-index.xml'], (req,res) => {
-  const map = {'/robots.txt':'robots.txt','/sitemap.xml':'sitemap.xml','/sitemap-index.xml':'sitemap-index.xml'};
-  return sendPreferringBuild(res, map[req.path]);
-});
+// Generate web app manifest
+// When developing with "yarn run dev",
+// you can reach the manifest from http://localhost:3500/site.webmanifest
+// The corresponding <link> element is set in src/components/Page/Page.js
+app.get('/site.webmanifest', webmanifestResourceRoute);
 
 // These .well-known/* endpoints will be enabled if you are using this template as OIDC proxy
 // https://www.sharetribe.com/docs/cookbook-social-logins-and-sso/setup-open-id-connect-proxy/
@@ -385,70 +285,197 @@ app.use(passport.initialize());
 // Server-side routes that do not render the application
 app.use('/api', apiRouter);
 
+// Redis smoke test endpoint - standalone test for Redis connection and QR functionality
+const { getRedis } = require('./redis');
+
+// util to mask secrets in logs/responses
+function mask(str, keep = 4) {
+  if (!str || typeof str !== 'string') return '';
+  const s = str.replace(/[\r\n\t]/g, '');
+  return s.length <= keep ? s : `${s.slice(0, keep)}…`;
+}
+
+// GET /api/qr/test — writes and reads a dummy Redis key and returns status
+app.get('/api/qr/test', async (req, res) => {
+  console.log('[qr-test] route enabled at /api/qr/test');
+  const redis = getRedis();
+
+  const env = {
+    PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || '',
+    REDIS_URL: process.env.REDIS_URL || '',
+  };
+
+  const txId = req.query.tx || 'qr-test-tx';
+  const key = `qr:${txId}`;
+  const now = new Date().toISOString();
+  const payload = {
+    smoke: true,
+    savedAt: now,
+    qrCodeUrl: 'https://example.com/fake-qr.png',
+  };
+
+  const result = {
+    ok: true,
+    mode: redis.status === 'mock' ? 'in-memory (mock)' : 'redis',
+    env: {
+      PUBLIC_BASE_URL: mask(env.PUBLIC_BASE_URL, 20),
+      REDIS_URL: env.REDIS_URL ? '(set)' : '(missing)',
+    },
+    actions: [],
+    readback: null,
+  };
+
+  try {
+    // write with short TTL (60s)
+    await redis.set(key, JSON.stringify(payload), 'EX', 60);
+    result.actions.push({ action: 'SET', key, ttl: 60, status: 'ok' });
+  } catch (e) {
+    result.ok = false;
+    result.actions.push({ action: 'SET', key, status: 'error', error: String(e) });
+  }
+
+  try {
+    const raw = await redis.get(key);
+    result.actions.push({ action: 'GET', key, status: raw ? 'ok' : 'miss' });
+    result.readback = raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    result.ok = false;
+    result.actions.push({ action: 'GET', key, status: 'error', error: String(e) });
+  }
+
+  // Optional: quickly exercise the QR redirect handler if present
+  // e.g. curl -i "$PUBLIC_BASE_URL/api/qr/$TXID" separately; here we just return helpful next steps
+  result.nextSteps = {
+    curlQr: env.PUBLIC_BASE_URL
+      ? `curl -i "${env.PUBLIC_BASE_URL}/api/qr/${txId}"    # expect 302 if you seed Redis for this txId"`
+      : 'Set PUBLIC_BASE_URL to test QR shortlinks.',
+    seedNote: `To test redirect, set a real payload at key ${key} with a valid Shippo qrCodeUrl, then hit /api/qr/${txId}`,
+  };
+
+  res.set('Cache-Control', 'no-store');
+  return res.status(result.ok ? 200 : 500).json(result);
+});
+
 const noCacheHeaders = {
   'Cache-control': 'no-cache, no-store, must-revalidate',
 };
 
-// Only AFTER static, register the SSR catch-all
-const renderApp = require('./ssr');
-app.get('*', async (req,res,next)=>{
+// SSR catch-all LAST (with tracing + bundle check)
+app.get('*', async (req, res, next) => {
   try {
-    const html = await renderApp(req,res);
-    res.type('html').send(html);
-  } catch (e) { next(e); }
+    console.log('[trace] SSR handler for', req.path);
+    // ---- Collect SSR data for renderer (and provide safe defaults) ----
+    let data = {};
+    try {
+      if (renderer && typeof renderer.getData === 'function') {
+        console.log('[trace] renderer.getData start');
+        data = await renderer.getData(req, res);
+      } else if (renderer && typeof renderer.loadData === 'function') {
+        console.log('[trace] renderer.loadData start');
+        data = await renderer.loadData(req, res);
+      }
+    } catch (e) {
+      console.warn('[ssr] data loader failed; continuing with empty preloadedState', e);
+      data = {};
+    }
+    if (!data || typeof data !== 'object') data = {};
+    if (!data.preloadedState) data.preloadedState = {};
+    // Some templates expect the manifest for script/style injection
+    try {
+      data.manifest = require(path.join(buildDir, 'asset-manifest.json'));
+    } catch (_) {}
+
+    // Create a Loadable ChunkExtractor (or a harmless shim) for SSR chunk collection
+    try {
+      const statsFile = path.join(buildDir, 'loadable-stats.json');
+      let extractor = null;
+      try {
+        const { ChunkExtractor } = require('@loadable/server');
+        if (fs.existsSync(statsFile)) {
+          extractor = new ChunkExtractor({ statsFile });
+          console.log('[ssr] loadable-stats.json found, using ChunkExtractor');
+        } else {
+          console.warn('[ssr] loadable-stats.json missing — proceeding without real extractor');
+        }
+      } catch (e) {
+        console.warn('[ssr] @loadable/server not available — using extractor shim:', e.message);
+      }
+      // Shim so renderer can safely call collectChunks/get*Tags even if stats are missing
+      const shim = {
+        collectChunks: x => x,
+        getScriptTags: () => '',
+        getLinkTags:   () => '',
+        getStyleTags:  () => '',
+      };
+      const finalExtractor = extractor || shim;
+      data.extractor = finalExtractor;
+      data.loadableExtractor = finalExtractor; // alt key some templates use
+      // Also expose on res.locals in case renderer reads from there
+      res.locals.extractor = finalExtractor;
+      res.locals.loadableExtractor = finalExtractor;
+    } catch (e) {
+      console.warn('[ssr] extractor init failed; using shim', e);
+      const shim = {
+        collectChunks: x => x,
+        getScriptTags: () => '',
+        getLinkTags:   () => '',
+        getStyleTags:  () => '',
+      };
+      data.extractor = shim;
+      data.loadableExtractor = shim;
+      res.locals.extractor = shim;
+      res.locals.loadableExtractor = shim;
+    }
+
+    let html;
+    if (renderer && typeof renderer.renderApp === 'function') {
+      html = await renderer.renderApp(req, res, data);
+    } else if (renderer && typeof renderer.render === 'function') {
+      html = await renderer.render(req, res, data);
+    } else if (typeof renderer === 'function') {
+      html = await renderer(req, res, data);
+    } else if (renderer && typeof renderer.default === 'function') {
+      html = await renderer.default(req, res, data);
+    } else {
+      html = null;
+    }
+
+    if (!html) throw new Error('Renderer returned empty');
+
+    if (!/\/static\/js\//.test(html)) {
+      console.error('❌ SSR returned HTML without bundle scripts');
+    }
+    res.status(200).send(html);
+  } catch (e) {
+    console.error('[SSR error]', e);
+    next(e);
+  }
 });
 
 // Set error handler. If Sentry is set up, all error responses
 // will be logged there.
 log.setupExpressErrorHandler(app);
 
-// Global error handler to prevent blank 500s
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error('[ServerError]', err && err.stack || err);
-  // If the request is GET / (or other HTML route), try to serve the SPA shell instead of raw 500
-  if (req.method === 'GET' && req.accepts('html')) {
-    return res.status(200).sendFile(path.join(publicDir, 'index.html'));
-  }
-  res.status(500).json({ error: 'Internal Server Error' });
-});
+if (cspEnabled) {
+  // Dig out the value of the given CSP report key from the request body.
+  const reportValue = (req, key) => {
+    const report = req.body ? req.body['csp-report'] : null;
+    return report && report[key] ? report[key] : key;
+  };
 
-// Dig out the value of the given CSP report key from the request body.
-const reportValue = (req, key) => {
-  const report = req.body ? req.body['csp-report'] : null;
-  return report && report[key] ? report[key] : key;
-};
-
-// Handler for CSP violation reports.
-app.post(cspReportUrl, (req, res) => {
-  const effectiveDirective = reportValue(req, 'effective-directive');
-  const blockedUri = reportValue(req, 'blocked-uri');
-  const msg = `CSP: ${effectiveDirective} doesn't allow ${blockedUri}`;
-  
-  // determine report/block mode from env
-  const __cspMode = (process.env.CSP_MODE || 'report').toLowerCase() === 'block' ? 'block' : 'report';
-  
-  // Check for specific inline script violations
-  if (effectiveDirective === 'script-src-elem' && blockedUri === 'inline') {
-    const __msg = "CSP: script-src-elem does not allow inline";
-    if (__cspMode === 'report') {
-      console.warn(__msg + " (report mode; continuing)");
-    } else {
-      throw new Error(__msg);
-    }
-  } else {
-    // For other violations, just log
+  // Handler for CSP violation reports.
+  app.post(cspReportUrl, (req, res) => {
+    const effectiveDirective = reportValue(req, 'effective-directive');
+    const blockedUri = reportValue(req, 'blocked-uri');
+    const msg = `CSP: ${effectiveDirective} doesn't allow ${blockedUri}`;
     log.error(new Error(msg), 'csp-violation');
-  }
-  
-  res.status(204).end();
-});
+    res.status(204).end();
+  });
+}
 
 const server = app.listen(PORT, () => {
   const mode = process.env.NODE_ENV || 'development';
-  const { ICONS_VERSION } = require('./lib/iconsVersion');
-  console.log(`Listening on port ${PORT} in ${mode} mode`);
-  console.log(`Using ICONS_VERSION: ${ICONS_VERSION}`);
+  console.log(`✅ Listening on port ${PORT} in ${mode} mode`);
   if (dev) {
     console.log(`Open http://localhost:${PORT}/ and start hacking!`);
   }
