@@ -15,7 +15,9 @@ const loginAs = require('./api/login-as');
 const transactionLineItems = require('./api/transaction-line-items');
 const initiatePrivileged = require('./api/initiate-privileged');
 const transitionPrivileged = require('./api/transition-privileged');
-const twilioSmsStatus = require('./api/twilio/sms-status');
+const shippoWebhook = require('./webhooks/shippoTracking');
+const qrRouter = require('./api/qr');
+const smsStatus = require('./api/twilio/sms-status');
 
 const createUserWithIdp = require('./api/auth/createUserWithIdp');
 const loginWithIdp = require('./api/auth/loginWithIdp');
@@ -26,20 +28,7 @@ const { authenticateGoogle, authenticateGoogleCallback } = require('./api/auth/g
 
 const router = express.Router();
 
-// SMS feature flag
-const SMS_ENABLED = process.env.SMS_ENABLED === 'true';
-
-// QR and Shippo feature flags
-const QR_ENABLED = process.env.QR_ENABLED === 'true';
-const SHIPPO_ENABLED = process.env.SHIPPO_ENABLED === 'true';
-
 // ================ API router middleware: ================ //
-
-// Parse URL-encoded bodies (for Twilio webhooks)
-router.use(bodyParser.urlencoded({ extended: false }));
-
-// Parse JSON bodies (for general API routes)
-router.use(bodyParser.json());
 
 // Parse Transit body first to a string
 router.use(
@@ -72,28 +61,14 @@ router.post('/initiate-privileged', initiatePrivileged);
 router.post('/transition-privileged', transitionPrivileged);
 
 // Shippo webhook endpoint
-if (SHIPPO_ENABLED) {
-  const shippoWebhook = require('./webhooks/shippoTracking');
-  router.use('/webhooks', shippoWebhook);
-} else {
-  router.use('/webhooks', (_req, res) => res.status(404).send('disabled'));
-}
+router.use('/webhooks', shippoWebhook);
 
-// Twilio SMS status callback endpoint
-if (SMS_ENABLED) {
-  router.post('/twilio/sms-status', twilioSmsStatus);
-} else {
-  router.post('/twilio/sms-status', (_req, res) => res.status(404).send('disabled'));
-}
+// Twilio SMS delivery receipt endpoint (no auth required - Twilio webhook)
+router.post('/twilio/sms-status', express.urlencoded({ extended: false }), smsStatus);
 
 // QR code redirect endpoint
-if (QR_ENABLED) {
-  const qrRouter = require('./api/qr');
-  const qrRouterInstance = qrRouter({ getTrustedSdk }); // factory export
-  router.use('/qr', qrRouterInstance);
-} else {
-  router.use('/qr', (_req, res) => res.status(404).send('disabled'));
-}
+const qrRouterInstance = qrRouter({ getTrustedSdk }); // factory export
+router.use('/qr', qrRouterInstance);
 
 // Create user with identity provider (e.g. Facebook or Google)
 // This endpoint is called to create a new user after user has confirmed

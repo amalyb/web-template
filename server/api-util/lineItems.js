@@ -181,9 +181,12 @@ exports.transactionLineItems = (listing, orderData, providerCommission, customer
   } else if (nights >= 6 && nights <= 7) {
     discountPercent = 0.3;
     discountCode = 'line-item/discount-30';
-  } else if (nights >= 8) {
+  } else if (nights >= 8 && nights <= 10) {
     discountPercent = 0.4;
     discountCode = 'line-item/discount-40';
+  } else if (nights >= 11) {
+    discountPercent = 0.5;
+    discountCode = 'line-item/discount-50';
   }
 
   const discountLineItem = discountPercent > 0 ? {

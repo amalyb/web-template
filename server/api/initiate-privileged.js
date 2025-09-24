@@ -7,9 +7,13 @@ const {
   fetchCommission,
 } = require('../api-util/sdk');
 const { getIntegrationSdk } = require('../api-util/integrationSdk');
+const { maskPhone } = require('../api-util/phone');
+const { alreadySent } = require('../api-util/idempotency');
+const { attempt, sent, failed } = require('../api-util/metrics');
 
-// Helper function to normalize listingId to string
-const toUuidString = id => (typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null);
+// Helper to normalize listingId to string
+const toUuidString = id =>
+  typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -25,11 +29,9 @@ console.log('🚦 initiate-privileged endpoint is wired up');
 
 // Helper function to build carrier-friendly lender SMS message
 function buildLenderMsg(tx, listingTitle) {
-  const lenderInboxUrl = process.env.PUBLIC_BASE_URL ? `${process.env.PUBLIC_BASE_URL}/inbox/sales` : '/inbox/sales';
-  const lenderMsg =
-    `👗🍧 New Sherbrt booking request! ` +
-    `Someone wants to borrow your listing "${listingTitle}". ` +
-    `Check your inbox to respond: ${lenderInboxUrl}`;
+  // Carrier-friendly: short, one link, no emojis
+  const lenderInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/sales';
+  const lenderMsg = `Sherbrt: new booking request for "${listingTitle}". Check your inbox: ${lenderInboxUrl}`;
   return lenderMsg;
 }
 
@@ -43,52 +45,38 @@ module.exports = (req, res) => {
   
   const { isSpeculative, orderData, bodyParams, queryParams } = req.body;
   
+  // Accept PD from either top-level or the nested Sharetribe pattern
+  const topLevelPD = (req.body && req.body.protectedData) || {};
+  const nestedPD = bodyParams?.params?.protectedData || {};
+  const protectedData = Object.keys(nestedPD).length ? nestedPD : topLevelPD;
+
+  console.log('🔎 initiate body.protectedData is object:', typeof protectedData === 'object');
+  try {
+    console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
+    console.log('[initiate] customerStreet:', protectedData.customerStreet);
+    console.log('[initiate] customerZip:', protectedData.customerZip);
+  } catch (_) {
+    console.log('[initiate] forwarding PD keys: (unavailable)');
+  }
+  
+  // Normalize listingId to string if present
+  if (bodyParams?.params?.listingId) {
+    const originalListingId = bodyParams.params.listingId;
+    const listingId = toUuidString(bodyParams.params.listingId);
+    console.log('[server] incoming listingId:', originalListingId, '→', listingId);
+    
+    if (!listingId) {
+      return res.status(400).json({ error: 'listingId missing or invalid' });
+    }
+    bodyParams.params.listingId = listingId;
+  }
+  
   // STEP 2: Log the transition type
   console.log('🔁 Transition received:', bodyParams?.transition);
   
   // STEP 3: Check that sendSMS is properly imported
   console.log('📱 sendSMS function available:', !!sendSMS);
   console.log('📱 sendSMS function type:', typeof sendSMS);
-
-  // Protected Data extraction & cleaning
-  let protectedData = {};
-  
-  // Accept PD from either req.body.protectedData or req.body.bodyParams?.params?.protectedData
-  const rawPD = req.body.protectedData || req.body.bodyParams?.params?.protectedData;
-  if (rawPD && typeof rawPD === 'object') {
-    // Filter out empty strings
-    protectedData = Object.fromEntries(
-      Object.entries(rawPD).filter(([_, value]) => value && value.toString().trim() !== '')
-    );
-  }
-
-  // Add bookingStartISO into PD if available
-  const bookingStart = bodyParams?.params?.booking?.attributes?.start || 
-                      bodyParams?.params?.bookingStart || 
-                      protectedData?.bookingStartISO;
-  
-  if (bookingStart) {
-    try {
-      const bookingDate = new Date(bookingStart);
-      if (!isNaN(bookingDate.getTime())) {
-        protectedData.bookingStartISO = bookingDate.toISOString();
-      }
-    } catch (e) {
-      console.warn('⚠️ Invalid bookingStart date:', bookingStart);
-    }
-  }
-
-  // Normalize listingId to string and validate
-  const rawListingId = bodyParams?.params?.listingId;
-  const listingId = toUuidString(rawListingId);
-  if (!listingId) {
-    return res.status(400).json({ error: 'Invalid listingId provided' });
-  }
-
-  // Log PD keys under __DEV__ only
-  if (process.env.NODE_ENV === 'development') {
-    console.log('🔐 Protected data keys present:', Object.keys(protectedData));
-  }
 
   // 🔧 FIXED: Remove unused state variables and client SDK usage
   // We'll get listing data and line items inside the trusted SDK chain
@@ -98,9 +86,10 @@ module.exports = (req, res) => {
     .then(async (trustedSdk) => {
       const sdk = trustedSdk; // Single SDK variable throughout
       
-      // Get listing data for line items and SMS using normalized listingId
+      // Get listing data for line items and SMS
+      const listingIdParam = bodyParams?.params?.listingId;
       const listingResponse = await sdk.listings.show({ 
-        id: listingId,
+        id: listingIdParam,
         include: ['author', 'author.profile']
       });
       const listing = listingResponse.data.data;
@@ -119,33 +108,76 @@ module.exports = (req, res) => {
         customerCommission
       );
 
-      // Fallback customerPhone if missing
-      if (!protectedData.customerPhone) {
-        try {
-          const currentUser = await sdk.users.show({ id: 'me' });
-          const userProfile = currentUser?.data?.data?.attributes?.profile;
-          const userPhone = userProfile?.protectedData?.phone || 
-                           userProfile?.protectedData?.phoneNumber ||
-                           userProfile?.publicData?.phone ||
-                           userProfile?.publicData?.phoneNumber;
-          
-          if (userPhone) {
-            protectedData.customerPhone = userPhone;
-            console.log('📱 Added fallback customerPhone from user profile');
+      // Prepare transaction body
+      const { params } = bodyParams;
+      
+      // Helper function to clean empty strings from protectedData
+      const clean = obj => Object.fromEntries(
+        Object.entries(obj || {}).filter(([,v]) => v !== '')
+      );
+      
+      // Add booking start date to protectedData as durable fallback
+      const startRaw =
+        params?.booking?.attributes?.start ||
+        params?.bookingStart ||
+        bodyParams?.params?.protectedData?.customerBookingStartISO ||
+        protectedData?.bookingStartISO;
+      
+      let bookingStartISO = null;
+      if (startRaw) {
+        // Handle both Date objects and ISO strings
+        if (startRaw instanceof Date) {
+          bookingStartISO = startRaw.toISOString();
+        } else if (typeof startRaw === 'string') {
+          // Validate it's a proper ISO string
+          const d = new Date(startRaw);
+          if (!isNaN(d.getTime())) {
+            bookingStartISO = d.toISOString();
           }
-        } catch (err) {
-          console.warn('⚠️ Could not fetch current user for fallback phone:', err.message);
         }
       }
+      
+      // Use the safely extracted protectedData from req.body and clean empty strings
+      const finalProtectedData = clean({ ...(protectedData || {}), bookingStartISO });
+      
+      if (bookingStartISO) {
+        console.log('[initiate] Added bookingStartISO to protectedData:', bookingStartISO);
+      } else {
+        console.log('[initiate] No booking start date found to store in protectedData');
+      }
 
-      // Prepare transaction body with cleaned PD
-      const { params } = bodyParams;
+      // 🔁 Borrower phone fallback: if missing in PD, copy from current user's profile
+      if (!finalProtectedData.customerPhone) {
+        try {
+          const me = await sdk.currentUser.show({ include: ['profile'] });
+          const prof = me?.data?.data?.attributes?.profile;
+          const profilePhone =
+            prof?.protectedData?.phone ??
+            prof?.protectedData?.phoneNumber ??
+            prof?.publicData?.phone ??
+            prof?.publicData?.phoneNumber ??
+            null;
+          if (profilePhone) {
+            finalProtectedData.customerPhone = profilePhone;
+            console.log('[initiate] filled customerPhone from profile');
+          } else {
+            console.log('[initiate] no phone found in profile; leaving customerPhone unset');
+          }
+        } catch (e) {
+          console.warn('[initiate] could not read currentUser profile for phone fallback:', e?.message);
+        }
+      }
+      
+      console.log('[initiate] forwarding PD keys:', Object.keys(finalProtectedData));
+      console.log('[initiate] merged finalProtectedData customerStreet:', finalProtectedData.customerStreet);
+      console.log('[initiate] merged finalProtectedData customerZip:', finalProtectedData.customerZip);
+      
       const body = {
         ...bodyParams,
         params: {
           ...params,
+          protectedData: finalProtectedData, // use safely extracted PD
           lineItems,
-          protectedData,
         },
       };
 
@@ -206,7 +238,7 @@ module.exports = (req, res) => {
               null;
 
             console.log('[SMS][booking-request] Provider phone (raw, masked):',
-              provPhone ? `***${String(provPhone).slice(-4)}` : null
+              maskPhone(provPhone)
             );
 
             // Optional: safety — don't accidentally send to borrower's phone
@@ -216,8 +248,22 @@ module.exports = (req, res) => {
             } else if (provPhone) {
               // Your sendSMS util should normalize to E.164 and log the final +1… number
               const listingTitle = listing?.attributes?.title || 'your listing';
-              await sendSMS(provPhone, buildLenderMsg(tx, listingTitle));
-              console.log('📱 [SMS][booking-request] Lender notification sent');
+              
+              const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:lender`;
+              if (alreadySent(key)) {
+                console.log('[SMS] duplicate suppressed (lender):', key);
+              } else {
+                try {
+                  await sendSMS(provPhone, buildLenderMsg(tx, listingTitle), { 
+                    role: 'lender',
+                    tag: 'booking_request_to_lender_alt',
+                    meta: { listingId: listing?.id?.uuid || listing?.id }
+                  });
+                  console.log(`📱 [SMS][booking-request] Lender notification sent to ${maskPhone(provPhone)}`);
+                } catch (e) {
+                  console.error('[SMS][booking-request] Lender SMS failed:', e.message);
+                }
+              }
             } else {
               console.warn('[SMS][booking-request] Provider missing phone; skipping lender SMS');
             }
@@ -249,14 +295,26 @@ module.exports = (req, res) => {
             try {
               console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
               
-              const listingTitle = listing?.attributes?.title || 'your listing';
-              const borrowerInboxUrl = process.env.PUBLIC_BASE_URL ? `${process.env.PUBLIC_BASE_URL}/inbox/orders` : '/inbox/orders';
-              const borrowerMsg =
-                `✅ Request sent! Your booking request for "${listingTitle}" was delivered. ` +
-                `Track and reply in your inbox: ${borrowerInboxUrl}`;
+                              const listingTitle = listing?.attributes?.title || 'your listing';
+                // Carrier-friendly borrower message
+                const borrowerInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/orders';
+                const borrowerMsg = `Sherbrt: your booking request for "${listingTitle}" was sent. Track in your inbox: ${borrowerInboxUrl}`;
               
-              await sendSMS(borrowerPhone, borrowerMsg, { role: 'customer' });
-              console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${borrowerPhone}`);
+              const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:borrower`;
+              if (alreadySent(key)) {
+                console.log('[SMS] duplicate suppressed (borrower):', key);
+              } else {
+                try {
+                  await sendSMS(borrowerPhone, borrowerMsg, { 
+                    role: 'borrower',
+                    tag: 'booking_confirmation_to_borrower',
+                    meta: { listingId: listing?.id?.uuid || listing?.id }
+                  });
+                  console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${maskPhone(borrowerPhone)}`);
+                } catch (e) {
+                  console.error('[SMS][customer-confirmation] Customer SMS failed:', e.message);
+                }
+              }
               
             } catch (customerSmsErr) {
               console.error('[SMS][customer-confirmation] Customer SMS failed:', customerSmsErr.message);

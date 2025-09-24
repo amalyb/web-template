@@ -4,6 +4,12 @@
 // Configure process.env with .env.* files
 require('./env').configureEnv();
 
+// Log Integration creds presence on boot
+console.log('[server] Integration creds present?', {
+  INTEGRATION_CLIENT_ID: !!process.env.INTEGRATION_CLIENT_ID,
+  INTEGRATION_CLIENT_SECRET: !!process.env.INTEGRATION_CLIENT_SECRET,
+});
+
 const express = require('express');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
@@ -28,6 +34,7 @@ app.use(
   })
 );
 app.use(cookieParser());
+app.use(bodyParser.json());
 app.use('/.well-known', wellKnownRouter);
 app.use('/api', apiRouter);
 
@@ -47,6 +54,10 @@ app.get('/robots.txt', robotsTxtRoute);
 // Handle different sitemap-* resources. E.g. /sitemap-index.xml
 app.get('/sitemap-:resource', sitemapResourceRoute);
 
-app.listen(PORT, () => {
-  console.log(`API server listening on ${PORT}`);
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ ok: true });
 });
+
+const port = process.env.REACT_APP_DEV_API_SERVER_PORT || 3500;
+app.listen(port, () => console.log('[server] listening on', port));

@@ -3,8 +3,45 @@ services:
     name: shop-on-sherbet
     env: node
     plan: starter
+    buildCommand: yarn install --frozen-lockfile && yarn build
+    startCommand: node server/index.js
+    healthCheckPath: /healthz
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  # Background workers for SMS reminders
+  # These run as daemons with internal scheduling
+  
+  - type: worker
+    name: shipby-reminders
+    env: node
+    plan: starter
     buildCommand: yarn install && yarn run render-build
-    startCommand: yarn start
+    startCommand: node server/scripts/sendShipByReminders.js --daemon
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  - type: worker
+    name: return-reminders
+    env: node
+    plan: starter
+    buildCommand: yarn install && yarn run render-build
+    startCommand: node server/scripts/sendReturnReminders.js --daemon
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  - type: worker
+    name: overdue-reminders
+    env: node
+    plan: starter
+    buildCommand: yarn install && yarn run render-build
+    startCommand: node server/scripts/sendOverdueReminders.js --daemon
     nodeVersion: 20.10.0
     envVars:
       - key: NODE_ENV
