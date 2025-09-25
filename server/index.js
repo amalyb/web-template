@@ -105,6 +105,39 @@ console.log(
     : '⚠️ Missing Integration API credentials (lender SMS may fail to read protected phone).'
 );
 
+// Boot-time environment validator (warn-only)
+const envWarnings = [];
+const requiredEnvs = {
+  'TWILIO_ACCOUNT_SID': 'Twilio SMS functionality',
+  'TWILIO_AUTH_TOKEN': 'Twilio SMS functionality', 
+  'TWILIO_MESSAGING_SERVICE_SID': 'Twilio SMS functionality',
+  'SHIPPO_API_TOKEN': 'Shippo shipping labels',
+  'ROOT_URL': 'Server configuration'
+};
+
+Object.entries(requiredEnvs).forEach(([key, purpose]) => {
+  if (!process.env[key]) {
+    envWarnings.push(`⚠️ Missing ${key} - ${purpose} may not work properly`);
+  }
+});
+
+// Log SMS_DRY_RUN status
+const smsDryRun = process.env.SMS_DRY_RUN;
+if (smsDryRun === 'true') {
+  console.log('📱 SMS_DRY_RUN=true - SMS messages will be logged but not sent');
+} else if (smsDryRun === 'false') {
+  console.log('📱 SMS_DRY_RUN=false - SMS messages will be sent to real numbers');
+} else {
+  envWarnings.push('⚠️ SMS_DRY_RUN not set - defaulting to dry run mode');
+}
+
+// Log all warnings at once
+if (envWarnings.length > 0) {
+  console.log('\n🔧 Environment Configuration Warnings:');
+  envWarnings.forEach(warning => console.log(warning));
+  console.log(''); // Empty line for readability
+}
+
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'https://localhost:3000',
