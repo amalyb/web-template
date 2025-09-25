@@ -296,46 +296,6 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
 
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
-  
-  // Handle both field naming conventions based on ADDR_ENABLED flag
-  const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
-  let customerName, customerStreet, customerStreet2, customerCity, customerState, customerZip, customerEmail, customerPhone;
-  
-  if (ADDR_ENABLED) {
-    // When ADDR_ENABLED is true, use namespaced field names from AddressForm
-    customerName = formValues?.shipping?.name || '';
-    customerStreet = formValues?.shipping?.line1 || '';
-    customerStreet2 = formValues?.shipping?.line2 || '';
-    customerCity = formValues?.shipping?.city || '';
-    customerState = formValues?.shipping?.state || '';
-    customerZip = formValues?.shipping?.postalCode || '';
-    customerEmail = formValues?.shipping?.email || currentUser?.attributes?.email || '';
-    customerPhone = formValues?.shipping?.phone || '';
-    console.debug('[getOrderParams] ADDR_ENABLED=true, using shipping namespace:', {customerStreet, customerZip});
-  } else {
-    // When ADDR_ENABLED is false, use direct field names from custom form
-    customerName = formValues?.customerName || '';
-    customerStreet = formValues?.customerStreet || '';
-    customerStreet2 = formValues?.customerStreet2 || '';
-    customerCity = formValues?.customerCity || '';
-    customerState = formValues?.customerState || '';
-    customerZip = formValues?.customerZip || '';
-    customerEmail = formValues?.customerEmail || currentUser?.attributes?.email || '';
-    customerPhone = formValues?.customerPhone || '';
-    console.debug('[getOrderParams] ADDR_ENABLED=false, using direct fields:', {customerStreet, customerZip});
-  }
-
-  // Client-side validation for required address fields
-  if (!formValues.customerStreet || !formValues.customerZip) {
-    if (__DEV__) {
-      console.log('🔍 Address validation failed:', {
-        customerStreet: formValues.customerStreet ? 'present' : 'missing',
-        customerZip: formValues.customerZip ? 'present' : 'missing'
-      });
-    }
-    setSubmitting(false);
-    throw new Error('Street address and ZIP code are required');
-  }
 
   // Handle both field naming conventions based on flag
   const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
@@ -363,6 +323,18 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
         customerPhone: formValues?.customerPhone ?? '',
       };
 
+  // Client-side validation for required address fields
+  if (!addr.customerStreet || !addr.customerZip) {
+    if (__DEV__) {
+      console.log('🔍 Address validation failed:', {
+        customerStreet: addr.customerStreet ? 'present' : 'missing',
+        customerZip: addr.customerZip ? 'present' : 'missing'
+      });
+    }
+    setSubmitting(false);
+    throw new Error('Street address and ZIP code are required');
+  }
+
   // Construct protectedData
   const protectedData = {
     ...addr,
@@ -388,7 +360,6 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
   console.debug('[checkout] forwarding PD keys', Object.keys(filteredProtectedData));
   console.log('🔐 Protected data constructed from formValues:', protectedData);
   console.log('📦 Raw formValues:', formValues);
-  console.debug('[checkout] forwarding PD keys', Object.keys(protectedData));
 
   // Calculate pricing and booking duration
   const unitPrice = pageData?.listing?.attributes?.price;
