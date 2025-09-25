@@ -10,6 +10,11 @@ const {
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 
+// Feature flags
+const SHIPPO_ENABLED = String(process.env.SHIPPO_ENABLED || 'false') === 'true';
+const SHIP_BY_SMS_ENABLED = String(process.env.SHIP_BY_SMS_ENABLED || 'false') === 'true';
+const SHIP_LEAD_DAYS = Number(process.env.SHIP_LEAD_DAYS || 2);
+
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
   Object.fromEntries(keys.map(k => [k, obj && typeof obj === 'object' ? obj[k] : undefined]));
@@ -345,7 +350,7 @@ async function createShippingLabels({
 
     // Calculate ship-by date using hardened centralized helper
     const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = computeShipByDate(transaction);
+    const shipByDate = computeShipByDate({ bookingStartISO, leadDays: SHIP_LEAD_DAYS });
     const shipByStr = shipByDate && formatShipBy(shipByDate);
 
     // Debug so we can see inputs/outputs clearly
@@ -384,38 +389,44 @@ async function createShippingLabels({
     }
 
     // Lender SMS block – carrier-friendly messaging
-    try {
-      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
-      
-      // Build message defensively: omit "Please ship by …" if unknown
-      const shipUrl = `${process.env.SITE_URL || 'https://sherbrt.com'}/ship/${txId}`;
-      const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+    if (SHIP_BY_SMS_ENABLED && labelUrl) {
+      try {
+        const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
+        
+        // Build message defensively: omit "Please ship by …" if unknown
+        const shipUrl = `${process.env.SITE_URL || 'https://sherbrt.com'}/ship/${txId}`;
+        const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
 
-      const body = shipByStr
-        ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
-        : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
+        const body = shipByStr
+          ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
+          : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
 
-      console.log('[label-ready] sms body preview:', body);
+        console.log('[label-ready] sms body preview:', body);
 
-      console.log('[sms] sending lender_label_ready', { txId, shipUrl });
+        console.log('[sms] sending lender_label_ready', { txId, shipUrl });
 
-      if (!lenderPhone || !body) {
-        console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
-      } else {
-        await sendSMS(
-          lenderPhone,
-          body,
-          {
-            role: 'lender',
-            transactionId: txId,
-            tag: 'label_ready_to_lender',
-            meta: { listingId: listing?.id?.uuid || listing?.id }
-          }
-        );
-        console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
+        if (!lenderPhone || !body) {
+          console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
+        } else {
+          await sendSMS(
+            lenderPhone,
+            body,
+            {
+              role: 'lender',
+              transactionId: txId,
+              tag: 'label_ready_to_lender',
+              meta: { listingId: listing?.id?.uuid || listing?.id }
+            }
+          );
+          console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
+        }
+      } catch (e) {
+        console.error('[SHIPPO][SMS] Failed to send provider SMS', e);
       }
-    } catch (e) {
-      console.error('[SHIPPO][SMS] Failed to send provider SMS', e);
+    } else {
+      console.log('[sms] Skipping ship-by SMS (gate or missing label)', {
+        enabled: SHIP_BY_SMS_ENABLED, haveLabel: !!labelUrl, txId: txId
+      });
     }
 
     // Parse expiry from QR code URL (keep existing logic)
@@ -1200,21 +1211,24 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
         }
         
         // Trigger Shippo label creation asynchronously (don't await to avoid blocking response)
-        createShippingLabels({
-          txId: transactionId,
-          listing,
-          protectedData: finalProtectedData,
-          providerPhone: finalProtectedData?.providerPhone,
-          integrationSdk: sdk,
-          sendSMS,
-          normalizePhone: (p) => {
-            const digits = (p || '').replace(/\D/g, '');
-            if (!digits) return null;
-            return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
-          },
-          selectedRate: null, // Will be set inside the function
-          transaction: expandedTx || response?.data?.data
-        })
+        if (!SHIPPO_ENABLED) {
+          console.log('[shippo] Shippo disabled by SHIPPO_ENABLED=false; skipping label purchase', { txId: transactionId });
+        } else {
+          createShippingLabels({
+            txId: transactionId,
+            listing,
+            protectedData: finalProtectedData,
+            providerPhone: finalProtectedData?.providerPhone,
+            integrationSdk: sdk,
+            sendSMS,
+            normalizePhone: (p) => {
+              const digits = (p || '').replace(/\D/g, '');
+              if (!digits) return null;
+              return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
+            },
+            selectedRate: null, // Will be set inside the function
+            transaction: expandedTx || response?.data?.data
+          })
           .then(result => {
             if (result.success) {
               console.log('✅ [SHIPPO] Label creation completed successfully');
@@ -1225,6 +1239,7 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           .catch(err => {
             console.error('❌ [SHIPPO] Unexpected error in label creation:', err.message);
           });
+        }
       }
       
       // 🔧 FIXED: Lender notification SMS for booking requests - ensure provider phone only

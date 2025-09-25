@@ -10,9 +10,8 @@ function getBookingStartISO(tx) {
   );
 }
 
-function computeShipByDate(tx) {
-  const leadDays = Number(process.env.SHIP_LEAD_DAYS || 2);
-  const startISO = getBookingStartISO(tx);
+function computeShipByDate({ bookingStartISO, leadDays = 2 }) {
+  const startISO = bookingStartISO;
   if (!startISO) return null;
 
   const start = new Date(startISO);
