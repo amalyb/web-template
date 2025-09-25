@@ -1,6 +1,6 @@
-# Wave 3 Environment Variables Checklist
+# Wave 3 & Wave 4 Environment Variables Checklist
 
-This document lists all environment variables required for Wave 3 SMS/Shippo/QR functionality.
+This document lists all environment variables required for Wave 3 SMS/Shippo/QR functionality and Wave 4 feature flags.
 
 ## Required Variables
 
@@ -39,6 +39,20 @@ This document lists all environment variables required for Wave 3 SMS/Shippo/QR 
 |----------|---------|---------|--------------|
 | `SMS_DEBUG_FULL` | `1` | `server/api-util/sendSMS.js:148` | Full phone number logging |
 | `METRICS_LOG` | `1` | `server/api-util/sendSMS.js:83` | SMS metrics logging |
+
+### Wave 4 Feature Flags
+| Variable | Example | Used in | Required for |
+|----------|---------|---------|--------------|
+| `SHIPPO_ENABLED` | `false` | `server/api/transition-privileged.js:14` | Toggle Shippo label purchase |
+| `SHIP_BY_SMS_ENABLED` | `false` | `server/api/transition-privileged.js:15` | Toggle ship-by SMS after label success |
+| `SHIP_LEAD_DAYS` | `2` | `server/api/transition-privileged.js:16` | Days before booking start for ship-by date |
+| `SHIPPO_WEBHOOK_SECRET` | `your_prod_secret` | `server/webhooks/shippoTracking.js:10` | **Required in production** for webhook verification |
+
+## Wave 4 Flags
+- `SHIPPO_ENABLED` (default `false`): when `true`, label purchase flow is active.
+- `SHIP_BY_SMS_ENABLED` (default `false`): when `true`, sends ship-by SMS after a successful label purchase.
+- `SHIP_LEAD_DAYS` (default `2`): days to subtract from booking start for ship-by date.
+- `SHIPPO_WEBHOOK_SECRET`: **required in production**; webhook requests must pass signature verification.
 
 ## Deployment Checklist
 
