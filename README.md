@@ -67,6 +67,12 @@ guide in Developer Docs for more information.
 
 [![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
 
+### Wave 4 Flags
+- `SHIPPO_ENABLED` (default `false`): when `true`, label purchase flow is active.
+- `SHIP_BY_SMS_ENABLED` (default `false`): when `true`, sends ship-by SMS after a successful label purchase.
+- `SHIP_LEAD_DAYS` (default `2`): days to subtract from booking start for ship-by date.
+- `SHIPPO_WEBHOOK_SECRET`: **required in production**; webhook requests must pass signature verification.
+
 ## Documentation
 
 See the Sharetribe Developer Docs: [sharetribe.com/docs/](https://www.sharetribe.com/docs/)

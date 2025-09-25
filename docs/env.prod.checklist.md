@@ -40,6 +40,12 @@ This document lists all environment variables required for Wave 3 SMS/Shippo/QR 
 | `SMS_DEBUG_FULL` | `1` | `server/api-util/sendSMS.js:148` | Full phone number logging |
 | `METRICS_LOG` | `1` | `server/api-util/sendSMS.js:83` | SMS metrics logging |
 
+## Wave 4 — Shippo & Ship-by SMS (Production)
+- [ ] SHIPPO_API_TOKEN = live
+- [ ] SHIPPO_ENABLED = false (enable after webhook verified)
+- [ ] SHIP_BY_SMS_ENABLED = false (enable only after label success path confirmed)
+- [ ] SHIP_LEAD_DAYS = 2
+- [ ] SHIPPO_WEBHOOK_SECRET = required in prod
 ## Deployment Checklist
 
 ### Pre-deployment
