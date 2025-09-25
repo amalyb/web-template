@@ -7,3 +7,4 @@ export const IS_PROD = (typeof process !== 'undefined' && process.env && process
 export const IS_DEV  = (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'development');
 export const IS_TEST = (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'test');
 export const __DEV__ = !IS_PROD;
+export const ADDR_ENABLED = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true');

@@ -12,7 +12,7 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
-import { __DEV__ } from '../../util/envFlags';
+import { __DEV__, ADDR_ENABLED } from '../../util/envFlags';
 
 // Import shared components
 import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
@@ -298,7 +298,6 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
   console.log('Form values on submit:', formValues);
 
   // Handle both field naming conventions based on flag
-  const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
 
   // Resolve borrower fields from either AddressForm (shipping.*) or flat custom fields
   const addr = ADDR_ENABLED
