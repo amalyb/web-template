@@ -128,7 +128,7 @@ const cardStyles = {
 };
 
 const OneTimePaymentWithCardElement = (props) => {
-  const { cardClasses, formId, hasCardError, error, label, intl, marketplaceName } = props;
+  const { cardClasses, formId, hasCardError, error, label, intl, marketplaceName, onCardChange } = props;
   const stripe = useStripe();
   const elements = useElements();
   
@@ -170,6 +170,8 @@ const OneTimePaymentWithCardElement = (props) => {
           onChange={(e) => {
             // e.complete for CardElement; pass the event if needed by parent
             props.onPaymentElementChange?.(e?.complete ?? e);
+            console.log('[StripeForm] change', {complete: e.complete, empty: e.empty});
+            onCardChange?.(e);
           }}
         />
       </div>
@@ -206,6 +208,7 @@ const PaymentMethodSelector = props => {
     paymentMethod,
     intl,
     marketplaceName,
+    onCardChange,
   } = props;
   const last4Digits = defaultPaymentMethod.attributes.card.last4Digits;
   const labelText = intl.formatMessage(
@@ -232,6 +235,7 @@ const PaymentMethodSelector = props => {
           label={labelText}
           intl={intl}
           marketplaceName={marketplaceName}
+          onCardChange={onCardChange}
           onStripeInitialized={props.onStripeInitialized}
           onStripeElementMounted={props.onStripeElementMounted}
           onPaymentElementChange={props.onPaymentElementChange}
@@ -408,6 +412,16 @@ function StripePaymentForm(props) {
     }
   };
 
+  const handleCardChange = (e) => {
+    setState(prev => ({
+      ...prev,
+      cardValueValid: !!e?.complete,
+      error: e?.error ? e.error.message : null,
+    }));
+    window.__cardComplete = !!e?.complete;
+    console.debug('[checkout] cardComplete=%o', !!e?.complete);
+  };
+
   const handleSubmit = async (values) => {
     const {
       onSubmit,
@@ -540,6 +554,8 @@ function StripePaymentForm(props) {
     );
 
     const submitDisabled = invalid || onetimePaymentNeedsAttention || submitInProgress;
+    console.debug('[checkout] disabled=%o invalid=%o needsCard=%o inProgress=%o',
+      submitDisabled, invalid, onetimePaymentNeedsAttention, submitInProgress);
     const hasCardError = state.error && !submitInProgress;
     const hasPaymentErrors = confirmCardPaymentError || confirmPaymentError;
     const classes = classNames(rootClassName || css.root, className);
@@ -622,6 +638,7 @@ function StripePaymentForm(props) {
                 paymentMethod={selectedPaymentMethod}
                 intl={intl}
                 marketplaceName={marketplaceName}
+                onCardChange={handleCardChange}
                 onStripeInitialized={props.onStripeInitialized}
                 onStripeElementMounted={props.onStripeElementMounted}
                 onPaymentElementChange={props.onPaymentElementChange}
@@ -638,6 +655,7 @@ function StripePaymentForm(props) {
                   error={state.error}
                   intl={intl}
                   marketplaceName={marketplaceName}
+                  onCardChange={handleCardChange}
                   onStripeInitialized={props.onStripeInitialized}
                   onStripeElementMounted={props.onStripeElementMounted}
                   onPaymentElementChange={props.onPaymentElementChange}

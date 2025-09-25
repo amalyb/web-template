@@ -309,38 +309,55 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     throw new Error('Street address and ZIP code are required');
   }
 
-  // Construct protectedData directly from shipping form fields using correct field names
+  // Handle both field naming conventions based on flag
+  const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
+
+  // Resolve borrower fields from either AddressForm (shipping.*) or flat custom fields
+  const addr = ADDR_ENABLED
+    ? {
+        customerName: formValues?.shipping?.name ?? '',
+        customerStreet: formValues?.shipping?.line1 ?? '',
+        customerStreet2: formValues?.shipping?.line2 ?? '',
+        customerCity: formValues?.shipping?.city ?? '',
+        customerState: formValues?.shipping?.state ?? '',
+        customerZip: formValues?.shipping?.postalCode ?? '',
+        customerEmail: formValues?.shipping?.email ?? currentUser?.attributes?.email ?? '',
+        customerPhone: formValues?.shipping?.phone ?? '',
+      }
+    : {
+        customerName: formValues?.customerName ?? '',
+        customerStreet: formValues?.customerStreet ?? '',
+        customerStreet2: formValues?.customerStreet2 ?? '',
+        customerCity: formValues?.customerCity ?? '',
+        customerState: formValues?.customerState ?? '',
+        customerZip: formValues?.customerZip ?? '',
+        customerEmail: formValues?.customerEmail ?? currentUser?.attributes?.email ?? '',
+        customerPhone: formValues?.customerPhone ?? '',
+      };
+
+  // Construct protectedData
   const protectedData = {
-    // Customer shipping info from custom shipping form fields (not ShippingDetails form)
-    customerName: formValues.customerName || '',
-    customerStreet: formValues.customerStreet || '',
-    customerStreet2: formValues.customerStreet2 || '',
-    customerCity: formValues.customerCity || '',
-    customerState: formValues.customerState || '',
-    customerZip: formValues.customerZip || '',
-    customerEmail: formValues.customerEmail || currentUser?.attributes?.email || '',
-    customerPhone: formValues.customerPhone || '',
-    
+    ...addr,
     // Provider info from current user
     providerName: currentUser?.attributes?.profile?.displayName || '',
-    providerStreet: '', // Will be filled by provider in TransactionPanel
+    providerStreet: '', // Provider fills later
     providerCity: '',
     providerState: '',
     providerZip: '',
     providerEmail: currentUser?.attributes?.email || '',
-    providerPhone: currentUser?.attributes?.profile?.protectedData?.phoneNumber || currentUser?.attributes?.profile?.publicData?.phoneNumber || '',
+    providerPhone:
+      currentUser?.attributes?.profile?.protectedData?.phoneNumber ||
+      currentUser?.attributes?.profile?.publicData?.phoneNumber ||
+      '',
   };
 
-  // Filter out empty strings from protectedData
+  // Filter out empty strings/nulls so we don't overwrite PD with blanks
   const filteredProtectedData = Object.fromEntries(
-    Object.entries(protectedData).filter(([_, value]) => value !== '')
+    Object.entries(protectedData).filter(([, v]) => v !== '' && v != null)
   );
 
-  if (__DEV__) {
-    console.log('🔐 Protected data keys present:', Object.keys(filteredProtectedData));
-  }
-
-  // Log the protected data for debugging
+  // Diagnostics
+  console.debug('[checkout] forwarding PD keys', Object.keys(filteredProtectedData));
   console.log('🔐 Protected data constructed from formValues:', protectedData);
   console.log('📦 Raw formValues:', formValues);
 
