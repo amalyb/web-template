@@ -1,0 +1,4 @@
+=== W4 Spotcheck ===
+NO_CONFLICT_MARKERS
+NO_ZIP
+BUILD_OK
