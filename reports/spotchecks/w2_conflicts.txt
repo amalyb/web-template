@@ -1,0 +1,5 @@
+src/containers/CheckoutPage/CheckoutPage.duck.js:8:// ================ Action types ================ //
+src/containers/CheckoutPage/CheckoutPage.duck.js:36:// ================ Reducer ================ //
+src/containers/CheckoutPage/CheckoutPage.duck.js:131:// ================ Selectors ================ //
+src/containers/CheckoutPage/CheckoutPage.duck.js:133:// ================ Action creators ================ //
+src/containers/CheckoutPage/CheckoutPage.duck.js:203:/* ================ Thunks ================ */

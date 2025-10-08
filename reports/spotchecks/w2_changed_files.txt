@@ -1,0 +1,6 @@
+reports/W1_PR_BODY.md
+reports/W2_PR_BODY.md
+reports/W2_SMOKE.md
+reports/WAVES_PREFLIGHT.md
+src/containers/CheckoutPage/CheckoutPageWithPayment.js
+src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js

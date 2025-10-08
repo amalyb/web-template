@@ -349,12 +349,11 @@ async function createShippingLabels({
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
     // Calculate ship-by date using hardened centralized helper
-    const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = computeShipByDate({ bookingStartISO, leadDays: SHIP_LEAD_DAYS });
+    const shipByDate = computeShipByDate(transaction);
     const shipByStr = shipByDate && formatShipBy(shipByDate);
 
     // Debug so we can see inputs/outputs clearly
-    console.log('[label-ready] bookingStartISO:', bookingStartISO);
+    console.log('[label-ready] bookingStartISO:', getBookingStartISO(transaction));
     console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
     console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
     console.log('[label-ready] shipByStr:', shipByStr);
