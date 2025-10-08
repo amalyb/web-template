@@ -239,3 +239,7 @@ npm start  # Start dev server
 
 **Ready to merge:** ✅ YES (safe, dry-run only, backward compatible)
 
+
+### Chores
+- Removed stray debug .zip files from `server/`
+- Added `*.zip` to `.gitignore` to prevent reintroduction
