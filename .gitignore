@@ -18,3 +18,4 @@ yarn-error.log
 
 # ...except the example file
 !.env.example
+*.zip
