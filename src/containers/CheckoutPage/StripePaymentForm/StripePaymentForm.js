@@ -28,7 +28,6 @@ import ShippingDetails from '../ShippingDetails/ShippingDetails';
 import AddressForm from '../../../components/AddressForm/AddressForm';
 
 import css from './StripePaymentForm.module.css';
-import { __DEV__ } from '../../../util/envFlags';
 
 const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
 

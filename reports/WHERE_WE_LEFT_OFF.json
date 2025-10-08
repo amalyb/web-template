@@ -1,0 +1,208 @@
+{
+  "meta": {
+    "generated": "2025-10-08",
+    "baseline_commit": "edd07741a4d5545287a8fb9f7bed67f590a6bbca",
+    "baseline_tag": "prod/WAVE0_BASELINE",
+    "current_main": "edd07741a4d5545287a8fb9f7bed67f590a6bbca",
+    "current_test": "b92417162c6a3a6d37c6c1bde0b709bd1f5d5820",
+    "merge_base": "a2d9e4277152e1661d0e3c5f6631c53a250939f3",
+    "baseline_matches_main": true
+  },
+  "last_10_commits_main": [
+    {"sha": "edd07741a", "message": "checkout: de-dup ADDR_ENABLED; use centralized envFlags"},
+    {"sha": "28ff5914f", "message": "Remove duplicate console.debug line"},
+    {"sha": "72984f975", "message": "Handle both field naming conventions in CheckoutPageWithPayment"},
+    {"sha": "cfe002d5d", "message": "Fix CardElement onChange to update state and enable submit button"},
+    {"sha": "e484820e8", "message": "Infra/env validation (#37)"},
+    {"sha": "feb169c1d", "message": "Wave4 gates shippo sms lead days (#36)"},
+    {"sha": "aa974f087", "message": "Bring/wave3 sms shippo (#35)"},
+    {"sha": "d4bab1afc", "message": "stripe(callbacks): call via props + optional chaining (#34)"},
+    {"sha": "56f50e511", "message": "fix(checkout): wire Stripe callbacks (init/mounted/change) (#33)"},
+    {"sha": "d0d1fd1fe", "message": "checkout(addr): minimal PD mapping + required address validation (#32)"}
+  ],
+  "wave_status": {
+    "wave0_csp_hardening": {
+      "planned_branch": "csp-hardening-main",
+      "actual_branch": "csp-hardening-main",
+      "status": "merged_to_main",
+      "prs": [
+        {"number": 28, "sha": "22dbc454e", "message": "infra: harden CSP headers and nonce plumbing"},
+        {"number": 29, "sha": "a8d2a5ed6", "message": "fix(server): resolve CSP variable collision by aliasing imports"},
+        {"number": 30, "sha": "36f102d36", "message": "fix(csp): enhance CSP nonce support and expand required hosts"}
+      ],
+      "merge_commits": ["22dbc454e", "a8d2a5ed6", "36f102d36"],
+      "notes": "Multiple hotfixes applied for blocking issues; test branch has additional refinements"
+    },
+    "wave1_infra_ssr_env": {
+      "planned_branch": "infra-ssr-env-helpers",
+      "actual_branch": "wave1-infra-ssr-env",
+      "status": "merged_to_main",
+      "prs": [
+        {"number": 31, "sha": "c5b279ca1", "message": "[infra] Wave-1: envFlags for client + npm script consistency"},
+        {"number": 37, "sha": "e484820e8", "message": "Infra/env validation"}
+      ],
+      "merge_commits": ["c5b279ca1", "e484820e8"],
+      "notes": "Clean merge; appears stable"
+    },
+    "wave2_checkout_address": {
+      "planned_branch": "checkout-address-form-gated",
+      "actual_branch": "multiple (feat/checkout-addr-*, wave2-checkout-addr-*)",
+      "status": "merged_to_main",
+      "prs": [
+        {"number": 15, "sha": "10fc1b074", "message": "feat(ui): add AddressForm assets (unwired)"},
+        {"number": 16, "sha": "b982a1676", "message": "feat(ui): conditionally render AddressForm behind flag"},
+        {"number": 17, "sha": "be380fab5", "message": "fix(ui): add src/util/geoData required by AddressForm"},
+        {"number": 27, "sha": "6f1062bf6", "message": "feat(checkout): show AddressForm when flag on"},
+        {"number": 32, "sha": "d0d1fd1fe", "message": "checkout(addr): minimal PD mapping + required validation"},
+        {"number": 33, "sha": "56f50e511", "message": "fix(checkout): wire Stripe callbacks with no-op defaults"},
+        {"number": 34, "sha": "d4bab1afc", "message": "stripe(callbacks): call via props + optional chaining"}
+      ],
+      "merge_commits": ["10fc1b074", "b982a1676", "be380fab5", "6f1062bf6", "d0d1fd1fe", "56f50e511", "d4bab1afc"],
+      "notes": "Incrementally merged; test has additional shipping validation fixes not in main"
+    },
+    "wave3_sms_pipeline": {
+      "planned_branch": "sms-overhaul-safe",
+      "actual_branch": "bring/wave3-sms-shippo",
+      "status": "merged_to_main",
+      "prs": [
+        {"number": 18, "sha": "63e727c54", "message": "chore(api): update sendSMS util (flags off)"},
+        {"number": 19, "sha": "29152c3e3", "message": "feat(api): add SHIP_BY_SMS_ENABLED flag"},
+        {"number": 35, "sha": "aa974f087", "message": "Bring/wave3 sms shippo (comprehensive)"}
+      ],
+      "merge_commits": ["63e727c54", "29152c3e3", "aa974f087"],
+      "notes": "Test has enhanced error handling, ship-by logic, and DRY_RUN support not fully in main"
+    },
+    "wave4_shippo_integration": {
+      "planned_branch": "shipping-shippo-shipby",
+      "actual_branch": "wave4-gates-shippo-sms-lead-days",
+      "status": "merged_to_main",
+      "prs": [
+        {"number": 20, "sha": "5c2e903de", "message": "feat(api): add QR and Shippo webhook routes behind flags"},
+        {"number": 23, "sha": "56cafcbba", "message": "chore(api): lazy-require QR/Shippo handlers under flags"},
+        {"number": 24, "sha": "4fd9d480d", "message": "feat(cache): add server/redis.js (disabled by default)"},
+        {"number": 36, "sha": "feb169c1d", "message": "Wave4 gates shippo sms lead days"}
+      ],
+      "merge_commits": ["5c2e903de", "56cafcbba", "4fd9d480d", "feb169c1d"],
+      "notes": "Skeleton/routes merged; test has complete webhook tracking and QR generation implementation"
+    }
+  },
+  "diff_main_vs_test": {
+    "total_files_changed": 135,
+    "insertions": 38221,
+    "deletions": 14025,
+    "commits_in_test_not_main": 20,
+    "critical_files_diverged": [
+      "server/api/transition-privileged.js",
+      "server/api/initiate-privileged.js",
+      "src/containers/CheckoutPage/CheckoutPageWithPayment.js",
+      "package.json",
+      "server/index.js"
+    ],
+    "files_only_in_test": [
+      "server/api/qr.js",
+      "server/api/twilio/sms-status.js",
+      "server/webhooks/shippoTracking.js",
+      "server/lib/shipping.js",
+      "server/api-util/idempotency.js",
+      "server/api-util/integrationSdk.js",
+      "server/api-util/metrics.js",
+      "server/api-util/phone.js",
+      "src/util/addressHelpers.js",
+      "src/util/id.js",
+      "package-lock.json"
+    ],
+    "backup_versions_in_test": [
+      "server/api/transition-privileged 6.js.zip",
+      "server/api/transition-privileged 7.js.zip",
+      "server/api/transition-privileged-fixed.js",
+      "server/api/transition-privileged.js.backup"
+    ]
+  },
+  "risk_assessment": {
+    "bundles": [
+      {
+        "name": "CSP Hardening",
+        "key_files": ["server/csp.js", "server/index.js"],
+        "status": "merged",
+        "risk": "low",
+        "action": "Verify production behavior"
+      },
+      {
+        "name": "Env Validation",
+        "key_files": ["src/util/envFlags.js", "config/*"],
+        "status": "merged",
+        "risk": "low",
+        "action": "Document environment variables"
+      },
+      {
+        "name": "Checkout Address",
+        "key_files": ["CheckoutPageWithPayment.js", "AddressForm/*"],
+        "status": "partially_merged",
+        "risk": "medium",
+        "action": "Test has additional shipping validation fixes not in main"
+      },
+      {
+        "name": "Stripe Callbacks",
+        "key_files": ["StripePaymentForm.js"],
+        "status": "merged",
+        "risk": "low",
+        "action": "Monitor in production"
+      },
+      {
+        "name": "SMS Pipeline",
+        "key_files": ["sendSMS.js", "twilio/sms-status.js"],
+        "status": "partially_merged",
+        "risk": "high",
+        "action": "Test has enhanced error handling & ship-by logic not in main"
+      },
+      {
+        "name": "Shippo/QR",
+        "key_files": ["qr.js", "shippoTracking.js", "shipping.js"],
+        "status": "pending_in_test_only",
+        "risk": "high",
+        "action": "Full webhook & QR generation only in test"
+      },
+      {
+        "name": "Transaction Core",
+        "key_files": ["transition-privileged.js", "initiate-privileged.js"],
+        "status": "diverged",
+        "risk": "critical",
+        "action": "Test has multiple iterations/fixes; main may be unstable"
+      },
+      {
+        "name": "Dependencies",
+        "key_files": ["package.json", "package-lock.json"],
+        "status": "diverged",
+        "risk": "high",
+        "action": "Test uses npm, main still has yarn artifacts"
+      }
+    ]
+  },
+  "branches": {
+    "local": [
+      "main",
+      "csp-hardening-main",
+      "wave1-infra-ssr-env",
+      "wave2-checkout-addr-manualmerge",
+      "wave2-stripe-optionB-callbacks",
+      "wave4-gates-shippo-sms-lead-days",
+      "bring/wave3-sms-shippo",
+      "test"
+    ],
+    "remote_wave_related": [
+      "origin/csp-hardening-main",
+      "origin/wave1-infra-ssr-env",
+      "origin/feat/checkout-address-guard",
+      "origin/bring/wave3-sms-shippo",
+      "origin/wave4-gates-shippo-sms-lead-days"
+    ]
+  },
+  "summary": {
+    "main_status": "At baseline (edd0774) with Wave 0-4 scaffolding merged",
+    "test_status": "20+ commits ahead with critical fixes and enhanced implementations",
+    "gap_description": "~38K lines of improvements, bug fixes, and feature completions",
+    "critical_finding": "Transaction files have multiple backup versions in test indicating active debugging not reflected in main",
+    "recommendation": "Before enabling ANY feature flags in production, validate whether fixes in test are required for stability"
+  }
+}
+
