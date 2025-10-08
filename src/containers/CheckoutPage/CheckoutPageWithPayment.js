@@ -1,7 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Elements } from '@stripe/react-stripe-js';
-import { loadStripe } from '@stripe/stripe-js';
-import { getStripe } from '../../stripe';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -12,7 +9,6 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
-import { __DEV__, ADDR_ENABLED } from '../../util/envFlags';
 
 // Import shared components
 import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
@@ -38,6 +34,7 @@ import MobileListingImage from './MobileListingImage';
 import MobileOrderBreakdown from './MobileOrderBreakdown';
 
 import css from './CheckoutPage.module.css';
+import { __DEV__ } from '../../util/envFlags';
 
 // Stripe PaymentIntent statuses, where user actions are already completed
 // https://stripe.com/docs/payments/payment-intents/status
@@ -57,6 +54,18 @@ const paymentFlow = (selectedPaymentMethod, saveAfterOnetimePayment) => {
     ? PAY_AND_SAVE_FOR_LATER_USE
     : ONETIME_PAYMENT;
 };
+
+// Helper to build customer protectedData from shipping form
+const buildCustomerPD = (shipping, currentUser) => ({
+  customerName: shipping?.recipientName || shipping?.name || '',
+  customerStreet: shipping?.streetAddress || shipping?.street || '',
+  customerStreet2: shipping?.streetAddress2 || shipping?.street2 || '',
+  customerCity: shipping?.city || '',
+  customerState: shipping?.state || '',
+  customerZip: shipping?.zip || shipping?.postalCode || shipping?.zipCode || '',
+  customerPhone: shipping?.phone || '',
+  customerEmail: shipping?.email || currentUser?.attributes?.email || '',
+});
 
 const capitalizeString = s => `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
 
@@ -99,7 +108,7 @@ const prefixPriceVariantProperties = priceVariant => {
  * @param {Object} config app-wide configs. This contains hosted configs too.
  * @returns orderParams.
  */
-const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config) => {
+const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config, formValues = {}) => {
   const quantity = pageData.orderData?.quantity;
   const quantityMaybe = quantity ? { quantity } : {};
   const seats = pageData.orderData?.seats;
@@ -120,14 +129,15 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   // Manually construct protectedData with shipping and contact info
   const protectedDataMaybe = {
     protectedData: {
-      // Customer info from shippingDetails (using correct field names)
-      customerName: shippingInfo?.name || '',
-      customerStreet: shippingAddress?.line1 || '',
-      customerCity: shippingAddress?.city || '',
-      customerState: shippingAddress?.state || '',
-      customerZip: shippingAddress?.postalCode || '',
-      customerEmail: currentUser?.attributes?.email || '',
-      customerPhone: shippingInfo?.phoneNumber || '',
+      // Customer info from formValues and shippingDetails (using correct field names)
+      customerName: formValues.name || shippingInfo?.name || '',
+      customerStreet: formValues.shipping?.street || shippingAddress?.line1 || '',
+      customerStreet2: formValues.shipping?.street2 || '',
+      customerCity: formValues.shipping?.city || shippingAddress?.city || '',
+      customerState: formValues.shipping?.state || shippingAddress?.state || '',
+      customerZip: formValues.shipping?.zip || shippingAddress?.postalCode || '',
+      customerEmail: formValues.email || currentUser?.attributes?.email || '',
+      customerPhone: formValues.phone || shippingInfo?.phoneNumber || '',
 
       // Provider info from currentUser
       providerName: currentUser?.attributes?.profile?.displayName || '',
@@ -146,7 +156,7 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   };
 
   // Log the constructed protected data for debugging
-  console.log('🔐 Constructed protectedData in getOrderParams:', protectedDataMaybe.protectedData);
+  console.log('[checkout] protectedData keys:', Object.keys(protectedDataMaybe.protectedData));
   console.log('📦 Raw shipping details:', shippingDetails);
   console.log('📦 Extracted shipping info:', shippingInfo);
   console.log('📦 Extracted shipping address:', shippingAddress);
@@ -168,7 +178,7 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   return orderParams;
 };
 
-const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction) => {
+const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) => {
   const tx = pageData ? pageData.transaction : null;
   const pageDataListing = pageData.listing;
   const processName =
@@ -184,23 +194,39 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
     !hasTransactionPassedPendingPayment(tx, process);
 
   if (shouldFetchSpeculatedTransaction) {
-    const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
-    const transactionId = tx ? tx.id : null;
-    const isInquiryInPaymentProcess =
-      tx?.attributes?.lastTransition === process.transitions.INQUIRE;
+    // Create a stable key based on parameters that should trigger a new fetch
+    const specParams = JSON.stringify({
+      listingId: pageData.listing.id,
+      startDate: orderParams?.bookingStart,
+      endDate: orderParams?.bookingEnd,
+      quantity: orderParams?.quantity,
+      shippingZip: (orderParams?.shippingDetails?.postalCode || '').trim().toUpperCase(),
+      country: (orderParams?.shippingDetails?.country || 'US').toUpperCase(),
+      transactionId: tx?.id,
+    });
 
-    const requestTransition = isInquiryInPaymentProcess
-      ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
-      : process.transitions.REQUEST_PAYMENT;
-    const isPrivileged = process.isPrivileged(requestTransition);
+    // Only fetch if the key has changed (prevents loops)
+    if (prevKeyRef.current !== specParams) {
+      prevKeyRef.current = specParams;
+      
+      const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
+      const transactionId = tx ? tx.id : null;
+      const isInquiryInPaymentProcess =
+        tx?.attributes?.lastTransition === process.transitions.INQUIRE;
 
-    fetchSpeculatedTransaction(
-      orderParams,
-      processAlias,
-      transactionId,
-      requestTransition,
-      isPrivileged
-    );
+      const requestTransition = isInquiryInPaymentProcess
+        ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+        : process.transitions.REQUEST_PAYMENT;
+      const isPrivileged = process.isPrivileged(requestTransition);
+
+      fetchSpeculatedTransaction(
+        orderParams,
+        processAlias,
+        transactionId,
+        requestTransition,
+        isPrivileged
+      );
+    }
   }
 };
 
@@ -235,10 +261,12 @@ export const loadInitialDataForStripePayments = ({
   const optionalPaymentParams = {};
   const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
 
-  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction);
+  // Use a more robust guard to prevent duplicate calls
+  const prevKeyRef = { current: null };
+  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 };
 
-const handleSubmit = (values, process, props, submitting, setSubmitting) => {
+const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting) => {
   if (submitting) {
     return;
   }
@@ -297,78 +325,71 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
 
-  // Handle both field naming conventions based on flag
-
-  // Resolve borrower fields from either AddressForm (shipping.*) or flat custom fields
-  const addr = ADDR_ENABLED
-    ? {
-        customerName: formValues?.shipping?.name ?? '',
-        customerStreet: formValues?.shipping?.line1 ?? '',
-        customerStreet2: formValues?.shipping?.line2 ?? '',
-        customerCity: formValues?.shipping?.city ?? '',
-        customerState: formValues?.shipping?.state ?? '',
-        customerZip: formValues?.shipping?.postalCode ?? '',
-        customerEmail: formValues?.shipping?.email ?? currentUser?.attributes?.email ?? '',
-        customerPhone: formValues?.shipping?.phone ?? '',
-      }
-    : {
-        customerName: formValues?.customerName ?? '',
-        customerStreet: formValues?.customerStreet ?? '',
-        customerStreet2: formValues?.customerStreet2 ?? '',
-        customerCity: formValues?.customerCity ?? '',
-        customerState: formValues?.customerState ?? '',
-        customerZip: formValues?.customerZip ?? '',
-        customerEmail: formValues?.customerEmail ?? currentUser?.attributes?.email ?? '',
-        customerPhone: formValues?.customerPhone ?? '',
-      };
-
-  // Client-side validation for required address fields
-  if (!addr.customerStreet || !addr.customerZip) {
-    if (__DEV__) {
-      console.log('🔍 Address validation failed:', {
-        customerStreet: addr.customerStreet ? 'present' : 'missing',
-        customerZip: addr.customerZip ? 'present' : 'missing'
-      });
-    }
-    setSubmitting(false);
-    throw new Error('Street address and ZIP code are required');
+  // Build customer protectedData for request-payment
+  // Filter out empty strings so you don't clobber later merges
+  const protectedData = {};
+  
+  // Customer fields - only include if non-empty
+  if (formValues.customerName?.trim()) protectedData.customerName = formValues.customerName.trim();
+  if (formValues.customerStreet?.trim()) protectedData.customerStreet = formValues.customerStreet.trim();
+  if (formValues.customerStreet2?.trim()) protectedData.customerStreet2 = formValues.customerStreet2.trim();
+  if (formValues.customerCity?.trim()) protectedData.customerCity = formValues.customerCity.trim();
+  if (formValues.customerState?.trim()) protectedData.customerState = formValues.customerState.trim();
+  if (formValues.customerZip?.trim()) protectedData.customerZip = formValues.customerZip.trim();
+  if (formValues.customerEmail?.trim()) protectedData.customerEmail = formValues.customerEmail.trim();
+  else if (currentUser?.attributes?.email?.trim()) protectedData.customerEmail = currentUser.attributes.email.trim();
+  if (formValues.customerPhone?.trim()) protectedData.customerPhone = formValues.customerPhone.trim();
+  
+  // Provider fields - only include if non-empty
+  if (currentUser?.attributes?.profile?.displayName?.trim()) {
+    protectedData.providerName = currentUser.attributes.profile.displayName.trim();
+  }
+  if (currentUser?.attributes?.email?.trim()) {
+    protectedData.providerEmail = currentUser.attributes.email.trim();
+  }
+  const providerPhone = currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
+                       currentUser?.attributes?.profile?.publicData?.phoneNumber;
+  if (providerPhone?.trim()) {
+    protectedData.providerPhone = providerPhone.trim();
   }
 
-  // Construct protectedData
-  const protectedData = {
-    ...addr,
-    // Provider info from current user
-    providerName: currentUser?.attributes?.profile?.displayName || '',
-    providerStreet: '', // Provider fills later
-    providerCity: '',
-    providerState: '',
-    providerZip: '',
-    providerEmail: currentUser?.attributes?.email || '',
-    providerPhone:
-      currentUser?.attributes?.profile?.protectedData?.phoneNumber ||
-      currentUser?.attributes?.profile?.publicData?.phoneNumber ||
-      '',
-  };
+  // Add customer protected data from form values (inline mapping)
+  const customerPD = (function(v){
+    const s = v?.shipping || {};
+    const b = v?.billing || {};
+    const use = v?.shipping && !v?.shippingSameAsBilling ? s : (Object.keys(s||{}).length ? s : b);
+    return {
+      customerName:   use?.name        || '',
+      customerStreet: use?.line1       || '',
+      customerStreet2:use?.line2       || '',
+      customerCity:   use?.city        || '',
+      customerState:  use?.state       || '',
+      customerZip:    use?.postalCode  || '',
+      customerPhone:  use?.phone       || '',
+      customerEmail:  use?.email       || '',
+    };
+  })(formValues);
 
-  // Filter out empty strings/nulls so we don't overwrite PD with blanks
-  const filteredProtectedData = Object.fromEntries(
-    Object.entries(protectedData).filter(([, v]) => v !== '' && v != null)
-  );
+  const mergedPD = { ...protectedData, ...customerPD };
+  if (__DEV__) {
+    // eslint-disable-next-line no-console
+    console.log('[checkout→request-payment] Customer PD about to send:', mergedPD);
+  }
 
   // Log the protected data for debugging (production-safe, browser-safe)
   if (__DEV__) {
     try {
-      console.log('🔐 Protected data constructed from formValues:', protectedData);
+      console.log('🔐 Protected data constructed from formValues:', mergedPD);
       console.log('📦 Raw formValues:', formValues);
-      console.log('[checkout] forwarding PD keys', Object.keys(filteredProtectedData));
+      console.log('[checkout] sending protectedData:', Object.entries(mergedPD));
       
       // Verify customer fields are populated
       const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
-      const missingFields = customerFields.filter(field => !filteredProtectedData[field]?.trim());
+      const missingFields = customerFields.filter(field => !mergedPD[field]?.trim());
       if (missingFields.length > 0) {
         console.warn('⚠️ Missing customer fields:', missingFields);
       } else {
-        console.log('✅ All customer fields populated:', customerFields.map(field => `${field}: "${filteredProtectedData[field]}"`));
+        console.log('✅ All customer fields populated:', customerFields.map(field => `${field}: "${mergedPD[field]}"`));
       }
     } catch (_) {
       // never block submission on logging
@@ -401,14 +422,14 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     discountPercent = 0.25;
     discountCode = 'line-item/discount-25';
   } else if (nights >= 6 && nights <= 7) {
+    discountPercent = 0.30;
+    discountCode = 'line-item/discount-30';
+  } else if (nights >= 8 && nights <= 10) {
     discountPercent = 0.40;
     discountCode = 'line-item/discount-40';
-  } else if (nights >= 8 && nights <= 9) {
+  } else if (nights >= 11) {
     discountPercent = 0.50;
     discountCode = 'line-item/discount-50';
-  } else if (nights >= 10) {
-    discountPercent = 0.60;
-    discountCode = 'line-item/discount-60';
   }
 
   const preDiscountTotal = baseNightlyPrice * nights;
@@ -459,14 +480,33 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     bookingStart,
     bookingEnd,
     lineItems,
-    protectedData: filteredProtectedData,  // Now built from form fields, filtered
+    protectedData: mergedPD,  // Use merged protected data with customer fields
     ...optionalPaymentParams,
   };
 
+  // Verify required address fields before API call
+  if (__DEV__) {
+    console.log('[checkout→request-payment] customerStreet:', mergedPD.customerStreet);
+    console.log('[checkout→request-payment] customerZip:', mergedPD.customerZip);
+  }
+  
+  // Assert required fields and abort if missing
+  if (!mergedPD.customerStreet?.trim() || !mergedPD.customerZip?.trim()) {
+    const missingFields = [];
+    if (!mergedPD.customerStreet?.trim()) missingFields.push('Street Address');
+    if (!mergedPD.customerZip?.trim()) missingFields.push('ZIP Code');
+    
+    setSubmitting(false);
+    throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
+  }
+
+  // One-time logs right before the API call
+  console.log('[checkout→request-payment] protectedData keys:', Object.keys(mergedPD));
+  console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
+  
   // Verify customer data is included in the request
   if (__DEV__) {
     try {
-      console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
       const customerDataInRequest = orderParams.protectedData;
       const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
       const populatedFields = customerFields.filter(field => customerDataInRequest[field]?.trim());
@@ -484,7 +524,7 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
   const requestPaymentParams = {
     pageData,
     speculatedTransaction,
-    stripe: values.stripe,
+    stripe,
     card,
     billingDetails: getBillingDetails(formValues, currentUser),
     message,
@@ -505,28 +545,39 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
   };
 
   console.log('🚦 processCheckoutWithPayment called:', { orderParams, requestPaymentParams });
-  processCheckoutWithPayment(orderParams, requestPaymentParams)
-    .then(response => {
-      const { orderId, messageSuccess, paymentMethodSaved } = response;
-      setSubmitting(false);
+  
+  try {
+    const response = await processCheckoutWithPayment(orderParams, requestPaymentParams);
+    const { orderId, messageSuccess, paymentMethodSaved } = response;
+    setSubmitting(false);
 
-      const initialMessageFailedToTransaction = messageSuccess ? null : orderId;
-      const orderDetailsPath = pathByRouteName('OrderDetailsPage', routeConfiguration, {
-        id: orderId.uuid,
-      });
-      const initialValues = {
-        initialMessageFailedToTransaction,
-        savePaymentMethodFailed: !paymentMethodSaved,
-      };
-
-      setOrderPageInitialValues(initialValues, routeConfiguration, dispatch);
-      onSubmitCallback();
-      history.push(orderDetailsPath);
-    })
-    .catch(err => {
-      console.error(err);
-      setSubmitting(false);
+    const initialMessageFailedToTransaction = messageSuccess ? null : orderId;
+    const orderDetailsPath = pathByRouteName('OrderDetailsPage', routeConfiguration, {
+      id: orderId.uuid,
     });
+    const initialValues = {
+      initialMessageFailedToTransaction,
+      savePaymentMethodFailed: !paymentMethodSaved,
+    };
+
+    setOrderPageInitialValues(initialValues, routeConfiguration, dispatch);
+    onSubmitCallback();
+    history.push(orderDetailsPath);
+  } catch (err) {
+    console.error('[Checkout] processCheckoutWithPayment failed:', err);
+    setSubmitting(false);
+    
+    // Show error notification if available
+    if (typeof props.addMarketplaceNotification === 'function') {
+      props.addMarketplaceNotification({
+        type: 'error',
+        message: 'We couldn\'t start the checkout. Please check your info and try again.',
+      });
+    }
+    
+    // Re-throw to ensure form submission state is properly reset
+    throw err;
+  }
 };
 
 /**
@@ -571,11 +622,31 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
  */
 export const CheckoutPageWithPayment = props => {
   const [submitting, setSubmitting] = useState(false);
+  // Initialized stripe library is saved to state - if it's needed at some point here too.
+  const [stripe, setStripe] = useState(null);
+  // Payment element completion state
+  const [paymentElementComplete, setPaymentElementComplete] = useState(false);
+  const [formValues, setFormValues] = useState({});
+  const [formValid, setFormValid] = useState(false);
+  const [stripeElementMounted, setStripeElementMounted] = useState(false);
+  const stripeReady = !!stripeElementMounted;
+
+  const handleFormValuesChange = useCallback((next) => {
+    const prev = JSON.stringify(formValues || {});
+    const json = JSON.stringify(next || {});
+    if (json !== prev) setFormValues(next || {});
+  }, [formValues]);
+  
+  // Ref to prevent speculative transaction loops
+  const prevSpecKeyRef = useRef(null);
+  // Ref to throttle disabled gates logging
+  const lastReasonRef = useRef(null);
 
   const {
     scrollingDisabled,
     speculateTransactionError,
-    speculatedTransaction: speculatedTransactionMaybe,
+    speculativeTransaction, // ✅ normalized name from mapStateToProps
+    speculativeInProgress, // ✅ normalized name from mapStateToProps
     isClockInSync,
     initiateOrderError,
     confirmPaymentError,
@@ -592,6 +663,44 @@ export const CheckoutPageWithPayment = props => {
     config,
   } = props;
 
+  // Handle speculative transaction initiation with proper guards (one-shot)
+  useEffect(() => {
+    const listingId = pageData?.listing?.id?.uuid || pageData?.listing?.id;
+
+    if (!listingId) return;
+
+    // only when listing changes & we still don't have a speculative tx
+    if (!speculativeTransaction?.id && !speculativeInProgress) {
+      const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
+      fetchSpeculatedTransactionIfNeeded(
+        orderParams,
+        pageData,
+        props.fetchSpeculatedTransaction,
+        prevSpecKeyRef // <-- use the stable ref
+      );
+    }
+    // depend on listingId only, so it's a true one-shot per listing
+  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress, formValues]);
+
+  // Throttled logging for disabled gates
+  useEffect(() => {
+    const tx = speculativeTransaction;
+    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+    const gates = { 
+      hasSpeculativeTx: hasTxId, 
+      stripeReady, 
+      paymentElementComplete, 
+      formValid, 
+      notSubmitting: !submitting, 
+      notSpeculating: !speculativeInProgress 
+    };
+    const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
+    if (disabledReason !== lastReasonRef.current) {
+      lastReasonRef.current = disabledReason;
+      console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
+    }
+  }, [speculativeTransaction, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
+
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
   // deleted or closed information in it. If the transaction
@@ -604,14 +713,14 @@ export const CheckoutPageWithPayment = props => {
 
   const { listing, transaction, orderData } = pageData;
   const existingTransaction = ensureTransaction(transaction);
-  const speculatedTransaction = ensureTransaction(speculatedTransactionMaybe, {}, null);
+  const normalizedSpeculativeTransaction = ensureTransaction(speculativeTransaction, {}, null);
 
   // If existing transaction has line-items, it has gone through one of the request-payment transitions.
-  // Otherwise, we try to rely on speculatedTransaction for order breakdown data.
+  // Otherwise, we try to rely on normalizedSpeculativeTransaction for order breakdown data.
   const tx =
     existingTransaction?.attributes?.lineItems?.length > 0
       ? existingTransaction
-      : speculatedTransaction;
+      : normalizedSpeculativeTransaction;
   const timeZone = listing?.attributes?.availabilityPlan?.timezone;
   const transactionProcessAlias = listing?.attributes?.publicData?.transactionProcessAlias;
 
@@ -694,7 +803,12 @@ export const CheckoutPageWithPayment = props => {
   // If your marketplace works mostly in one country you can use initial values to select country automatically
   // e.g. {country: 'FI'}
 
-  const initialValuesForStripePayment = { name: userName, recipientName: userName };
+  // Note: StripePaymentForm handles its own comprehensive initialValues setup
+  // We only pass userName for legacy compatibility
+  const initialValuesForStripePayment = { 
+    name: userName, 
+    recipientName: userName
+  };
   const askShippingDetails =
     orderData?.deliveryMethod === 'shipping' &&
     !hasTransactionPassedPendingPayment(existingTransaction, process);
@@ -757,38 +871,99 @@ export const CheckoutPageWithPayment = props => {
             {errorMessages.paymentExpiredMessage}
 
             {showPaymentForm ? (
-              <StripePaymentForm
-                className={css.paymentForm}
-                onSubmit={values =>
-                  handleSubmit(values, process, props, submitting, setSubmitting)
-                }
-                inProgress={submitting}
-                formId="CheckoutPagePaymentForm"
-                authorDisplayName={listing?.author?.attributes?.profile?.displayName}
-                showInitialMessageInput={showInitialMessageInput}
-                initialValues={initialValuesForStripePayment}
-                initiateOrderError={initiateOrderError}
-                confirmCardPaymentError={confirmCardPaymentError}
-                confirmPaymentError={confirmPaymentError}
-                hasHandledCardPayment={hasPaymentIntentUserActionsDone}
-                loadingData={!stripeCustomerFetched}
-                defaultPaymentMethod={
-                  hasDefaultPaymentMethod(stripeCustomerFetched, currentUser)
-                    ? currentUser.stripeCustomer.defaultPaymentMethod
-                    : null
-                }
-                paymentIntent={paymentIntent}
-                onStripeInitialized={() => {}}
-                askShippingDetails={askShippingDetails}
-                showPickUplocation={orderData?.deliveryMethod === 'pickup'}
-                listingLocation={listing?.attributes?.publicData?.location}
-                totalPrice={totalPrice}
-                locale={config.localization.locale}
-                stripePublishableKey={config.stripe.publishableKey}
-                marketplaceName={config.marketplaceName}
-                isBooking={isBookingProcessAlias(transactionProcessAlias)}
-                isFuzzyLocation={config.maps.fuzzy.enabled}
-              />
+              <>
+                {(() => {
+                  // Canonical gating (parent)
+                  const tx = speculativeTransaction; // ✅ use normalized name
+                  const hasTxId = !!(tx?.id?.uuid || tx?.id);
+
+                  // Compute stripe readiness (strict boolean)
+                  const stripeReady = !!stripeElementMounted;
+
+                  const gates = {
+                    hasSpeculativeTx: hasTxId,
+                    stripeReady: stripeReady,                 // 👈 simplified
+                    paymentElementComplete: !!paymentElementComplete,
+                    formValid: formValid,                   // ✅ bubbled up from child form
+                    notSubmitting: !submitting,      // local state (no duck submitInProgress available)
+                    notSpeculating: !speculativeInProgress  // ✅ use normalized name
+                  };
+
+                  const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
+                  const submitDisabled = !!disabledReason;
+
+                  return (
+                    <>
+                      {submitDisabled && (
+                        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
+                          Can't submit yet: <code>{disabledReason}</code>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+                <StripePaymentForm
+                  className={css.paymentForm}
+                  onSubmit={values =>
+                    handleSubmit(values, process, props, stripe, submitting, setSubmitting)
+                  }
+                  inProgress={submitting}
+                  formId="CheckoutPagePaymentForm"
+                  authorDisplayName={listing?.author?.attributes?.profile?.displayName}
+                  showInitialMessageInput={showInitialMessageInput}
+                  initialValues={initialValuesForStripePayment}
+                  initiateOrderError={initiateOrderError}
+                  confirmCardPaymentError={confirmCardPaymentError}
+                  confirmPaymentError={confirmPaymentError}
+                  hasHandledCardPayment={hasPaymentIntentUserActionsDone}
+                  loadingData={!stripeCustomerFetched}
+                  defaultPaymentMethod={
+                    hasDefaultPaymentMethod(stripeCustomerFetched, currentUser)
+                      ? currentUser.stripeCustomer.defaultPaymentMethod
+                      : null
+                  }
+                  paymentIntent={paymentIntent}
+                  onStripeInitialized={stripe => setStripe(stripe)}
+                  onStripeElementMounted={(v) => { 
+                    console.log('[Stripe] element mounted:', v);
+                    setStripeElementMounted(!!v);
+                  }}
+                  onFormValuesChange={handleFormValuesChange}
+                  onPaymentElementChange={setPaymentElementComplete}
+                  onFormValidityChange={(v) => { 
+                    console.log('[Form] parent sees valid:', v); 
+                    setFormValid(v); 
+                  }}
+                  requireInPaymentForm={false}  // billing/shipping collected outside this form
+                  submitInProgress={submitting}  // spinner only
+                  submitDisabled={(() => {
+                    const tx = speculativeTransaction; // ✅ use normalized name
+                    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                    
+                    // Compute stripe readiness (strict boolean)
+                    const stripeReady = !!stripeElementMounted;
+                    
+                    const gates = {
+                      hasSpeculativeTx: hasTxId,
+                      stripeReady: stripeReady,                 // 👈 simplified
+                      paymentElementComplete: !!paymentElementComplete,
+                      formValid: formValid,
+                      notSubmitting: !submitting,
+                      notSpeculating: !speculativeInProgress, // ✅ use normalized name
+                    };
+                    return !!Object.entries(gates).find(([, ok]) => !ok)?.[0];
+                  })()}
+                  askShippingDetails={askShippingDetails}
+                  showPickUplocation={orderData?.deliveryMethod === 'pickup'}
+                  listingLocation={listing?.attributes?.publicData?.location}
+                  totalPrice={totalPrice}
+                  locale={config.localization.locale}
+                  stripePublishableKey={config.stripe.publishableKey}
+                  marketplaceName={config.marketplaceName}
+                  isBooking={isBookingProcessAlias(transactionProcessAlias)}
+                  isFuzzyLocation={config.maps.fuzzy.enabled}
+                />
+              </>
             ) : null}
           </section>
         </div>
@@ -810,50 +985,4 @@ export const CheckoutPageWithPayment = props => {
   );
 };
 
-// Create Stripe promise once at module level
-const stripePromise = loadStripe(process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY);
-
-// Crash-proof wrapper component
-const CheckoutPageWithPaymentWrapper = (props) => {
-  const [status, setStatus] = React.useState('loading'); // loading | unavailable | ready
-  const [initError, setInitError] = React.useState(null);
-
-  React.useEffect(() => {
-    let on = true;
-    (async () => {
-      try {
-        console.log('[CheckoutDiag] LIVE bundle Stripe key:', process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY?.slice(0,8));
-        const s = await getStripe({ timeoutMs: 8000, retryMs: 2000 });
-        if (!on) return;
-        if (s) { setStatus('ready'); }
-        else { setStatus('unavailable'); }
-      } catch (err) {
-        if (!on) return;
-        console.error('[CheckoutDiag] Stripe initialization failed:', err);
-        setInitError(err);
-        setStatus('unavailable');
-      }
-    })();
-    return () => { on = false; };
-  }, []);
-
-  if (status === 'loading') return <div style={{padding:16}}>Loading secure payment…</div>;
-  if (status === 'unavailable') {
-    console.warn('[CheckoutDiag] Stripe failed to load. Check CSP for js.stripe.com, m.stripe.network, api.stripe.com.');
-    return (
-      <div style={{padding:16}}>
-        <h3>Payment temporarily unavailable</h3>
-        <p>We're having trouble loading our payment provider. Please refresh or try again in a moment.</p>
-        {initError && <div style={{color:'red', marginTop:8}}>We couldn't load the secure card form. Please refresh or try another browser.</div>}
-      </div>
-    );
-  }
-
-  return (
-    <Elements stripe={stripePromise} options={{appearance:{theme:'stripe'}}}>
-      <CheckoutPageWithPayment {...props} />
-    </Elements>
-  );
-};
-
-export default CheckoutPageWithPaymentWrapper;
+export default CheckoutPageWithPayment;
