@@ -8,6 +8,7 @@ import loadable from '@loadable/component';
 import difference from 'lodash/difference';
 import mapValues from 'lodash/mapValues';
 import moment from 'moment';
+import { __DEV__, IS_TEST } from './util/envFlags';
 
 // Configs and store setup
 import defaultConfig from './config/configDefault';
@@ -18,7 +19,6 @@ import configureStore from './store';
 import { RouteConfigurationProvider } from './context/routeConfigurationContext';
 import { ConfigurationProvider } from './context/configurationContext';
 import { mergeConfig } from './util/configHelpers';
-import { IS_TEST } from './util/envFlags';
 import { IntlProvider } from './util/reactIntl';
 import { includeCSSProperties } from './util/style';
 import { IncludeScripts } from './util/includeScripts';

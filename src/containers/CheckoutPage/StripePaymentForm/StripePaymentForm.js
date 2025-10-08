@@ -479,6 +479,18 @@ function StripePaymentForm(props) {
       ...(ADDR_ENABLED && Object.keys(customerPD).length > 0 ? customerPD : {})
     };
 
+    // Debug logging for form submission (production-safe, browser-safe)
+    if (__DEV__) {
+      try {
+        console.log('[StripePaymentForm] Submit - Form values with PD:', formValuesWithPD);
+        if (ADDR_ENABLED) {
+          console.log('[StripePaymentForm] Submit - Mapped customer PD:', customerPD);
+        }
+      } catch (_) {
+        // never block submission on logging
+      }
+    }
+
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: card,

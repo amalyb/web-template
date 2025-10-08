@@ -1,0 +1,15 @@
+CSP HEADER ANALYSIS
+===================
+
+Headers found:
+- content-security-policy-report-only: YES (1 occurrence)
+- content-security-policy: NO (0 occurrences)
+
+VERDICT: PASS ✓
+
+Status: Exactly ONE CSP family header found (report-only mode).
+This is acceptable for Wave-0 baseline. The site is using CSP in report-only mode,
+which means violations are logged but not enforced.
+
+Note: If the intention is to enforce CSP (blocking mode), the header name should be
+changed from "content-security-policy-report-only" to "content-security-policy".

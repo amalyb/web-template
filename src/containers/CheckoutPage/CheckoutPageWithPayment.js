@@ -355,10 +355,25 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     Object.entries(protectedData).filter(([, v]) => v !== '' && v != null)
   );
 
-  // Diagnostics
-  console.debug('[checkout] forwarding PD keys', Object.keys(filteredProtectedData));
-  console.log('🔐 Protected data constructed from formValues:', protectedData);
-  console.log('📦 Raw formValues:', formValues);
+  // Log the protected data for debugging (production-safe, browser-safe)
+  if (__DEV__) {
+    try {
+      console.log('🔐 Protected data constructed from formValues:', protectedData);
+      console.log('📦 Raw formValues:', formValues);
+      console.log('[checkout] forwarding PD keys', Object.keys(filteredProtectedData));
+      
+      // Verify customer fields are populated
+      const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
+      const missingFields = customerFields.filter(field => !filteredProtectedData[field]?.trim());
+      if (missingFields.length > 0) {
+        console.warn('⚠️ Missing customer fields:', missingFields);
+      } else {
+        console.log('✅ All customer fields populated:', customerFields.map(field => `${field}: "${filteredProtectedData[field]}"`));
+      }
+    } catch (_) {
+      // never block submission on logging
+    }
+  }
 
   // Calculate pricing and booking duration
   const unitPrice = pageData?.listing?.attributes?.price;
@@ -448,8 +463,18 @@ const handleSubmit = (values, process, props, submitting, setSubmitting) => {
     ...optionalPaymentParams,
   };
 
-  // TEMP: Log orderParams before API call
-  console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
+  // Verify customer data is included in the request
+  if (__DEV__) {
+    try {
+      console.log('📝 Final orderParams being sent to initiateOrder:', orderParams);
+      const customerDataInRequest = orderParams.protectedData;
+      const customerFields = ['customerName', 'customerStreet', 'customerCity', 'customerState', 'customerZip', 'customerEmail', 'customerPhone'];
+      const populatedFields = customerFields.filter(field => customerDataInRequest[field]?.trim());
+      console.log(`[checkout→request-payment] Customer fields in request: ${populatedFields.length}/${customerFields.length}`, populatedFields);
+    } catch (_) {
+      // never block submission on logging
+    }
+  }
 
   // Log line items for debugging
   console.log('🔍 Line item codes being sent:', lineItems.map(item => item.code));

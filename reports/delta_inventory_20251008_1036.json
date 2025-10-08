@@ -1,0 +1,2592 @@
+{
+  "timestamp": "2025-10-08T10:39:45.028550",
+  "deployed_commit_main": "edd07741a4d5545287a8fb9f7bed67f590a6bbca",
+  "test_head": "b92417162c6a3a6d37c6c1bde0b709bd1f5d5820",
+  "merge_base": "a2d9e4277152e1661d0e3c5f6631c53a250939f3",
+  "summary": {
+    "total_files_changed": 135,
+    "files_by_change_type": {
+      "added": 64,
+      "modified": 68,
+      "deleted": 3
+    },
+    "files_by_deployment_status": {
+      "only_in_test": 45,
+      "deployed_to_main": 64,
+      "diverged_conflict_risk": 23,
+      "deleted": 3
+    },
+    "commits_in_test_not_main": 125,
+    "commits_in_main_not_test": 7582
+  },
+  "features": [
+    {
+      "name": "SMS & Twilio Integration",
+      "impact": "Server-side SMS notification system using Twilio for transaction lifecycle events (acceptance, shipping reminders, overdue notices)",
+      "areas": [
+        "server/api",
+        "server/api-util"
+      ],
+      "dependencies": [
+        "ENV:TWILIO_ACCOUNT_SID",
+        "ENV:TWILIO_AUTH_TOKEN",
+        "ENV:TWILIO_PHONE_NUMBER",
+        "ENV:SMS_ENABLED"
+      ],
+      "files": [
+        {
+          "path": "server/api-util/phone.js",
+          "changeType": "A",
+          "shortFeature": "feat(sms,csp): harden SMS + CSP (idempotency, metrics, E.164, Twilio codes)",
+          "status": "deployed_to_main",
+          "test_last_commit": "f4ffa46ba",
+          "main_last_commit": "3010e9474",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/sendSMS.js",
+          "changeType": "M",
+          "shortFeature": "chore(sms): make sendSMS backward-compatible export, normalize ONLY_PHONE to E.1...",
+          "status": "deployed_to_main",
+          "test_last_commit": "e93fb8e97",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/twilio/sms-status.js",
+          "changeType": "A",
+          "shortFeature": "fix(twilio): trust proxy in prod and enforce urlencoded parsing for webhook",
+          "status": "deployed_to_main",
+          "test_last_commit": "e6ebefcbe",
+          "main_last_commit": "900be7d5a",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/sendSMS 2.js.zip",
+          "changeType": "A",
+          "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+          "status": "only_in_test",
+          "test_last_commit": "63580c498",
+          "main_last_commit": "",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"SMS & Twilio Integration\" (4 files)"
+    },
+    {
+      "name": "Shippo Shipping & QR Labels",
+      "impact": "Shipping label generation via Shippo API with QR code tracking links for borrowers and lenders",
+      "areas": [
+        "server/api",
+        "server/webhooks",
+        "server/lib"
+      ],
+      "dependencies": [
+        "ENV:SHIPPO_API_KEY",
+        "ENV:SHIPPO_ENABLED",
+        "ENV:QR_ENABLED"
+      ],
+      "files": [
+        {
+          "path": "server/api/qr.js",
+          "changeType": "A",
+          "shortFeature": "qr: constrain :id to UUID so /api/qr/test works; add route log",
+          "status": "deployed_to_main",
+          "test_last_commit": "ee1a8cf12",
+          "main_last_commit": "5c2e903de",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/lib/shipping.js",
+          "changeType": "A",
+          "shortFeature": "shipping(sms): compute ship-by with expanded tx + PD fallback; add robust loggin...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "141333fce",
+          "main_last_commit": "feb169c1d",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "server/webhooks/shippoTracking.js",
+          "changeType": "A",
+          "shortFeature": "Fix shippoTracking syntax, add Integration API creds support",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "19ad203d9",
+          "main_last_commit": "feb169c1d",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "server/test-shippo-webhook-enhancement.js",
+          "changeType": "A",
+          "shortFeature": "feat: enhance Shippo integration with environment gating and secure debug loggin...",
+          "status": "only_in_test",
+          "test_last_commit": "c06876087",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/webhooks/shippoTracking.js.zip",
+          "changeType": "A",
+          "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+          "status": "only_in_test",
+          "test_last_commit": "63580c498",
+          "main_last_commit": "",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Shippo Shipping & QR Labels\" (5 files)"
+    },
+    {
+      "name": "Core Transaction Flow",
+      "impact": "Server-side transaction initiation, privileged transitions, and line item calculations for bookings",
+      "areas": [
+        "server/api"
+      ],
+      "dependencies": [
+        "Flex Integration API",
+        "Stripe"
+      ],
+      "files": [
+        {
+          "path": "server/api/initiate-privileged.js",
+          "changeType": "M",
+          "shortFeature": "Fix:  bookingStartISO validation",
+          "status": "deployed_to_main",
+          "test_last_commit": "b92417162",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/transaction-line-items.js",
+          "changeType": "M",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "only_in_test",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "f2d8c646c",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/transition-privileged 6.js.zip",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/transition-privileged 7.js.zip",
+          "changeType": "A",
+          "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+          "status": "only_in_test",
+          "test_last_commit": "63580c498",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/transition-privileged-fixed.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/transition-privileged.js.backup",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api/transition-privileged.js",
+          "changeType": "M",
+          "shortFeature": "shipping(sms): compute ship-by with expanded tx + PD fallback; add robust loggin...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "141333fce",
+          "main_last_commit": "feb169c1d",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Core Transaction Flow\" (7 files)"
+    },
+    {
+      "name": "Server Infrastructure (SSR, CSP, Redis)",
+      "impact": "Server-side rendering improvements, Content Security Policy hardening, Redis caching infrastructure",
+      "areas": [
+        "server",
+        "server/middleware"
+      ],
+      "dependencies": [
+        "ENV:REDIS_ENABLED",
+        "CSP Headers",
+        "Helmet"
+      ],
+      "files": [
+        {
+          "path": "server/apiRouter.js",
+          "changeType": "M",
+          "shortFeature": "fix(shippo,sms): alias updateProtectedData, parse QR expiry, add Twilio DLR",
+          "status": "deployed_to_main",
+          "test_last_commit": "894edcfc7",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/apiServer.js",
+          "changeType": "M",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "deployed_to_main",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/csp.js",
+          "changeType": "M",
+          "shortFeature": "chore(csp): log mode and optionally emit both enforce+report-only headers",
+          "status": "deployed_to_main",
+          "test_last_commit": "958c9665a",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/redis.js",
+          "changeType": "A",
+          "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+          "status": "deployed_to_main",
+          "test_last_commit": "63580c498",
+          "main_last_commit": "4fd9d480d",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/renderer.js",
+          "changeType": "M",
+          "shortFeature": "two tiny, safe patches.",
+          "status": "deployed_to_main",
+          "test_last_commit": "756974658",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/index.js",
+          "changeType": "M",
+          "shortFeature": "fix(twilio): trust proxy in prod and enforce urlencoded parsing for webhook",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "e6ebefcbe",
+          "main_last_commit": "e484820e8",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        }
+      ],
+      "status": "diverged_conflict_risk",
+      "recommended_action": "Manual merge required - resolve conflicts, create PR with test changes"
+    },
+    {
+      "name": "Server Utilities",
+      "impact": "Shared server utilities for SDK integration, line items, metrics, and idempotency",
+      "areas": [
+        "server/api-util"
+      ],
+      "dependencies": [
+        "Flex SDK"
+      ],
+      "files": [
+        {
+          "path": "server/api-util/idempotency.js",
+          "changeType": "A",
+          "shortFeature": "feat(sms,csp): harden SMS + CSP (idempotency, metrics, E.164, Twilio codes)",
+          "status": "deployed_to_main",
+          "test_last_commit": "f4ffa46ba",
+          "main_last_commit": "3010e9474",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/integrationSdk.js",
+          "changeType": "A",
+          "shortFeature": "Fix persistence: use proper Flex transitions and improve delivery receipt handli...",
+          "status": "deployed_to_main",
+          "test_last_commit": "b39a7c4a8",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/lineItems.js",
+          "changeType": "M",
+          "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+          "status": "deployed_to_main",
+          "test_last_commit": "8f11b6e75",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/metrics.js",
+          "changeType": "A",
+          "shortFeature": "feat(sms,csp): harden SMS + CSP (idempotency, metrics, E.164, Twilio codes)",
+          "status": "deployed_to_main",
+          "test_last_commit": "f4ffa46ba",
+          "main_last_commit": "3010e9474",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/sdk.js",
+          "changeType": "M",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "deployed_to_main",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/api-util/integrationSdk.js.zip",
+          "changeType": "A",
+          "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+          "status": "only_in_test",
+          "test_last_commit": "63580c498",
+          "main_last_commit": "",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Server Utilities\" (6 files)"
+    },
+    {
+      "name": "Server Automation Scripts",
+      "impact": "Automated reminder scripts for overdue returns, ship-by dates, and return deadlines",
+      "areas": [
+        "server/scripts"
+      ],
+      "dependencies": [
+        "ENV:DRY_RUN",
+        "Cron/Scheduler"
+      ],
+      "files": [
+        {
+          "path": "server/scripts/debugTransactionPhones.js",
+          "changeType": "A",
+          "shortFeature": "Fix shippoTracking syntax, add Integration API creds support",
+          "status": "deployed_to_main",
+          "test_last_commit": "19ad203d9",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/scripts/sendOverdueReminders.js",
+          "changeType": "A",
+          "shortFeature": "Remaining SMS Flow Setup",
+          "status": "deployed_to_main",
+          "test_last_commit": "f72007f99",
+          "main_last_commit": "d2fa961d7",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/scripts/sendReturnReminders.js",
+          "changeType": "M",
+          "shortFeature": "Remaining SMS Flow Setup",
+          "status": "deployed_to_main",
+          "test_last_commit": "f72007f99",
+          "main_last_commit": "d2fa961d7",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/scripts/sendShipByReminders.js",
+          "changeType": "A",
+          "shortFeature": "chore(sms): make sendSMS backward-compatible export, normalize ONLY_PHONE to E.1...",
+          "status": "deployed_to_main",
+          "test_last_commit": "e93fb8e97",
+          "main_last_commit": "d2fa961d7",
+          "riskNotes": ""
+        },
+        {
+          "path": "server/scripts/sendReturnReminders 2.js.zip",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Server Automation Scripts\" (5 files)"
+    },
+    {
+      "name": "Checkout Address Forms",
+      "impact": "Enhanced checkout flow with separate billing and shipping address forms for borrowers",
+      "areas": [
+        "src/containers/CheckoutPage",
+        "src/components/AddressForm"
+      ],
+      "dependencies": [
+        "ENV:REACT_APP_CHECKOUT_ADDR_ENABLED",
+        "Stripe",
+        "Google Maps"
+      ],
+      "files": [
+        {
+          "path": "src/components/AddressForm/AddressForm.js",
+          "changeType": "A",
+          "shortFeature": "shipping + billing booking forms + formatting",
+          "status": "deployed_to_main",
+          "test_last_commit": "51ee2bc22",
+          "main_last_commit": "10fc1b074",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/components/AddressForm/AddressForm.module.css",
+          "changeType": "A",
+          "shortFeature": "shipping + billing booking forms + formatting",
+          "status": "deployed_to_main",
+          "test_last_commit": "51ee2bc22",
+          "main_last_commit": "10fc1b074",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/addressHelpers.js",
+          "changeType": "A",
+          "shortFeature": "shipping + billing booking forms + formatting",
+          "status": "deployed_to_main",
+          "test_last_commit": "51ee2bc22",
+          "main_last_commit": "10fc1b074",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/geoData.js",
+          "changeType": "A",
+          "shortFeature": "shipping + billing booking forms + formatting",
+          "status": "deployed_to_main",
+          "test_last_commit": "51ee2bc22",
+          "main_last_commit": "be380fab5",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/CheckoutPage/CheckoutPage.duck.js",
+          "changeType": "M",
+          "shortFeature": "fix(checkout): centralize submit gating, bubble form validity, normalize tx id",
+          "status": "only_in_test",
+          "test_last_commit": "03e315bd0",
+          "main_last_commit": "c37e779f7",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/CheckoutPage/CheckoutPage.js",
+          "changeType": "M",
+          "shortFeature": "fix(checkout): resolve props reference in StripePaymentForm and normalize specul...",
+          "status": "only_in_test",
+          "test_last_commit": "ac2f39be7",
+          "main_last_commit": "bb388129e",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.module.css",
+          "changeType": "M",
+          "shortFeature": "fix(checkout): centralize submit gating, bubble form validity, normalize tx id",
+          "status": "only_in_test",
+          "test_last_commit": "03e315bd0",
+          "main_last_commit": "9f0b30dce",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/CheckoutPage/CheckoutPageWithPayment.js",
+          "changeType": "M",
+          "shortFeature": "checkout+server: enforce shippable borrower address end-to-end; block submit & a...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "7a00f187f",
+          "main_last_commit": "edd07741a",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js",
+          "changeType": "M",
+          "shortFeature": "checkout+server: enforce shippable borrower address end-to-end; block submit & a...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "7a00f187f",
+          "main_last_commit": "cfe002d5d",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Checkout Address Forms\" (9 files)"
+    },
+    {
+      "name": "Availability Calendar Fixes",
+      "impact": "Calendar rendering fixes for proper date alignment, timezone handling, and availability display",
+      "areas": [
+        "src/containers/EditListingPage"
+      ],
+      "dependencies": [
+        "moment-timezone"
+      ],
+      "files": [
+        {
+          "path": "src/components/OrderPanel/BookingDatesForm/BookingDatesForm.js",
+          "changeType": "M",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/EditListingAvailabilityPanel.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/MonthlyCalendar/MonthlyCalendar.js",
+          "changeType": "M",
+          "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+          "status": "deployed_to_main",
+          "test_last_commit": "69ae42718",
+          "main_last_commit": "7535e43c0",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/MonthlyCalendar/MonthlyCalendar.module.css",
+          "changeType": "M",
+          "shortFeature": "calendar availability update",
+          "status": "deployed_to_main",
+          "test_last_commit": "6c693f06c",
+          "main_last_commit": "99c1c1ea7",
+          "riskNotes": ""
+        }
+      ],
+      "status": "diverged_conflict_risk",
+      "recommended_action": "Manual merge required - resolve conflicts, create PR with test changes"
+    },
+    {
+      "name": "Pricing & Breakdown Display",
+      "impact": "Price variants, discount calculations (50% for 10+ nights), and order breakdown UI",
+      "areas": [
+        "src/components/OrderBreakdown",
+        "src/containers/EditListingPage"
+      ],
+      "dependencies": [],
+      "files": [
+        {
+          "path": "src/components/OrderBreakdown/LineItemDiscountMaybe.js",
+          "changeType": "M",
+          "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+          "status": "only_in_test",
+          "test_last_commit": "8f11b6e75",
+          "main_last_commit": "4699ea3c7",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/components/OrderPanel/EstimatedCustomerBreakdownMaybe.js",
+          "changeType": "M",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "only_in_test",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "9a21ce00c",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingPanel/BookingPriceVariants.js",
+          "changeType": "M",
+          "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+          "status": "only_in_test",
+          "test_last_commit": "8f11b6e75",
+          "main_last_commit": "0e360c002",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/components/OrderPanel/OrderPanel.js",
+          "changeType": "M",
+          "shortFeature": "Availability calendar  correct display",
+          "status": "deployed_to_main",
+          "test_last_commit": "bd4118dd0",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingPanel/EditListingPricingForm.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingPanel/EditListingPricingPanel.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Pricing & Breakdown Display\" (6 files)"
+    },
+    {
+      "name": "Client Core UI Components",
+      "impact": "General UI improvements across listing, search, transaction, and editing pages",
+      "areas": [
+        "src/containers",
+        "src/components"
+      ],
+      "dependencies": [],
+      "files": [
+        {
+          "path": "src/components/FieldSelect/FieldSelect.module.css",
+          "changeType": "M",
+          "shortFeature": "shipping + billing booking forms + formatting",
+          "status": "only_in_test",
+          "test_last_commit": "51ee2bc22",
+          "main_last_commit": "4003d0fa8",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/components/index.js",
+          "changeType": "M",
+          "shortFeature": "shipping + billing booking forms + formatting",
+          "status": "only_in_test",
+          "test_last_commit": "51ee2bc22",
+          "main_last_commit": "51c1bb3e0",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/TransactionPage/TransactionPage.duck.js",
+          "changeType": "M",
+          "shortFeature": "fix(accept): relax customer validation, require only provider fields, merge PD s...",
+          "status": "only_in_test",
+          "test_last_commit": "2920bf8c4",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/TransactionPage/TransactionPage.js",
+          "changeType": "M",
+          "shortFeature": "fix(accept): validate merged protectedData; persist borrower shipping at checkou...",
+          "status": "only_in_test",
+          "test_last_commit": "3a7037974",
+          "main_last_commit": "6e8898669",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/TransactionPage/TransactionPanel/TransactionPanel.js",
+          "changeType": "M",
+          "shortFeature": "trace(checkout\u2192accept): bubble form values, build PD from formValues, boolean st...",
+          "status": "only_in_test",
+          "test_last_commit": "7d792f961",
+          "main_last_commit": "46d1a236f",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/components/ListingCard/ListingCard.js",
+          "changeType": "M",
+          "shortFeature": "orig price added to search page",
+          "status": "deployed_to_main",
+          "test_last_commit": "4936f8117",
+          "main_last_commit": "b59959dea",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/components/ListingCard/ListingCard.module.css",
+          "changeType": "M",
+          "shortFeature": "orig price added to search page",
+          "status": "deployed_to_main",
+          "test_last_commit": "4936f8117",
+          "main_last_commit": "b59959dea",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingPage.duck.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingPage.js",
+          "changeType": "M",
+          "shortFeature": "calendar availability update",
+          "status": "deployed_to_main",
+          "test_last_commit": "6c693f06c",
+          "main_last_commit": "99c1c1ea7",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingDeliveryPanel/EditListingDeliveryPanel.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingDetailsPanel/EditListingDetailsPanel.js",
+          "changeType": "M",
+          "shortFeature": "LIsting details submission guidelines",
+          "status": "deployed_to_main",
+          "test_last_commit": "c70cb48ad",
+          "main_last_commit": "c94d46db4",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingDetailsPanel/EditListingDetailsPanel.module.css",
+          "changeType": "M",
+          "shortFeature": "LIsting details submission guidelines",
+          "status": "deployed_to_main",
+          "test_last_commit": "c70cb48ad",
+          "main_last_commit": "c94d46db4",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingLocationPanel/EditListingLocationPanel.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingPhotosPanel/EditListingPhotosPanel.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingAndStockPanel/EditListingPricingAndStockForm.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingAndStockPanel/EditListingPricingAndStockPanel.js",
+          "changeType": "M",
+          "shortFeature": "Fix retail price not displaying issue",
+          "status": "deployed_to_main",
+          "test_last_commit": "6aca744af",
+          "main_last_commit": "8b8bf7bba",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingWizard.js",
+          "changeType": "M",
+          "shortFeature": "calendar availability update",
+          "status": "deployed_to_main",
+          "test_last_commit": "6c693f06c",
+          "main_last_commit": "99c1c1ea7",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/EditListingPage/EditListingWizard/EditListingWizardTab.js",
+          "changeType": "M",
+          "shortFeature": "Availability calendar  correct display",
+          "status": "deployed_to_main",
+          "test_last_commit": "bd4118dd0",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/SearchPage/SearchMapInfoCard/SearchMapInfoCard.js",
+          "changeType": "M",
+          "shortFeature": "orig price added to search page",
+          "status": "deployed_to_main",
+          "test_last_commit": "4936f8117",
+          "main_last_commit": "b59959dea",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/SearchPage/SearchMapInfoCard/SearchMapInfoCard.module.css",
+          "changeType": "M",
+          "shortFeature": "orig price added to search page",
+          "status": "deployed_to_main",
+          "test_last_commit": "4936f8117",
+          "main_last_commit": "b59959dea",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/SearchPage/SearchPage.duck.js",
+          "changeType": "M",
+          "shortFeature": "orig price added to search page",
+          "status": "deployed_to_main",
+          "test_last_commit": "4936f8117",
+          "main_last_commit": "b59959dea",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/containers/ListingPage/ListingPage.duck.js",
+          "changeType": "M",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Client Core UI Components\" (22 files)"
+    },
+    {
+      "name": "Client Utilities",
+      "impact": "Shared client utilities for environment flags, dates, API calls, and config helpers",
+      "areas": [
+        "src/util"
+      ],
+      "dependencies": [],
+      "files": [
+        {
+          "path": "src/util/api.js",
+          "changeType": "M",
+          "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "2e422b8d0",
+          "main_last_commit": "c5b279ca1",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "src/util/envFlags.js",
+          "changeType": "A",
+          "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "2e422b8d0",
+          "main_last_commit": "edd07741a",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "src/util/googleMaps.js",
+          "changeType": "M",
+          "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "2e422b8d0",
+          "main_last_commit": "c5b279ca1",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "src/util/configHelpers.js",
+          "changeType": "M",
+          "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+          "status": "deployed_to_main",
+          "test_last_commit": "2e422b8d0",
+          "main_last_commit": "c5b279ca1",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/data.js",
+          "changeType": "M",
+          "shortFeature": "availability calendar bug fixes",
+          "status": "deployed_to_main",
+          "test_last_commit": "4117dc979",
+          "main_last_commit": "bff31b2e5",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/generators.js",
+          "changeType": "M",
+          "shortFeature": "availability calendar bug fixes",
+          "status": "deployed_to_main",
+          "test_last_commit": "4117dc979",
+          "main_last_commit": "bff31b2e5",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/dates.js",
+          "changeType": "M",
+          "shortFeature": "feat(dates): add missing TZ helper functions for Flex timeslots",
+          "status": "only_in_test",
+          "test_last_commit": "58f5911b6",
+          "main_last_commit": "61289c64f",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/id.js",
+          "changeType": "A",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "only_in_test",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "src/util/types.js",
+          "changeType": "M",
+          "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+          "status": "only_in_test",
+          "test_last_commit": "8f11b6e75",
+          "main_last_commit": "4699ea3c7",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Client Utilities\" (9 files)"
+    },
+    {
+      "name": "Config, Build & Infrastructure",
+      "impact": "Package management (npm migration), favicon updates, build configuration, CI/CD (Render)",
+      "areas": [
+        "root",
+        "public",
+        "ext"
+      ],
+      "dependencies": [
+        "npm",
+        "Render",
+        "Flex transaction processes"
+      ],
+      "files": [
+        {
+          "path": ".gitignore",
+          "changeType": "M",
+          "shortFeature": "chore: standardize on npm; ignore yarn.lock",
+          "status": "only_in_test",
+          "test_last_commit": "fd335ed6a",
+          "main_last_commit": "554fa0a0b",
+          "riskNotes": ""
+        },
+        {
+          "path": "ext/transaction-processes/default-booking/process.edn",
+          "changeType": "M",
+          "shortFeature": "feat: implement branded short URL system for QR codes",
+          "status": "deployed_to_main",
+          "test_last_commit": "1ea5b2c1a",
+          "main_last_commit": "5714dd483",
+          "riskNotes": ""
+        },
+        {
+          "path": "public/favicon.ico",
+          "changeType": "A",
+          "shortFeature": "new favicons",
+          "status": "deployed_to_main",
+          "test_last_commit": "b965c700d",
+          "main_last_commit": "676045b6b",
+          "riskNotes": ""
+        },
+        {
+          "path": "render.yaml",
+          "changeType": "M",
+          "shortFeature": "SSR setup will now properly inject the JavaScript bundles and eliminate the blan...",
+          "status": "deployed_to_main",
+          "test_last_commit": "360064c45",
+          "main_last_commit": "aa974f087",
+          "riskNotes": ""
+        },
+        {
+          "path": "package-lock.json",
+          "changeType": "A",
+          "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "68614772d",
+          "main_last_commit": "da9121f65",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "package.json",
+          "changeType": "M",
+          "shortFeature": "chore(sms): make sendSMS backward-compatible export, normalize ONLY_PHONE to E.1...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "e93fb8e97",
+          "main_last_commit": "aa974f087",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "public/index.html",
+          "changeType": "M",
+          "shortFeature": "Fix %PUBLIC_URL% literal 400s: use root-relative favicon/manifest; ensure static...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "9be9832fe",
+          "main_last_commit": "fce95a323",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "public/site.webmanifest",
+          "changeType": "A",
+          "shortFeature": "Fix manifest/CSP/CORS and asset paths; add /csp-report handler; ensure favicon/m...",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "2c8a62bf4",
+          "main_last_commit": "eb582158d",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "public/static/icons/android-chrome-192x192.png",
+          "changeType": "M",
+          "shortFeature": "new favicons",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "b965c700d",
+          "main_last_commit": "e03c05a18",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "public/static/icons/android-chrome-512x512.png",
+          "changeType": "M",
+          "shortFeature": "new favicons",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "b965c700d",
+          "main_last_commit": "e03c05a18",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "public/static/icons/apple-touch-icon.png",
+          "changeType": "M",
+          "shortFeature": "new favicons",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "b965c700d",
+          "main_last_commit": "e03c05a18",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "public/static/icons/favicon.ico",
+          "changeType": "D",
+          "shortFeature": "Add inquirer dependency and clean up favicon location",
+          "status": "deleted",
+          "test_last_commit": "893193003",
+          "main_last_commit": "d59b57aee",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Config, Build & Infrastructure\" (12 files)"
+    },
+    {
+      "name": "Documentation & Debug Files",
+      "impact": "Internal documentation, bug fix summaries, test scripts, and implementation guides (non-production)",
+      "areas": [
+        "root"
+      ],
+      "dependencies": [],
+      "files": [
+        {
+          "path": "AVAILABILITY_BUG_FIX.md",
+          "changeType": "A",
+          "shortFeature": "availability calendar bug fixes",
+          "status": "deployed_to_main",
+          "test_last_commit": "4117dc979",
+          "main_last_commit": "bff31b2e5",
+          "riskNotes": ""
+        },
+        {
+          "path": "AVAILABILITY_BUG_FIX_COMPLETE.md",
+          "changeType": "A",
+          "shortFeature": "availability calendar bug fixes",
+          "status": "deployed_to_main",
+          "test_last_commit": "4117dc979",
+          "main_last_commit": "bff31b2e5",
+          "riskNotes": ""
+        },
+        {
+          "path": "AVAILABILITY_START_DATE_FIX.md",
+          "changeType": "A",
+          "shortFeature": "Availability calendar  correct display",
+          "status": "deployed_to_main",
+          "test_last_commit": "bd4118dd0",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": ""
+        },
+        {
+          "path": "AVAILABILITY_START_DATE_FIX_COMPLETE.md",
+          "changeType": "A",
+          "shortFeature": "Availability calendar  correct display",
+          "status": "deployed_to_main",
+          "test_last_commit": "bd4118dd0",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": ""
+        },
+        {
+          "path": "BOOKING_CALENDAR_FIX.md",
+          "changeType": "A",
+          "shortFeature": "Availability calendar  correct display",
+          "status": "deployed_to_main",
+          "test_last_commit": "bd4118dd0",
+          "main_last_commit": "c2eb45257",
+          "riskNotes": ""
+        },
+        {
+          "path": "CALENDAR_DATE_BUG_FIX.md",
+          "changeType": "A",
+          "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+          "status": "deployed_to_main",
+          "test_last_commit": "69ae42718",
+          "main_last_commit": "7535e43c0",
+          "riskNotes": ""
+        },
+        {
+          "path": "FLEX_TRANSITION_FIX.md",
+          "changeType": "A",
+          "shortFeature": "fix: resolve QR link 404 issues with environment config and Flex transition debu...",
+          "status": "deployed_to_main",
+          "test_last_commit": "d6251aead",
+          "main_last_commit": "ef1642272",
+          "riskNotes": ""
+        },
+        {
+          "path": "QR_DEBUG_IMPLEMENTATION.md",
+          "changeType": "A",
+          "shortFeature": "feat: Add QR debug endpoints and improve logging",
+          "status": "deployed_to_main",
+          "test_last_commit": "d9ce05662",
+          "main_last_commit": "8f8803e48",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-calendar-comprehensive.js",
+          "changeType": "A",
+          "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+          "status": "deployed_to_main",
+          "test_last_commit": "69ae42718",
+          "main_last_commit": "7535e43c0",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-calendar-fix.js",
+          "changeType": "A",
+          "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+          "status": "deployed_to_main",
+          "test_last_commit": "69ae42718",
+          "main_last_commit": "7535e43c0",
+          "riskNotes": ""
+        },
+        {
+          "path": "CONTRIBUTING.md",
+          "changeType": "A",
+          "shortFeature": "fix: add Stripe CSP origins and ensure SMS/email use absolute URLs",
+          "status": "diverged_conflict_risk",
+          "test_last_commit": "1857cf950",
+          "main_last_commit": "63656ed07",
+          "riskNotes": "Diverged - needs merge conflict resolution"
+        },
+        {
+          "path": "SHIPPO_ENV_SETUP.md",
+          "changeType": "A",
+          "shortFeature": "feat: enhance Shippo integration with environment gating and secure debug loggin...",
+          "status": "only_in_test",
+          "test_last_commit": "c06876087",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "SMS_FIX_IMPLEMENTATION_SUMMARY.md",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "SMS_INVESTIGATION_GUIDE.md",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "SMS_RECIPIENT_INVESTIGATION_SUMMARY.md",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "SMS_SYSTEM_DOCUMENTATION.md",
+          "changeType": "A",
+          "shortFeature": "Remaining SMS Flow Setup",
+          "status": "only_in_test",
+          "test_last_commit": "f72007f99",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-api-payload.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-availability-fix.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-browser-calendar.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-debug-stringify.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-end-to-end-flow.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-final-fix.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-fix-verification.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-getstartof-issue.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-july-2-9-fix.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-july-3-9-bug.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-proper-fix.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-regression-availability.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-rehydration-bug.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-timezone-bug.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        },
+        {
+          "path": "test-timezone-issue.js",
+          "changeType": "A",
+          "shortFeature": "Add SMS fix implementation summary and documentation",
+          "status": "only_in_test",
+          "test_last_commit": "b310d91f9",
+          "main_last_commit": "",
+          "riskNotes": ""
+        }
+      ],
+      "status": "only_in_test",
+      "recommended_action": "Create PR: test \u2192 main for \"Documentation & Debug Files\" (31 files)"
+    }
+  ],
+  "files_flat": [
+    {
+      "path": ".gitignore",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "chore: standardize on npm; ignore yarn.lock",
+      "status": "only_in_test",
+      "test_last_commit": "fd335ed6a",
+      "main_last_commit": "554fa0a0b"
+    },
+    {
+      "path": "AVAILABILITY_BUG_FIX.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "availability calendar bug fixes",
+      "status": "deployed_to_main",
+      "test_last_commit": "4117dc979",
+      "main_last_commit": "bff31b2e5"
+    },
+    {
+      "path": "AVAILABILITY_BUG_FIX_COMPLETE.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "availability calendar bug fixes",
+      "status": "deployed_to_main",
+      "test_last_commit": "4117dc979",
+      "main_last_commit": "bff31b2e5"
+    },
+    {
+      "path": "AVAILABILITY_START_DATE_FIX.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Availability calendar  correct display",
+      "status": "deployed_to_main",
+      "test_last_commit": "bd4118dd0",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "AVAILABILITY_START_DATE_FIX_COMPLETE.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Availability calendar  correct display",
+      "status": "deployed_to_main",
+      "test_last_commit": "bd4118dd0",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "BOOKING_CALENDAR_FIX.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Availability calendar  correct display",
+      "status": "deployed_to_main",
+      "test_last_commit": "bd4118dd0",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "CALENDAR_DATE_BUG_FIX.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+      "status": "deployed_to_main",
+      "test_last_commit": "69ae42718",
+      "main_last_commit": "7535e43c0"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "fix: add Stripe CSP origins and ensure SMS/email use absolute URLs",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "1857cf950",
+      "main_last_commit": "63656ed07"
+    },
+    {
+      "path": "FLEX_TRANSITION_FIX.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "fix: resolve QR link 404 issues with environment config and Flex transition debu...",
+      "status": "deployed_to_main",
+      "test_last_commit": "d6251aead",
+      "main_last_commit": "ef1642272"
+    },
+    {
+      "path": "QR_DEBUG_IMPLEMENTATION.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "feat: Add QR debug endpoints and improve logging",
+      "status": "deployed_to_main",
+      "test_last_commit": "d9ce05662",
+      "main_last_commit": "8f8803e48"
+    },
+    {
+      "path": "SHIPPO_ENV_SETUP.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "feat: enhance Shippo integration with environment gating and secure debug loggin...",
+      "status": "only_in_test",
+      "test_last_commit": "c06876087",
+      "main_last_commit": ""
+    },
+    {
+      "path": "SMS_FIX_IMPLEMENTATION_SUMMARY.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "SMS_INVESTIGATION_GUIDE.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "SMS_RECIPIENT_INVESTIGATION_SUMMARY.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "SMS_SYSTEM_DOCUMENTATION.md",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Remaining SMS Flow Setup",
+      "status": "only_in_test",
+      "test_last_commit": "f72007f99",
+      "main_last_commit": ""
+    },
+    {
+      "path": "ext/transaction-processes/default-booking/process.edn",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "feat: implement branded short URL system for QR codes",
+      "status": "deployed_to_main",
+      "test_last_commit": "1ea5b2c1a",
+      "main_last_commit": "5714dd483"
+    },
+    {
+      "path": "package-lock.json",
+      "changeType": "A",
+      "category": "config-build-infra",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "da9121f65"
+    },
+    {
+      "path": "package.json",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "chore(sms): make sendSMS backward-compatible export, normalize ONLY_PHONE to E.1...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "e93fb8e97",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "public/favicon.ico",
+      "changeType": "A",
+      "category": "config-build-infra",
+      "shortFeature": "new favicons",
+      "status": "deployed_to_main",
+      "test_last_commit": "b965c700d",
+      "main_last_commit": "676045b6b"
+    },
+    {
+      "path": "public/index.html",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "Fix %PUBLIC_URL% literal 400s: use root-relative favicon/manifest; ensure static...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "9be9832fe",
+      "main_last_commit": "fce95a323"
+    },
+    {
+      "path": "public/site.webmanifest",
+      "changeType": "A",
+      "category": "config-build-infra",
+      "shortFeature": "Fix manifest/CSP/CORS and asset paths; add /csp-report handler; ensure favicon/m...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "2c8a62bf4",
+      "main_last_commit": "eb582158d"
+    },
+    {
+      "path": "public/static/icons/android-chrome-192x192.png",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "new favicons",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "b965c700d",
+      "main_last_commit": "e03c05a18"
+    },
+    {
+      "path": "public/static/icons/android-chrome-512x512.png",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "new favicons",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "b965c700d",
+      "main_last_commit": "e03c05a18"
+    },
+    {
+      "path": "public/static/icons/apple-touch-icon.png",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "new favicons",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "b965c700d",
+      "main_last_commit": "e03c05a18"
+    },
+    {
+      "path": "public/static/icons/favicon.ico",
+      "changeType": "D",
+      "category": "config-build-infra",
+      "shortFeature": "Add inquirer dependency and clean up favicon location",
+      "status": "deleted",
+      "test_last_commit": "893193003",
+      "main_last_commit": "d59b57aee"
+    },
+    {
+      "path": "render.yaml",
+      "changeType": "M",
+      "category": "config-build-infra",
+      "shortFeature": "SSR setup will now properly inject the JavaScript bundles and eliminate the blan...",
+      "status": "deployed_to_main",
+      "test_last_commit": "360064c45",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "scripts/audit-urls.js",
+      "changeType": "A",
+      "category": "other",
+      "shortFeature": "feat: enhance CSP and URL audit script",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "f8b7ac8c7",
+      "main_last_commit": "63656ed07"
+    },
+    {
+      "path": "server/README.md",
+      "changeType": "A",
+      "category": "other",
+      "shortFeature": "Shippo webhook",
+      "status": "deployed_to_main",
+      "test_last_commit": "35ce396a2",
+      "main_last_commit": "9878604f3"
+    },
+    {
+      "path": "server/api-util/idempotency.js",
+      "changeType": "A",
+      "category": "server-utils",
+      "shortFeature": "feat(sms,csp): harden SMS + CSP (idempotency, metrics, E.164, Twilio codes)",
+      "status": "deployed_to_main",
+      "test_last_commit": "f4ffa46ba",
+      "main_last_commit": "3010e9474"
+    },
+    {
+      "path": "server/api-util/integrationSdk.js",
+      "changeType": "A",
+      "category": "server-utils",
+      "shortFeature": "Fix persistence: use proper Flex transitions and improve delivery receipt handli...",
+      "status": "deployed_to_main",
+      "test_last_commit": "b39a7c4a8",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/api-util/integrationSdk.js.zip",
+      "changeType": "A",
+      "category": "server-utils",
+      "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+      "status": "only_in_test",
+      "test_last_commit": "63580c498",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/api-util/lineItems.js",
+      "changeType": "M",
+      "category": "server-utils",
+      "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+      "status": "deployed_to_main",
+      "test_last_commit": "8f11b6e75",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/api-util/metrics.js",
+      "changeType": "A",
+      "category": "server-utils",
+      "shortFeature": "feat(sms,csp): harden SMS + CSP (idempotency, metrics, E.164, Twilio codes)",
+      "status": "deployed_to_main",
+      "test_last_commit": "f4ffa46ba",
+      "main_last_commit": "3010e9474"
+    },
+    {
+      "path": "server/api-util/phone.js",
+      "changeType": "A",
+      "category": "server-sms-twilio",
+      "shortFeature": "feat(sms,csp): harden SMS + CSP (idempotency, metrics, E.164, Twilio codes)",
+      "status": "deployed_to_main",
+      "test_last_commit": "f4ffa46ba",
+      "main_last_commit": "3010e9474"
+    },
+    {
+      "path": "server/api-util/sdk.js",
+      "changeType": "M",
+      "category": "server-utils",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "deployed_to_main",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/api-util/sendSMS 2.js.zip",
+      "changeType": "A",
+      "category": "server-sms-twilio",
+      "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+      "status": "only_in_test",
+      "test_last_commit": "63580c498",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/api-util/sendSMS.js",
+      "changeType": "M",
+      "category": "server-sms-twilio",
+      "shortFeature": "chore(sms): make sendSMS backward-compatible export, normalize ONLY_PHONE to E.1...",
+      "status": "deployed_to_main",
+      "test_last_commit": "e93fb8e97",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/api/initiate-privileged.js",
+      "changeType": "M",
+      "category": "server-core-transactions",
+      "shortFeature": "Fix:  bookingStartISO validation",
+      "status": "deployed_to_main",
+      "test_last_commit": "b92417162",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/api/qr.js",
+      "changeType": "A",
+      "category": "server-shippo-qr",
+      "shortFeature": "qr: constrain :id to UUID so /api/qr/test works; add route log",
+      "status": "deployed_to_main",
+      "test_last_commit": "ee1a8cf12",
+      "main_last_commit": "5c2e903de"
+    },
+    {
+      "path": "server/api/transaction-line-items.js",
+      "changeType": "M",
+      "category": "server-core-transactions",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "only_in_test",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "f2d8c646c"
+    },
+    {
+      "path": "server/api/transition-privileged 6.js.zip",
+      "changeType": "A",
+      "category": "server-core-transactions",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/api/transition-privileged 7.js.zip",
+      "changeType": "A",
+      "category": "server-core-transactions",
+      "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+      "status": "only_in_test",
+      "test_last_commit": "63580c498",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/api/transition-privileged-fixed.js",
+      "changeType": "A",
+      "category": "server-core-transactions",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/api/transition-privileged.js",
+      "changeType": "M",
+      "category": "server-core-transactions",
+      "shortFeature": "shipping(sms): compute ship-by with expanded tx + PD fallback; add robust loggin...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "141333fce",
+      "main_last_commit": "feb169c1d"
+    },
+    {
+      "path": "server/api/transition-privileged.js.backup",
+      "changeType": "A",
+      "category": "server-core-transactions",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/api/twilio/sms-status.js",
+      "changeType": "A",
+      "category": "server-sms-twilio",
+      "shortFeature": "fix(twilio): trust proxy in prod and enforce urlencoded parsing for webhook",
+      "status": "deployed_to_main",
+      "test_last_commit": "e6ebefcbe",
+      "main_last_commit": "900be7d5a"
+    },
+    {
+      "path": "server/apiRouter.js",
+      "changeType": "M",
+      "category": "server-infra",
+      "shortFeature": "fix(shippo,sms): alias updateProtectedData, parse QR expiry, add Twilio DLR",
+      "status": "deployed_to_main",
+      "test_last_commit": "894edcfc7",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/apiServer.js",
+      "changeType": "M",
+      "category": "server-infra",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "deployed_to_main",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/csp.js",
+      "changeType": "M",
+      "category": "server-infra",
+      "shortFeature": "chore(csp): log mode and optionally emit both enforce+report-only headers",
+      "status": "deployed_to_main",
+      "test_last_commit": "958c9665a",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/index.js",
+      "changeType": "M",
+      "category": "server-infra",
+      "shortFeature": "fix(twilio): trust proxy in prod and enforce urlencoded parsing for webhook",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "e6ebefcbe",
+      "main_last_commit": "e484820e8"
+    },
+    {
+      "path": "server/lib/shipping.js",
+      "changeType": "A",
+      "category": "server-shippo-qr",
+      "shortFeature": "shipping(sms): compute ship-by with expanded tx + PD fallback; add robust loggin...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "141333fce",
+      "main_last_commit": "feb169c1d"
+    },
+    {
+      "path": "server/redis.js",
+      "changeType": "A",
+      "category": "server-infra",
+      "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+      "status": "deployed_to_main",
+      "test_last_commit": "63580c498",
+      "main_last_commit": "4fd9d480d"
+    },
+    {
+      "path": "server/renderer.js",
+      "changeType": "M",
+      "category": "server-infra",
+      "shortFeature": "two tiny, safe patches.",
+      "status": "deployed_to_main",
+      "test_last_commit": "756974658",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/scripts/debugTransactionPhones.js",
+      "changeType": "A",
+      "category": "server-scripts",
+      "shortFeature": "Fix shippoTracking syntax, add Integration API creds support",
+      "status": "deployed_to_main",
+      "test_last_commit": "19ad203d9",
+      "main_last_commit": "aa974f087"
+    },
+    {
+      "path": "server/scripts/sendOverdueReminders.js",
+      "changeType": "A",
+      "category": "server-scripts",
+      "shortFeature": "Remaining SMS Flow Setup",
+      "status": "deployed_to_main",
+      "test_last_commit": "f72007f99",
+      "main_last_commit": "d2fa961d7"
+    },
+    {
+      "path": "server/scripts/sendReturnReminders 2.js.zip",
+      "changeType": "A",
+      "category": "server-scripts",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/scripts/sendReturnReminders.js",
+      "changeType": "M",
+      "category": "server-scripts",
+      "shortFeature": "Remaining SMS Flow Setup",
+      "status": "deployed_to_main",
+      "test_last_commit": "f72007f99",
+      "main_last_commit": "d2fa961d7"
+    },
+    {
+      "path": "server/scripts/sendShipByReminders.js",
+      "changeType": "A",
+      "category": "server-scripts",
+      "shortFeature": "chore(sms): make sendSMS backward-compatible export, normalize ONLY_PHONE to E.1...",
+      "status": "deployed_to_main",
+      "test_last_commit": "e93fb8e97",
+      "main_last_commit": "d2fa961d7"
+    },
+    {
+      "path": "server/test-flex-transition.js",
+      "changeType": "A",
+      "category": "other",
+      "shortFeature": "fix: resolve QR link 404 issues with environment config and Flex transition debu...",
+      "status": "deployed_to_main",
+      "test_last_commit": "d6251aead",
+      "main_last_commit": "ef1642272"
+    },
+    {
+      "path": "server/test-shippo-webhook-enhancement.js",
+      "changeType": "A",
+      "category": "server-shippo-qr",
+      "shortFeature": "feat: enhance Shippo integration with environment gating and secure debug loggin...",
+      "status": "only_in_test",
+      "test_last_commit": "c06876087",
+      "main_last_commit": ""
+    },
+    {
+      "path": "server/webhooks/shippoTracking.js",
+      "changeType": "A",
+      "category": "server-shippo-qr",
+      "shortFeature": "Fix shippoTracking syntax, add Integration API creds support",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "19ad203d9",
+      "main_last_commit": "feb169c1d"
+    },
+    {
+      "path": "server/webhooks/shippoTracking.js.zip",
+      "changeType": "A",
+      "category": "server-shippo-qr",
+      "shortFeature": "Fix persistence 409 errors and improve error handling for shipping label creatio...",
+      "status": "only_in_test",
+      "test_last_commit": "63580c498",
+      "main_last_commit": ""
+    },
+    {
+      "path": "src/app.js",
+      "changeType": "M",
+      "category": "other",
+      "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "2e422b8d0",
+      "main_last_commit": "c5b279ca1"
+    },
+    {
+      "path": "src/components/AddressForm/AddressForm.js",
+      "changeType": "A",
+      "category": "client-checkout-address",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "deployed_to_main",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "10fc1b074"
+    },
+    {
+      "path": "src/components/AddressForm/AddressForm.module.css",
+      "changeType": "A",
+      "category": "client-checkout-address",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "deployed_to_main",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "10fc1b074"
+    },
+    {
+      "path": "src/components/FieldSelect/FieldSelect.module.css",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "only_in_test",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "4003d0fa8"
+    },
+    {
+      "path": "src/components/ListingCard/ListingCard.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "orig price added to search page",
+      "status": "deployed_to_main",
+      "test_last_commit": "4936f8117",
+      "main_last_commit": "b59959dea"
+    },
+    {
+      "path": "src/components/ListingCard/ListingCard.module.css",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "orig price added to search page",
+      "status": "deployed_to_main",
+      "test_last_commit": "4936f8117",
+      "main_last_commit": "b59959dea"
+    },
+    {
+      "path": "src/components/OrderBreakdown/LineItemDiscountMaybe.js",
+      "changeType": "M",
+      "category": "client-pricing-breakdown",
+      "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+      "status": "only_in_test",
+      "test_last_commit": "8f11b6e75",
+      "main_last_commit": "4699ea3c7"
+    },
+    {
+      "path": "src/components/OrderPanel/BookingDatesForm/BookingDatesForm.js",
+      "changeType": "M",
+      "category": "client-availability-calendar",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "src/components/OrderPanel/EstimatedCustomerBreakdownMaybe.js",
+      "changeType": "M",
+      "category": "client-pricing-breakdown",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "only_in_test",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "9a21ce00c"
+    },
+    {
+      "path": "src/components/OrderPanel/OrderPanel.js",
+      "changeType": "M",
+      "category": "client-pricing-breakdown",
+      "shortFeature": "Availability calendar  correct display",
+      "status": "deployed_to_main",
+      "test_last_commit": "bd4118dd0",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "src/components/index.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "only_in_test",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "51c1bb3e0"
+    },
+    {
+      "path": "src/containers/CheckoutPage/CheckoutPage.duck.js",
+      "changeType": "M",
+      "category": "client-checkout-address",
+      "shortFeature": "fix(checkout): centralize submit gating, bubble form validity, normalize tx id",
+      "status": "only_in_test",
+      "test_last_commit": "03e315bd0",
+      "main_last_commit": "c37e779f7"
+    },
+    {
+      "path": "src/containers/CheckoutPage/CheckoutPage.js",
+      "changeType": "M",
+      "category": "client-checkout-address",
+      "shortFeature": "fix(checkout): resolve props reference in StripePaymentForm and normalize specul...",
+      "status": "only_in_test",
+      "test_last_commit": "ac2f39be7",
+      "main_last_commit": "bb388129e"
+    },
+    {
+      "path": "src/containers/CheckoutPage/CheckoutPageWithPayment.js",
+      "changeType": "M",
+      "category": "client-checkout-address",
+      "shortFeature": "checkout+server: enforce shippable borrower address end-to-end; block submit & a...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "7a00f187f",
+      "main_last_commit": "edd07741a"
+    },
+    {
+      "path": "src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js",
+      "changeType": "M",
+      "category": "client-checkout-address",
+      "shortFeature": "checkout+server: enforce shippable borrower address end-to-end; block submit & a...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "7a00f187f",
+      "main_last_commit": "cfe002d5d"
+    },
+    {
+      "path": "src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.module.css",
+      "changeType": "M",
+      "category": "client-checkout-address",
+      "shortFeature": "fix(checkout): centralize submit gating, bubble form validity, normalize tx id",
+      "status": "only_in_test",
+      "test_last_commit": "03e315bd0",
+      "main_last_commit": "9f0b30dce"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingPage.duck.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingPage.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "calendar availability update",
+      "status": "deployed_to_main",
+      "test_last_commit": "6c693f06c",
+      "main_last_commit": "99c1c1ea7"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/EditListingAvailabilityPanel.js",
+      "changeType": "M",
+      "category": "client-availability-calendar",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/MonthlyCalendar/MonthlyCalendar.js",
+      "changeType": "M",
+      "category": "client-availability-calendar",
+      "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+      "status": "deployed_to_main",
+      "test_last_commit": "69ae42718",
+      "main_last_commit": "7535e43c0"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/MonthlyCalendar/MonthlyCalendar.module.css",
+      "changeType": "M",
+      "category": "client-availability-calendar",
+      "shortFeature": "calendar availability update",
+      "status": "deployed_to_main",
+      "test_last_commit": "6c693f06c",
+      "main_last_commit": "99c1c1ea7"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingDeliveryPanel/EditListingDeliveryPanel.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingDetailsPanel/EditListingDetailsPanel.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "LIsting details submission guidelines",
+      "status": "deployed_to_main",
+      "test_last_commit": "c70cb48ad",
+      "main_last_commit": "c94d46db4"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingDetailsPanel/EditListingDetailsPanel.module.css",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "LIsting details submission guidelines",
+      "status": "deployed_to_main",
+      "test_last_commit": "c70cb48ad",
+      "main_last_commit": "c94d46db4"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingLocationPanel/EditListingLocationPanel.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingPhotosPanel/EditListingPhotosPanel.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingAndStockPanel/EditListingPricingAndStockForm.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingAndStockPanel/EditListingPricingAndStockPanel.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingPanel/BookingPriceVariants.js",
+      "changeType": "M",
+      "category": "client-pricing-breakdown",
+      "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+      "status": "only_in_test",
+      "test_last_commit": "8f11b6e75",
+      "main_last_commit": "0e360c002"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingPanel/EditListingPricingForm.js",
+      "changeType": "M",
+      "category": "client-pricing-breakdown",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingPricingPanel/EditListingPricingPanel.js",
+      "changeType": "M",
+      "category": "client-pricing-breakdown",
+      "shortFeature": "Fix retail price not displaying issue",
+      "status": "deployed_to_main",
+      "test_last_commit": "6aca744af",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingWizard.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "calendar availability update",
+      "status": "deployed_to_main",
+      "test_last_commit": "6c693f06c",
+      "main_last_commit": "99c1c1ea7"
+    },
+    {
+      "path": "src/containers/EditListingPage/EditListingWizard/EditListingWizardTab.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Availability calendar  correct display",
+      "status": "deployed_to_main",
+      "test_last_commit": "bd4118dd0",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "src/containers/ListingPage/ListingPage.duck.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "68614772d",
+      "main_last_commit": "c2eb45257"
+    },
+    {
+      "path": "src/containers/SearchPage/SearchMapInfoCard/SearchMapInfoCard.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "orig price added to search page",
+      "status": "deployed_to_main",
+      "test_last_commit": "4936f8117",
+      "main_last_commit": "b59959dea"
+    },
+    {
+      "path": "src/containers/SearchPage/SearchMapInfoCard/SearchMapInfoCard.module.css",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "orig price added to search page",
+      "status": "deployed_to_main",
+      "test_last_commit": "4936f8117",
+      "main_last_commit": "b59959dea"
+    },
+    {
+      "path": "src/containers/SearchPage/SearchPage.duck.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "orig price added to search page",
+      "status": "deployed_to_main",
+      "test_last_commit": "4936f8117",
+      "main_last_commit": "b59959dea"
+    },
+    {
+      "path": "src/containers/TransactionPage/TransactionPage.duck.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "fix(accept): relax customer validation, require only provider fields, merge PD s...",
+      "status": "only_in_test",
+      "test_last_commit": "2920bf8c4",
+      "main_last_commit": "8b8bf7bba"
+    },
+    {
+      "path": "src/containers/TransactionPage/TransactionPage.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "fix(accept): validate merged protectedData; persist borrower shipping at checkou...",
+      "status": "only_in_test",
+      "test_last_commit": "3a7037974",
+      "main_last_commit": "6e8898669"
+    },
+    {
+      "path": "src/containers/TransactionPage/TransactionPanel/TransactionPanel.js",
+      "changeType": "M",
+      "category": "client-ui-core",
+      "shortFeature": "trace(checkout\u2192accept): bubble form values, build PD from formValues, boolean st...",
+      "status": "only_in_test",
+      "test_last_commit": "7d792f961",
+      "main_last_commit": "46d1a236f"
+    },
+    {
+      "path": "src/ducks/marketplaceData.duck.js",
+      "changeType": "M",
+      "category": "other",
+      "shortFeature": "availability calendar bug fixes",
+      "status": "deployed_to_main",
+      "test_last_commit": "4117dc979",
+      "main_last_commit": "bff31b2e5"
+    },
+    {
+      "path": "src/index.js",
+      "changeType": "M",
+      "category": "other",
+      "shortFeature": "Add \u201ccan\u2019t-be-stripped\u201d probes at the very top of src/index.js",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "75eb40baf",
+      "main_last_commit": "e484820e8"
+    },
+    {
+      "path": "src/translations/en.json",
+      "changeType": "M",
+      "category": "other",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "300122bad"
+    },
+    {
+      "path": "src/util/addressHelpers.js",
+      "changeType": "A",
+      "category": "client-checkout-address",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "deployed_to_main",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "10fc1b074"
+    },
+    {
+      "path": "src/util/api.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "2e422b8d0",
+      "main_last_commit": "c5b279ca1"
+    },
+    {
+      "path": "src/util/configHelpers.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+      "status": "deployed_to_main",
+      "test_last_commit": "2e422b8d0",
+      "main_last_commit": "c5b279ca1"
+    },
+    {
+      "path": "src/util/data.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "availability calendar bug fixes",
+      "status": "deployed_to_main",
+      "test_last_commit": "4117dc979",
+      "main_last_commit": "bff31b2e5"
+    },
+    {
+      "path": "src/util/dates.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "feat(dates): add missing TZ helper functions for Flex timeslots",
+      "status": "only_in_test",
+      "test_last_commit": "58f5911b6",
+      "main_last_commit": "61289c64f"
+    },
+    {
+      "path": "src/util/envFlags.js",
+      "changeType": "A",
+      "category": "client-utils",
+      "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "2e422b8d0",
+      "main_last_commit": "edd07741a"
+    },
+    {
+      "path": "src/util/generators.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "availability calendar bug fixes",
+      "status": "deployed_to_main",
+      "test_last_commit": "4117dc979",
+      "main_last_commit": "bff31b2e5"
+    },
+    {
+      "path": "src/util/geoData.js",
+      "changeType": "A",
+      "category": "client-checkout-address",
+      "shortFeature": "shipping + billing booking forms + formatting",
+      "status": "deployed_to_main",
+      "test_last_commit": "51ee2bc22",
+      "main_last_commit": "be380fab5"
+    },
+    {
+      "path": "src/util/googleMaps.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "Fix client env guards: prevent \u201cprocess is not defined\u201d, keep test/dev semantics...",
+      "status": "diverged_conflict_risk",
+      "test_last_commit": "2e422b8d0",
+      "main_last_commit": "c5b279ca1"
+    },
+    {
+      "path": "src/util/id.js",
+      "changeType": "A",
+      "category": "client-utils",
+      "shortFeature": "Fix: booking breakdown rendering by aligning server/client payload",
+      "status": "only_in_test",
+      "test_last_commit": "68614772d",
+      "main_last_commit": ""
+    },
+    {
+      "path": "src/util/types.js",
+      "changeType": "M",
+      "category": "client-utils",
+      "shortFeature": "Discount pricing changes 50% instead of 60% for 10+ nights",
+      "status": "only_in_test",
+      "test_last_commit": "8f11b6e75",
+      "main_last_commit": "4699ea3c7"
+    },
+    {
+      "path": "test-api-payload.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-availability-fix.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-browser-calendar.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-calendar-comprehensive.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+      "status": "deployed_to_main",
+      "test_last_commit": "69ae42718",
+      "main_last_commit": "7535e43c0"
+    },
+    {
+      "path": "test-calendar-fix.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "\ud83d\udea8 CRITICAL FIX: Calendar date misalignment bug - July 31, 2025 now correctly app...",
+      "status": "deployed_to_main",
+      "test_last_commit": "69ae42718",
+      "main_last_commit": "7535e43c0"
+    },
+    {
+      "path": "test-debug-stringify.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-end-to-end-flow.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-final-fix.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-fix-verification.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-getstartof-issue.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-july-2-9-fix.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-july-3-9-bug.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-proper-fix.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-regression-availability.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-rehydration-bug.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-timezone-bug.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "test-timezone-issue.js",
+      "changeType": "A",
+      "category": "docs-debug",
+      "shortFeature": "Add SMS fix implementation summary and documentation",
+      "status": "only_in_test",
+      "test_last_commit": "b310d91f9",
+      "main_last_commit": ""
+    },
+    {
+      "path": "yarn.lock",
+      "changeType": "D",
+      "category": "other",
+      "shortFeature": "chore: standardize on npm; ignore yarn.lock",
+      "status": "deleted",
+      "test_last_commit": "fd335ed6a",
+      "main_last_commit": "3af9839ea"
+    },
+    {
+      "path": "yarn.lock.zip",
+      "changeType": "D",
+      "category": "other",
+      "shortFeature": "chore: remove yarn.lock.zip to complete npm standardization",
+      "status": "deleted",
+      "test_last_commit": "eff22d467",
+      "main_last_commit": "3af9839ea"
+    }
+  ],
+  "feature_branches_in_main": [
+    "bring/wave3-sms-shippo (#35)",
+    "wave4-gates-shippo-sms-lead-days (#36)",
+    "infra/env-validation (#37)",
+    "chore/add-ioredis (#22)",
+    "chore/add-reminder-scripts (#25)",
+    "feat/cache (redis) (#24)",
+    "Various CSP and favicon PRs (#8-#11, #28-#30)"
+  ],
+  "commands_ran": [
+    "git fetch --all --prune",
+    "git merge-base main test",
+    "git log --cherry-pick --right-only main...test",
+    "git diff --name-status --find-renames main...test",
+    "git log -1 <branch> -- <file> (for each file)"
+  ],
+  "open_questions": [
+    "What is the actual production Render commit SHA? (Assumed: main HEAD)",
+    "Are there open PRs for test branch features?",
+    "What is the deployment timeline/priority for pending features?"
+  ]
+}
