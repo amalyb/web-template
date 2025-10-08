@@ -1,0 +1,1 @@
+src/util/envFlags.js:10:export const ADDR_ENABLED = (typeof process !== 'undefined' && process.env && process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true');

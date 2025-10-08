@@ -1,0 +1,35 @@
+server/README.md:67:- ✅ Verify borrower profile has valid phone number in E.164 format
+server/api-util/sendSMS.js:15:// Helper function to normalize phone number to E.164 format
+server/api-util/sendSMS.js:16:function normalizePhoneNumber(phone) {
+server/api-util/sendSMS.js:22:  if (digits.length === 10) return `+1${digits}`;
+server/api-util/sendSMS.js:28:// E.164 validation
+server/api-util/sendSMS.js:92:  // Normalize the phone number to E.164 first
+server/api-util/sendSMS.js:93:  const toE164 = normalizePhoneNumber(to);
+server/api-util/sendSMS.js:97:    const onlyE164 = normalizePhoneNumber(ONLY_PHONE);
+server/api-util/sendSMS.js:130:  // E.164 validation
+server/api-util/sendSMS.js:160:    console.debug('[DEV ONLY] E.164 number:', toE164);
+server/api-util/sendSMS.js:179:    to: toE164, // real E.164 - unmasked
+server/api/initiate-privileged.js:249:              // Your sendSMS util should normalize to E.164 and log the final +1… number
+Binary file server/api/initiate-privileged.js.zip matches
+Binary file server/api/transition-privileged 3.js.zip matches
+Binary file server/api/transition-privileged 4.js.zip matches
+server/api/transition-privileged.js:166:  normalizePhone, 
+server/api/transition-privileged.js:394:        const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
+server/api/transition-privileged.js:1224:            normalizePhone: (p) => {
+server/api/transition-privileged.js:1227:              return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
+server/scripts/sendOverdueReminders.js:45:const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
+server/scripts/sendReturnReminders.js:55:const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
+server/scripts/sendShipByReminders.js:46:const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
+server/scripts/smoke-wave3.js:129:        customerPhone: '+1234567890'
+server/scripts/smoke-wave3.js:275:      To: '+1234567890',
+server/webhooks/shippoTracking.js:55:// Helper function to normalize phone number to E.164 format
+server/webhooks/shippoTracking.js:56:function normalizePhoneNumber(phone) {
+server/webhooks/shippoTracking.js:62:  // If it's already in E.164 format (starts with +), return as is
+server/webhooks/shippoTracking.js:67:  // If it's 10 digits, assume US number and add +1
+server/webhooks/shippoTracking.js:69:    return `+1${digits}`;
+server/webhooks/shippoTracking.js:131:      return normalizePhoneNumber(phone);
+server/webhooks/shippoTracking.js:138:      return normalizePhoneNumber(phone);
+server/webhooks/shippoTracking.js:145:      return normalizePhoneNumber(phone);
+server/webhooks/shippoTracking.js:166:      return normalizePhoneNumber(phone);
+server/webhooks/shippoTracking.js:173:      return normalizePhoneNumber(phone);
+server/webhooks/shippoTracking.js:180:      return normalizePhoneNumber(phone);

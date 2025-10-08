@@ -1,0 +1,12 @@
+server/api-util/sendSMS.js:67:const DRY_RUN = process.env.SMS_DRY_RUN === '1' || process.env.SMS_DRY_RUN === 'true';
+server/index.js:124:// Log SMS_DRY_RUN status
+server/index.js:125:const smsDryRun = process.env.SMS_DRY_RUN;
+server/index.js:127:  console.log('📱 SMS_DRY_RUN=true - SMS messages will be logged but not sent');
+server/index.js:129:  console.log('📱 SMS_DRY_RUN=false - SMS messages will be sent to real numbers');
+server/index.js:131:  envWarnings.push('⚠️ SMS_DRY_RUN not set - defaulting to dry run mode');
+server/scripts/sendOverdueReminders.js:42:const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
+server/scripts/sendReturnReminders.js:52:const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
+server/scripts/sendShipByReminders.js:43:const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
+server/scripts/smoke-wave3.js:168:    const smsDryRun = process.env.SMS_DRY_RUN;
+server/scripts/smoke-wave3.js:171:      log('SMS_DRY_RUN is enabled - SMS will be logged but not sent', 'success');
+server/scripts/smoke-wave3.js:175:      log('WARNING: SMS_DRY_RUN is disabled - SMS will be sent for real!', 'error');

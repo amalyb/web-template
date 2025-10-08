@@ -1,0 +1,35 @@
+server/api-util/idempotency.js:12:module.exports = { alreadySent };
+server/api-util/integrationSdk.js:61:module.exports = { getIntegrationSdk, txUpdateProtectedData };
+server/api-util/metrics.js:13:module.exports = {
+server/api-util/phone.js:6:module.exports = { maskPhone };
+server/api-util/sdk-extensions.js:43:module.exports = { extendSdk }; 
+server/api-util/sendSMS.js:220:module.exports = sendSMS;        // default export (existing callers)
+server/api-util/sendSMS.js:221:module.exports.sendSMS = sendSMS; // named export (new callers can use { sendSMS }) 
+server/api/auth/createUserWithIdp.js:31:module.exports = (req, res) => {
+server/api/auth/loginWithIdp.js:23:module.exports = (err, user, req, res, idpClientId, idpId) => {
+server/api/ensurePhoneNumber.js:8:module.exports = async (req, res) => {
+server/api/initiate-login-as.js:40:module.exports = (req, res) => {
+server/api/initiate-privileged.js:38:module.exports = (req, res) => {
+server/api/login-as.js:21:module.exports = (req, res) => {
+server/api/qr.js:4:module.exports = ({ getTrustedSdk }) => {
+server/api/transaction-line-items.js:5:module.exports = (req, res) => {
+server/api/transition-privileged.js:649:module.exports = async (req, res) => {
+server/api/twilio/sms-status.js:16:module.exports = async (req, res) => {
+server/apiRouter.js:101:module.exports = router;
+server/env.js:43:module.exports = {
+server/importer.js:16:module.exports = {
+server/lib/iconsVersion.js:3:module.exports = { ICONS_VERSION };
+server/lib/shipping.js:40:module.exports = { computeShipByDate, formatShipBy, getBookingStartISO };
+server/middleware/cspNonce.js:2:module.exports = function cspNonce(req, res, next) {
+server/redis.js:38:module.exports = { getRedis };
+server/resources/robotsTxt.js:121:module.exports = (req, res) => {
+server/resources/sitemap.js:351:module.exports = (req, res, next) => {
+server/resources/webmanifest.js:26:module.exports = (req, res) => {
+server/scripts/sendOverdueReminders.js:344:module.exports = { sendOverdueReminders, evaluateReplacementCharge, testOverdueScenarios };
+server/scripts/sendReturnReminders.js:280:module.exports = { sendReturnReminders }; 
+server/scripts/sendShipByReminders.js:323:module.exports = { sendShipByReminders, testTimeWindows, testIdempotency };
+server/ssr.js:5:module.exports = async (req, res) => {
+server/test-flex-transition.js:113:module.exports = { testFlexTransition };
+server/utils/assets.js:24:module.exports = { getClientScripts, logAssets, BUILD_DIR: BUILD };
+server/webhooks/shippoTracking.js:494:module.exports = router;
+server/wellKnownRouter.js:17:module.exports = router;

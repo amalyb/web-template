@@ -3,15 +3,14 @@
  * Card is not a Final Form field so it's not available trough Final Form.
  * It's also handled separately in handleSubmit function.
  */
-import React, { useState, useRef, useEffect } from 'react';
-import { Form as FinalForm } from 'react-final-form';
+import React, { Component, useEffect } from 'react';
+import { Form as FinalForm, Field, useForm, useFormState } from 'react-final-form';
 import classNames from 'classnames';
-import { CardElement, useElements, useStripe } from '@stripe/react-stripe-js';
 
 import { FormattedMessage, injectIntl } from '../../../util/reactIntl';
 import { propTypes } from '../../../util/types';
 import { ensurePaymentMethodCard } from '../../../util/data';
-import { __DEV__ } from '../../../util/envFlags';
+import { mapToStripeBilling, mapToShippo, normalizeAddress, normalizePhone, validateAddress } from '../../../util/addressHelpers';
 
 import {
   Heading,
@@ -23,45 +22,53 @@ import {
   SavedCardDetails,
   StripePaymentAddress,
 } from '../../../components';
-
-import ShippingDetails from '../ShippingDetails/ShippingDetails';
 import AddressForm from '../../../components/AddressForm/AddressForm';
 
+import ShippingDetails from '../ShippingDetails/ShippingDetails';
+
 import css from './StripePaymentForm.module.css';
+import { __DEV__, ADDR_ENABLED } from '../../../util/envFlags';
 
-const ADDR_ENABLED = process.env.REACT_APP_CHECKOUT_ADDR_ENABLED === 'true';
+// Extract a single string from either shipping.* or billing.* based on shippingSameAsBilling
+const pickFromShippingOrBilling = (values, field) => {
+  const ship = values?.shipping || {};
+  const bill = values?.shippingSameAsBilling ? (values?.billing || {}) : (values?.shipping || {});
+  // preference: if user filled shipping block, use that; otherwise use billing
+  const fromShipping = ship?.[field];
+  const fromBilling  = (values?.shippingSameAsBilling ? (values?.billing || {}) : (values?.billing || {}))?.[field];
+  return fromShipping ?? fromBilling ?? '';
+};
 
-// Helper function to flatten AddressForm values to customer PD
-const mapAddressFormToCustomerPD = (values) => {
-  const customerPD = {};
-  
-  // Map billing address fields
-  if (values.billingName) customerPD.customerName = values.billingName;
-  if (values.billingLine1) customerPD.customerStreet = values.billingLine1;
-  if (values.billingLine2) customerPD.customerStreet2 = values.billingLine2;
-  if (values.billingCity) customerPD.customerCity = values.billingCity;
-  if (values.billingState) customerPD.customerState = values.billingState;
-  if (values.billingPostalCode) customerPD.customerZip = values.billingPostalCode;
-  
-  // Map shipping address fields (respecting "same as billing" when present)
-  const useShipping = values.shippingName || values.shippingLine1;
-  if (useShipping) {
-    if (values.shippingName) customerPD.customerName = values.shippingName;
-    if (values.shippingLine1) customerPD.customerStreet = values.shippingLine1;
-    if (values.shippingLine2) customerPD.customerStreet2 = values.shippingLine2;
-    if (values.shippingCity) customerPD.customerCity = values.shippingCity;
-    if (values.shippingState) customerPD.customerState = values.shippingState;
-    if (values.shippingPostalCode) customerPD.customerZip = values.shippingPostalCode;
+// Build the flat customer* payload from form values
+const mapToCustomerProtectedData = (values) => {
+  // AddressForm typical keys: name, line1, line2, city, state, postalCode, phone, email
+  const v = values || {};
+  const customerName   = pickFromShippingOrBilling(v, 'name');
+  const customerStreet = pickFromShippingOrBilling(v, 'line1');
+  const customerStreet2= pickFromShippingOrBilling(v, 'line2');
+  const customerCity   = pickFromShippingOrBilling(v, 'city');
+  const customerState  = pickFromShippingOrBilling(v, 'state');
+  const customerZip    = pickFromShippingOrBilling(v, 'postalCode');
+  const customerPhone  = pickFromShippingOrBilling(v, 'phone');
+  const customerEmail  = pickFromShippingOrBilling(v, 'email');
+
+  const pd = {
+    customerName,
+    customerStreet,
+    customerStreet2,
+    customerCity,
+    customerState,
+    customerZip,
+    customerPhone,
+    customerEmail,
+  };
+
+  if (__DEV__) {
+    const filled = Object.entries(pd).filter(([_, val]) => !!val).map(([k]) => k);
+    // eslint-disable-next-line no-console
+    console.log('[StripePaymentForm] mapped customer PD:', pd, 'filled:', filled.length, filled);
   }
-  
-  // Map email and phone if available
-  if (values.customerEmail) customerPD.customerEmail = values.customerEmail;
-  if (values.customerPhone) customerPD.customerPhone = values.customerPhone;
-  
-  // Filter out empty strings
-  return Object.fromEntries(
-    Object.entries(customerPD).filter(([_, value]) => value && value.trim() !== '')
-  );
+  return pd;
 };
 
 /**
@@ -127,54 +134,25 @@ const cardStyles = {
   },
 };
 
-const OneTimePaymentWithCardElement = (props) => {
-  const { cardClasses, formId, hasCardError, error, label, intl, marketplaceName, onCardChange } = props;
-  const stripe = useStripe();
-  const elements = useElements();
-  
-  // StrictMode guard: prevent double onReady in dev
-  const mountedOnceRef = useRef(false);
-  
-  // Alias the init callback for proper effect deps
-  const initCb = props.onStripeInitialized;
-  
-  useEffect(() => {
-    // call once stripe instance exists
-    if (typeof initCb === 'function' && typeof stripe !== 'undefined' && stripe) {
-      initCb(stripe);
-    }
-  }, [stripe, initCb]);
-  
+const OneTimePaymentWithCardElement = props => {
+  const {
+    cardClasses,
+    formId,
+    handleStripeElementRef,
+    hasCardError,
+    error,
+    label,
+    intl,
+    marketplaceName,
+  } = props;
   const labelText =
     label || intl.formatMessage({ id: 'StripePaymentForm.saveAfterOnetimePayment' });
-  
-  console.log('[StripeForm] render start');
-  
-  if (!stripe || !elements) {
-    return <div>Initializing payment form…</div>;
-  }
-  
   return (
     <React.Fragment>
       <label className={css.paymentLabel} htmlFor={`${formId}-card`}>
         <FormattedMessage id="StripePaymentForm.paymentCardDetails" />
       </label>
-      <div className={cardClasses}>
-        <CardElement
-          id={`${formId}-card`}
-          onReady={(el) => {
-            if (mountedOnceRef.current) return;
-            mountedOnceRef.current = true;
-            props.onStripeElementMounted?.(el);
-          }}
-          onChange={(e) => {
-            // e.complete for CardElement; pass the event if needed by parent
-            props.onPaymentElementChange?.(e?.complete ?? e);
-            console.log('[StripeForm] change', {complete: e.complete, empty: e.empty});
-            onCardChange?.(e);
-          }}
-        />
-      </div>
+      <div className={cardClasses} id={`${formId}-card`} ref={handleStripeElementRef} />
       {hasCardError ? <span className={css.error}>{error}</span> : null}
       <div className={css.saveForLaterUse}>
         <FieldCheckbox
@@ -203,12 +181,12 @@ const PaymentMethodSelector = props => {
     formId,
     changePaymentMethod,
     defaultPaymentMethod,
+    handleStripeElementRef,
     hasCardError,
     error,
     paymentMethod,
     intl,
     marketplaceName,
-    onCardChange,
   } = props;
   const last4Digits = defaultPaymentMethod.attributes.card.last4Digits;
   const labelText = intl.formatMessage(
@@ -230,15 +208,12 @@ const PaymentMethodSelector = props => {
         <OneTimePaymentWithCardElement
           cardClasses={cardClasses}
           formId={formId}
+          handleStripeElementRef={handleStripeElementRef}
           hasCardError={hasCardError}
           error={error}
           label={labelText}
           intl={intl}
           marketplaceName={marketplaceName}
-          onCardChange={onCardChange}
-          onStripeInitialized={props.onStripeInitialized}
-          onStripeElementMounted={props.onStripeElementMounted}
-          onPaymentElementChange={props.onPaymentElementChange}
         />
       ) : null}
     </React.Fragment>
@@ -314,6 +289,83 @@ const LocationOrShippingDetails = props => {
   ) : null;
 };
 
+// Utility to copy billing fields to shipping fields
+const copyBillingToShipping = (form) => {
+  const values = form.getState().values || {};
+  const b = values.billing || {};
+  const mapping = {
+    'shipping.name': b.name || '',
+    'shipping.line1': b.line1 || '',
+    'shipping.line2': b.line2 || '',
+    'shipping.city': b.city || '',
+    'shipping.state': b.state || '',
+    'shipping.postalCode': b.postalCode || '',
+    'shipping.country': b.country || '',
+    'shipping.email': b.email || '',
+    'shipping.phone': b.phone || '',
+  };
+  Object.entries(mapping).forEach(([k, v]) => form.change(k, v));
+};
+
+// Shipping section component with checkbox at top
+const ShippingSection = ({ intl, css }) => {
+  const form = useForm();
+  const { values } = useFormState({ subscription: { values: true } });
+
+  const onSameAsBillingChange = (e) => {
+    const checked = !!e.target.checked;
+    form.change('shippingSameAsBilling', checked);
+    if (checked) copyBillingToShipping(form);
+  };
+
+  // Keep shipping in sync when billing changes while checkbox is checked
+  React.useEffect(() => {
+    if (values.shippingSameAsBilling) copyBillingToShipping(form);
+  }, [
+    values.shippingSameAsBilling,
+    values.billing?.name,
+    values.billing?.line1,
+    values.billing?.line2,
+    values.billing?.city,
+    values.billing?.state,
+    values.billing?.postalCode,
+    values.billing?.country,
+    values.billing?.email,
+    values.billing?.phone,
+  ]);
+
+  return (
+    <section aria-labelledby="shippingTitle">
+      <h2 id="shippingTitle" className={css.heading}>
+        <FormattedMessage id="StripePaymentForm.shippingDetails.title" />
+      </h2>
+
+      <div className={css.sameAsBillingRow}>
+        <label className={css.inlineCheckbox} htmlFor="shippingSameAsBilling">
+          <Field
+            id="shippingSameAsBilling"
+            name="shippingSameAsBilling"
+            component="input"
+            type="checkbox"
+            onChange={onSameAsBillingChange}
+          />
+          <span>{intl.formatMessage({ id: 'StripePaymentForm.shippingSameAsBilling' })}</span>
+        </label>
+      </div>
+
+      {!values.shippingSameAsBilling && (
+        <div className={css.fieldStack}>
+          <AddressForm
+            namespace="shipping"
+            requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: true }}
+            countryAfterZipForUSCA
+          />
+        </div>
+      )}
+    </section>
+  );
+};
+
 const initialState = {
   error: null,
   cardValueValid: false,
@@ -360,78 +412,166 @@ const initialState = {
  * @param {boolean} props.isFuzzyLocation - Whether the location is fuzzy
  * @param {Object} props.intl - The intl object
  */
-function StripePaymentForm(props) {
-  const stripe = useStripe();
-  const elements = useElements();
-  
-  const [state, setState] = useState(initialState);
-  const finalFormAPI = useRef(null);
+class StripePaymentForm extends Component {
+  constructor(props) {
+    super(props);
+    this.state = initialState;
+    this.updateBillingDetailsToMatchShippingAddress = this.updateBillingDetailsToMatchShippingAddress.bind(
+      this
+    );
+    this.handleCardValueChange = this.handleCardValueChange.bind(this);
+    this.handleSubmit = this.handleSubmit.bind(this);
+    this.paymentForm = this.paymentForm.bind(this);
+    this.initializeStripeElement = this.initializeStripeElement.bind(this);
+    this.handleStripeElementRef = this.handleStripeElementRef.bind(this);
+    this.changePaymentMethod = this.changePaymentMethod.bind(this);
+    this.finalFormAPI = null;
+    this.cardContainer = null;
+    
+    // Change guards to prevent unnecessary callbacks
+    this.lastValuesJSON = '';
+    this.lastEffectiveInvalid = undefined;
+    this.reportedMounted = false;
+  }
 
-  // Extract optional callback props
-  const {
-    onFormValuesChange = () => {},
-    onFormValidityChange = () => {},
-    onPaymentElementChange,
-    onStripeInitialized,
-    onStripeElementMounted,
-    ...otherProps
-  } = props;
+  componentDidMount() {
+    // SSR/boot safety: gate Stripe init
+    if (typeof window !== 'undefined' && window.Stripe && this.props.stripePublishableKey) {
+      const publishableKey = this.props.stripePublishableKey;
+      const {
+        onStripeInitialized,
+        hasHandledCardPayment,
+        defaultPaymentMethod,
+        loadingData,
+      } = this.props;
+      this.stripe = window.Stripe(publishableKey);
+      onStripeInitialized(this.stripe);
 
-  console.log('[StripeForm] render start');
-
-  // Call optional callbacks if provided
-  React.useEffect(() => {
-    if (props.onStripeInitialized && stripe) {
-      props.onStripeInitialized(stripe);
+      if (!(hasHandledCardPayment || defaultPaymentMethod || loadingData)) {
+        this.initializeStripeElement();
+      }
     }
-  }, [stripe, props.onStripeInitialized]);
+  }
 
-  const updateBillingDetailsToMatchShippingAddress = (shouldFill) => {
-    const formApi = finalFormAPI.current;
-    const values = formApi?.getState()?.values || {};
-    if (formApi) {
-      formApi.batch(() => {
-        formApi.change('name', shouldFill ? values.recipientName : '');
-        formApi.change('addressLine1', shouldFill ? values.recipientAddressLine1 : '');
-        formApi.change('addressLine2', shouldFill ? values.recipientAddressLine2 : '');
-        formApi.change('postal', shouldFill ? values.recipientPostal : '');
-        formApi.change('city', shouldFill ? values.recipientCity : '');
-        formApi.change('state', shouldFill ? values.recipientState : '');
-        formApi.change('country', shouldFill ? values.recipientCountry : '');
+  componentWillUnmount() {
+    if (this.card) {
+      this.card.removeEventListener('change', this.handleCardValueChange);
+      this.card.unmount();
+      this.card = null;
+    }
+    
+    // Notify parent that Stripe element is unmounted and reset guard
+    if (this.props.onStripeElementMounted) {
+      this.props.onStripeElementMounted(false);
+    }
+    this.reportedMounted = false;
+  }
+
+  initializeStripeElement(element) {
+    const elements = this.stripe.elements(stripeElementsOptions);
+
+    if (!this.card) {
+      this.card = elements.create('card', { style: cardStyles });
+      
+      // Ensure the target element exists before mounting
+      const targetElement = element || this.cardContainer;
+      if (!targetElement) {
+        console.warn('[Stripe] No target element available for mounting');
+        return;
+      }
+      
+      this.card.mount(targetElement);
+      this.card.addEventListener('change', this.handleCardValueChange);
+      
+      // Notify parent that Stripe element is mounted (only once)
+      if (!this.reportedMounted) {
+        this.reportedMounted = true;
+        this.props.onStripeElementMounted?.(true);
+      }
+      
+      // EventListener is the only way to simulate breakpoints with Stripe.
+      window.addEventListener('resize', () => {
+        if (this.card) {
+          if (window.innerWidth < 768) {
+            this.card.update({ style: { base: { fontSize: '14px', lineHeight: '24px' } } });
+          } else {
+            this.card.update({ style: { base: { fontSize: '18px', lineHeight: '24px' } } });
+          }
+        }
       });
     }
-  };
+  }
 
-  const changePaymentMethod = (changedTo) => {
-    setState(prev => ({ ...prev, paymentMethod: changedTo }));
-    if (changedTo === 'defaultCard' && finalFormAPI.current) {
-      finalFormAPI.current.change('sameAddressCheckbox', undefined);
-    } else if (changedTo === 'replaceCard' && finalFormAPI.current) {
-      finalFormAPI.current.change('sameAddressCheckbox', ['sameAddress']);
-      updateBillingDetailsToMatchShippingAddress(true);
+  updateBillingDetailsToMatchShippingAddress(shouldFill) {
+    const formApi = this.finalFormAPI;
+    const values = formApi.getState()?.values || {};
+    formApi.batch(() => {
+      formApi.change('name', shouldFill ? values.recipientName : '');
+      formApi.change('addressLine1', shouldFill ? values.recipientAddressLine1 : '');
+      formApi.change('addressLine2', shouldFill ? values.recipientAddressLine2 : '');
+      formApi.change('postal', shouldFill ? values.recipientPostal : '');
+      formApi.change('city', shouldFill ? values.recipientCity : '');
+      formApi.change('state', shouldFill ? values.recipientState : '');
+      formApi.change('country', shouldFill ? values.recipientCountry : '');
+    });
+  }
+
+  changePaymentMethod(changedTo) {
+    if (this.card && changedTo === 'defaultCard') {
+      this.card.removeEventListener('change', this.handleCardValueChange);
+      this.card.unmount();
+      this.card = null;
+      this.setState({ cardValueValid: false });
     }
-  };
+    this.setState({ paymentMethod: changedTo });
+    if (changedTo === 'defaultCard' && this.finalFormAPI) {
+      this.finalFormAPI.change('sameAddressCheckbox', undefined);
+    } else if (changedTo === 'replaceCard' && this.finalFormAPI) {
+      this.finalFormAPI.change('sameAddressCheckbox', ['sameAddress']);
+      this.updateBillingDetailsToMatchShippingAddress(true);
+    }
+  }
 
-  const handleCardChange = (e) => {
-    setState(prev => ({
-      ...prev,
-      cardValueValid: !!e?.complete,
-      error: e?.error ? e.error.message : null,
-    }));
-    window.__cardComplete = !!e?.complete;
-    console.debug('[checkout] cardComplete=%o', !!e?.complete);
-  };
+  handleStripeElementRef(el) {
+    this.cardContainer = el;
+    if (this.stripe && el) {
+      this.initializeStripeElement(el);
+    }
+  }
 
-  const handleSubmit = async (values) => {
+  handleCardValueChange(event) {
+    const { intl, onPaymentElementChange } = this.props;
+    const { error, complete } = event;
+
+    const postalCode = event.value.postalCode;
+    if (this.finalFormAPI) {
+      this.finalFormAPI.change('postal', postalCode);
+    }
+
+    // Call payment element change callback
+    if (onPaymentElementChange) {
+      onPaymentElementChange(!!complete);
+      console.log('[Stripe] PaymentElement complete:', complete);
+    }
+
+    this.setState(prevState => {
+      return {
+        error: error ? stripeErrorTranslation(intl, error) : null,
+        cardValueValid: complete,
+      };
+    });
+  }
+  handleSubmit(values) {
     const {
       onSubmit,
       inProgress,
       formId,
       hasHandledCardPayment,
       defaultPaymentMethod,
-    } = props;
+      submitDisabled,
+    } = this.props;
     const { initialMessage } = values;
-    const { cardValueValid, paymentMethod } = state;
+    const { cardValueValid, paymentMethod } = this.state;
     const hasDefaultPaymentMethod = defaultPaymentMethod?.id;
     const selectedPaymentMethod = getPaymentMethod(paymentMethod, hasDefaultPaymentMethod);
     const { onetimePaymentNeedsAttention } = checkOnetimePaymentFields(
@@ -441,43 +581,93 @@ function StripePaymentForm(props) {
       hasHandledCardPayment
     );
 
+    // Prevent double submit: early-return if submitDisabled (belt & suspenders)
+    if (submitDisabled) {
+      return;
+    }
+
     if (inProgress || onetimePaymentNeedsAttention) {
       // Already submitting or card value incomplete/invalid
       return;
     }
 
-    // Validate required address fields when ADDR_ENABLED is true
-    if (ADDR_ENABLED) {
-      const customerPD = mapAddressFormToCustomerPD(values);
-      if (!customerPD.customerStreet || !customerPD.customerZip) {
-        if (__DEV__) {
-          console.log('🔍 Address validation failed in StripePaymentForm:', {
-            customerStreet: customerPD.customerStreet ? 'present' : 'missing',
-            customerZip: customerPD.customerZip ? 'present' : 'missing'
-          });
-        }
-        // Set form-level error - this will be handled by Final Form
-        throw new Error('Street address and ZIP code are required');
-      }
-    }
-
-    if (!stripe || !elements) {
-      console.warn('[StripeForm] Stripe/Elements not ready yet');
-      return;
+    // Extract raw form values
+    const rawBilling = values.billing || {};
+    const rawShipping = values.shipping || {};
+    
+    // Normalize addresses (happens before mapping & submit)
+    const billing = normalizeAddress(rawBilling);
+    const shipping = values.shippingSameAsBilling
+      ? normalizeAddress({ ...values.billing, phone: values.billing?.phone || values.shipping?.phone })
+      : normalizeAddress(rawShipping);
+    
+    // Optional: block PO Boxes for couriers (UPS/FedEx). Route to USPS if needed.
+    const isPOBox = /^(P(OST)?\.?\s*O(FFICE)?\.?\s*BOX)\b/i.test((shipping.line1 || '').toUpperCase());
+    if (isPOBox) {
+      throw new Error('PO Boxes are not supported for courier shipping. Please enter a street address.');
     }
     
-    const card = elements.getElement(CardElement);
-    if (!card) {
-      console.error('[StripeForm] CardElement missing at submit');
-      return;
+    // Map to service-specific formats
+    const billingForStripe = mapToStripeBilling(billing);
+    const shippingForCourier = mapToShippo({ ...shipping, line2: shipping.line2 || undefined });
+
+    // Map nested form values to flat structure expected by CheckoutPageWithPayment
+    const mappedFormValues = {
+      // Customer fields from shipping (primary) or billing (fallback)
+      customerName: shipping.name || billing.name || '',
+      customerStreet: shipping.line1 || billing.line1 || '',
+      customerStreet2: shipping.line2 || billing.line2 || '',
+      customerCity: shipping.city || billing.city || '',
+      customerState: shipping.state || billing.state || '',
+      customerZip: shipping.postalCode || billing.postalCode || '',
+      customerEmail: shipping.email || billing.email || '',
+      customerPhone: shipping.phone || billing.phone || '',
+      
+      // Include original nested structure for backward compatibility
+      billing: rawBilling,
+      shipping: rawShipping,
+      shippingSameAsBilling: values.shippingSameAsBilling || false,
+    };
+
+    // Debug logging for form submission
+    if (__DEV__) {
+      console.log('[StripePaymentForm] Submit - Raw form values:', {
+        billing: rawBilling,
+        shipping: rawShipping,
+        shippingSameAsBilling: values.shippingSameAsBilling
+      });
+      console.log('[StripePaymentForm] Submit - Normalized values:', {
+        billing: billing,
+        shipping: shipping
+      });
+      console.log('[StripePaymentForm] Submit - Mapped customer values:', {
+        customerName: mappedFormValues.customerName,
+        customerStreet: mappedFormValues.customerStreet,
+        customerZip: mappedFormValues.customerZip,
+        customerPhone: mappedFormValues.customerPhone
+      });
     }
 
-    // Map AddressForm values to customer PD when ADDR_ENABLED is true
-    const customerPD = ADDR_ENABLED ? mapAddressFormToCustomerPD(values) : {};
-    const formValuesWithPD = {
-      ...values,
-      ...(ADDR_ENABLED && Object.keys(customerPD).length > 0 ? customerPD : {})
-    };
+    // Build customer protected data and merge into params
+    const customerPD = mapToCustomerProtectedData(values);
+    const nextProtectedData = { ...customerPD };
+    
+    // Verify required address fields are present
+    if (__DEV__) {
+      // eslint-disable-next-line no-console
+      console.log('[StripePaymentForm] onSubmit protectedData keys:', Object.keys(nextProtectedData));
+      console.log('[StripePaymentForm] customerStreet:', nextProtectedData.customerStreet);
+      console.log('[StripePaymentForm] customerZip:', nextProtectedData.customerZip);
+    }
+    
+    // Assert required fields and abort if missing
+    if (!nextProtectedData.customerStreet?.trim() || !nextProtectedData.customerZip?.trim()) {
+      const missingFields = [];
+      if (!nextProtectedData.customerStreet?.trim()) missingFields.push('Street Address');
+      if (!nextProtectedData.customerZip?.trim()) missingFields.push('ZIP Code');
+      
+      throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
+    }
 
     // Debug logging for form submission (production-safe, browser-safe)
     if (__DEV__) {
@@ -493,20 +683,24 @@ function StripePaymentForm(props) {
 
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
-      card: card,
-      stripe: stripe,
-      elements: elements,
+      card: this.card,
       formId,
-      formValues: formValuesWithPD,
+      formValues: mappedFormValues,
+      protectedData: nextProtectedData,
       paymentMethod: getPaymentMethod(
         paymentMethod,
         ensurePaymentMethodCard(defaultPaymentMethod).id
       ),
+      billingAddress: billingForStripe,
+      shippingAddress: shippingForCourier,
+      // Also provide normalized objects for any custom logic
+      normalizedBilling: billing,
+      normalizedShipping: shipping,
     };
     onSubmit(params);
-  };
+  }
 
-  const paymentForm = (formRenderProps) => {
+  paymentForm(formRenderProps) {
     const {
       className,
       rootClassName,
@@ -534,28 +728,73 @@ function StripePaymentForm(props) {
       isBooking,
       isFuzzyLocation,
       values,
+      errors,
+      submitFailed,
+      hasValidationErrors,
+      dirtySinceLastSubmit,
     } = formRenderProps;
 
-    finalFormAPI.current = formApi;
+    // Detailed form validation logging (avoid printing huge objects)
+    console.log('[Form] invalid:', invalid, 'hasValidationErrors:', hasValidationErrors, 'errors keys:', Object.keys(errors||{}));
 
-    // Call form values change callback if provided
-    React.useEffect(() => {
-      if (onFormValuesChange && values) {
-        onFormValuesChange(values);
-      }
-    }, [values, onFormValuesChange]);
+    this.finalFormAPI = formApi;
 
-    // Call form validity change callback if provided
-    React.useEffect(() => {
-      if (onFormValidityChange) {
-        onFormValidityChange(!invalid);
+    // Compute effective validity (ignore address errors if external form handles them)
+    const requireInPaymentForm = this.props.requireInPaymentForm ?? true;
+    const hasAddressErrors = !!(errors?.billing || errors?.shipping);
+    const effectiveInvalid = requireInPaymentForm ? invalid : (invalid && !hasAddressErrors);
+
+    // 🔒 bubble validity only when it changes
+    if (effectiveInvalid !== this.lastEffectiveInvalid) {
+      this.lastEffectiveInvalid = effectiveInvalid;
+      this.props.onFormValidityChange?.(!effectiveInvalid);
+    }
+
+    // 🔒 bubble values only when they change
+    const nextJSON = JSON.stringify(values || {});
+    if (nextJSON !== this.lastValuesJSON) {
+      this.lastValuesJSON = nextJSON;
+      
+      // Map nested form values to flat structure expected by CheckoutPageWithPayment
+      const mappedValues = {
+        // Customer fields from shipping (primary) or billing (fallback)
+        customerName: values.shipping?.name || values.billing?.name || '',
+        customerStreet: values.shipping?.line1 || values.billing?.line1 || '',
+        customerStreet2: values.shipping?.line2 || values.billing?.line2 || '',
+        customerCity: values.shipping?.city || values.billing?.city || '',
+        customerState: values.shipping?.state || values.billing?.state || '',
+        customerZip: values.shipping?.postalCode || values.billing?.postalCode || '',
+        customerEmail: values.shipping?.email || values.billing?.email || '',
+        customerPhone: values.shipping?.phone || values.billing?.phone || '',
+        
+        // Include original nested structure for backward compatibility
+        billing: values.billing || {},
+        shipping: values.shipping || {},
+        shippingSameAsBilling: values.shippingSameAsBilling || false,
+      };
+      
+      // Debug logging for form values
+      if (__DEV__) {
+        console.log('[StripePaymentForm] Raw form values:', {
+          billing: values.billing,
+          shipping: values.shipping,
+          shippingSameAsBilling: values.shippingSameAsBilling
+        });
+        console.log('[StripePaymentForm] Mapped customer values:', {
+          customerName: mappedValues.customerName,
+          customerStreet: mappedValues.customerStreet,
+          customerZip: mappedValues.customerZip,
+          customerPhone: mappedValues.customerPhone
+        });
       }
-    }, [invalid, onFormValidityChange]);
+      
+      this.props.onFormValuesChange?.(mappedValues);
+    }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);
     const billingDetailsNeeded = !(hasHandledCardPayment || confirmPaymentError);
 
-    const { cardValueValid, paymentMethod } = state;
+    const { cardValueValid, paymentMethod } = this.state;
     const hasDefaultPaymentMethod = ensuredDefaultPaymentMethod.id;
     const selectedPaymentMethod = getPaymentMethod(paymentMethod, hasDefaultPaymentMethod);
     const { onetimePaymentNeedsAttention, showOnetimePaymentFields } = checkOnetimePaymentFields(
@@ -565,14 +804,12 @@ function StripePaymentForm(props) {
       hasHandledCardPayment
     );
 
-    const submitDisabled = invalid || onetimePaymentNeedsAttention || submitInProgress;
-    console.debug('[checkout] disabled=%o invalid=%o needsCard=%o inProgress=%o',
-      submitDisabled, invalid, onetimePaymentNeedsAttention, submitInProgress);
-    const hasCardError = state.error && !submitInProgress;
+    const submitDisabled = this.props.submitDisabled;   // single source of truth
+    const hasCardError = this.state.error && !submitInProgress;
     const hasPaymentErrors = confirmCardPaymentError || confirmPaymentError;
     const classes = classNames(rootClassName || css.root, className);
     const cardClasses = classNames(css.card, {
-      [css.cardSuccess]: state.cardValueValid,
+      [css.cardSuccess]: this.state.cardValueValid,
       [css.cardError]: hasCardError,
     });
 
@@ -622,7 +859,7 @@ function StripePaymentForm(props) {
         intl={intl}
         form={formApi}
         fieldId={formId}
-        card={null} // No longer using this.card
+        card={this.card}
         locale={locale}
       />
     );
@@ -631,7 +868,7 @@ function StripePaymentForm(props) {
 
     const handleSameAddressCheckbox = event => {
       const checked = event.target.checked;
-      updateBillingDetailsToMatchShippingAddress(checked);
+      this.updateBillingDetailsToMatchShippingAddress(checked);
     };
     const isBookingYesNo = isBooking ? 'yes' : 'no';
 
@@ -644,16 +881,13 @@ function StripePaymentForm(props) {
                 cardClasses={cardClasses}
                 formId={formId}
                 defaultPaymentMethod={ensuredDefaultPaymentMethod}
-                changePaymentMethod={changePaymentMethod}
+                changePaymentMethod={this.changePaymentMethod}
+                handleStripeElementRef={this.handleStripeElementRef}
                 hasCardError={hasCardError}
-                error={state.error}
+                error={this.state.error}
                 paymentMethod={selectedPaymentMethod}
                 intl={intl}
                 marketplaceName={marketplaceName}
-                onCardChange={handleCardChange}
-                onStripeInitialized={props.onStripeInitialized}
-                onStripeElementMounted={props.onStripeElementMounted}
-                onPaymentElementChange={props.onPaymentElementChange}
               />
             ) : (
               <React.Fragment>
@@ -663,158 +897,28 @@ function StripePaymentForm(props) {
                 <OneTimePaymentWithCardElement
                   cardClasses={cardClasses}
                   formId={formId}
+                  handleStripeElementRef={this.handleStripeElementRef}
                   hasCardError={hasCardError}
-                  error={state.error}
+                  error={this.state.error}
                   intl={intl}
                   marketplaceName={marketplaceName}
-                  onCardChange={handleCardChange}
-                  onStripeInitialized={props.onStripeInitialized}
-                  onStripeElementMounted={props.onStripeElementMounted}
-                  onPaymentElementChange={props.onPaymentElementChange}
                 />
               </React.Fragment>
             )}
 
             {showOnetimePaymentFields ? (
-              <React.Fragment>
-                {!ADDR_ENABLED && (
-                  <div className={css.billingDetails}>
-                    <Heading as="h3" rootClassName={css.heading}>
-                      <FormattedMessage id="StripePaymentForm.billingDetails" />
-                    </Heading>
+              <div className={css.billingDetails}>
+                {/* Billing Address */}
+                <AddressForm
+                  namespace="billing"
+                  title="Billing details"
+                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: true }}
+                  countryAfterZipForUSCA
+                />
 
-                    {askShippingDetails ? (
-                      <FieldCheckbox
-                        className={css.sameAddressCheckbox}
-                        textClassName={css.sameAddressLabel}
-                        id="sameAddressCheckbox"
-                        name="sameAddressCheckbox"
-                        label={intl.formatMessage({
-                          id: 'StripePaymentForm.sameBillingAndShippingAddress',
-                        })}
-                        value="sameAddress"
-                        useSuccessColor
-                        onChange={handleSameAddressCheckbox}
-                      />
-                    ) : null}
-
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="name"
-                      name="name"
-                      autoComplete="cc-name"
-                      label={billingDetailsNameLabel}
-                      placeholder={billingDetailsNamePlaceholder}
-                    />
-
-                    {billingAddress}
-
-                  </div>
-                )}
-
-                {ADDR_ENABLED && (
-                  <>
-                    <div className="section">
-                      <h3>Billing details</h3>
-                      <AddressForm
-                        namespace="billing"
-                        disabled={false}
-                        requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true }}
-                        countryAfterZipForUSCA={true}
-                      />
-                    </div>
-
-                    <div className="section">
-                      <h3>Shipping details</h3>
-                      <AddressForm
-                        namespace="shipping"
-                        disabled={false}
-                        requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true }}
-                        countryAfterZipForUSCA={true}
-                      />
-                    </div>
-                  </>
-                )}
-
-                {!ADDR_ENABLED && (
-                  <>
-                    {/* Shipping Details Section */}
-                  <div className={css.billingDetails}>
-                    <Heading as="h3" rootClassName={css.heading}>
-                      Shipping Details
-                    </Heading>
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="customerName"
-                      name="customerName"
-                      label="Full Name"
-                      required
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="customerStreet"
-                      name="customerStreet"
-                      label="Street *"
-                      placeholder="123 Example Street"
-                      required
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="customerStreet2"
-                      name="customerStreet2"
-                      label="Street (line 2)"
-                      placeholder="Apt 7"
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="customerCity"
-                      name="customerCity"
-                      label="City"
-                      required
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="customerState"
-                      name="customerState"
-                      label="State"
-                      required
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="text"
-                      id="customerZip"
-                      name="customerZip"
-                      label="ZIP Code"
-                      required
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="email"
-                      id="customerEmail"
-                      name="customerEmail"
-                      label="Email"
-                      required
-                      validate={value => (!value ? 'Required' : !/^\S+@\S+\.\S+$/.test(value) ? 'Invalid email' : undefined)}
-                    />
-                    <FieldTextInput
-                      className={css.field}
-                      type="tel"
-                      id="customerPhone"
-                      name="customerPhone"
-                      label="Phone Number"
-                      required
-                      validate={value => (!value ? 'Required' : !/^\+?\d{7,15}$/.test(value) ? 'Invalid phone' : undefined)}
-                    />
-                  </div>
-                  </>
-                )}
-              </React.Fragment>
+                {/* Shipping Address */}
+                <ShippingSection intl={intl} css={css} />
+              </div>
             ) : null}
           </React.Fragment>
         ) : loadingData ? (
@@ -847,10 +951,11 @@ function StripePaymentForm(props) {
             <span className={css.errorMessage}>{paymentErrorMessage}</span>
           ) : null}
           <PrimaryButton
-            className={css.submitButton}
+            className={classNames(css.submitButton, { [css.submitButtonDisabled]: submitDisabled })}
             type="submit"
-            inProgress={submitInProgress}
+            inProgress={this.props.submitInProgress}  // just a spinner flag, not a gate
             disabled={submitDisabled}
+            aria-disabled={submitDisabled}
           >
             {billingDetailsNeeded ? (
               <FormattedMessage
@@ -864,6 +969,26 @@ function StripePaymentForm(props) {
               />
             )}
           </PrimaryButton>
+          
+          {/* Customer field validation errors */}
+          {invalid && errors ? (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#d32f2f' }}>
+              {errors.customerName && <div>• {errors.customerName}</div>}
+              {errors.customerStreet && <div>• {errors.customerStreet}</div>}
+              {errors.customerCity && <div>• {errors.customerCity}</div>}
+              {errors.customerState && <div>• {errors.customerState}</div>}
+              {errors.customerZip && <div>• {errors.customerZip}</div>}
+              {errors.customerEmail && <div>• {errors.customerEmail}</div>}
+              {errors.customerPhone && <div>• {errors.customerPhone}</div>}
+              {/* Show other errors if no customer field errors */}
+              {!errors.customerName && !errors.customerStreet && !errors.customerCity && 
+               !errors.customerState && !errors.customerZip && !errors.customerEmail && 
+               !errors.customerPhone && Object.keys(errors).length > 0 && (
+                <div>Form invalid. First error: <code>{Object.keys(errors)[0]}</code> → <code>{errors[Object.keys(errors)[0]]}</code></div>
+              )}
+            </div>
+          ) : null}
+          
           <p className={css.paymentInfo}>
             <FormattedMessage
               id="StripePaymentForm.submitConfirmPaymentFinePrint"
@@ -877,26 +1002,118 @@ function StripePaymentForm(props) {
         <FormattedMessage id="StripePaymentForm.missingStripeKey" />
       </div>
     );
-  };
-
-  if (!stripe || !elements) {
-    return <div>Initializing payment form…</div>;
   }
 
-  // Add initialValues for shipping fields
-  const initialValues = {
-    customerName: '',
-    customerStreet: '',
-    customerStreet2: '',
-    customerCity: '',
-    customerState: '',
-    customerZip: '',
-    customerEmail: '',
-    customerPhone: '',
-    ...(props.initialValues || {})
-  };
+  render() {
+    const { onSubmit, ...rest } = this.props;
+    
+    // Deep merge initial values to avoid nuking nested fields from previous drafts
+    const defaultInitialValues = {
+      sameAsBilling: false,
+      shippingSameAsBilling: false,
+      billing: {
+        country: 'US',
+        state: '',
+        postalCode: '',
+        name: '',
+        line1: '',
+        line2: '',
+        city: '',
+        email: '',
+        phone: ''
+      },
+      shipping: {
+        country: 'US',
+        state: '',
+        postalCode: '',
+        name: '',
+        line1: '',
+        line2: '',
+        city: '',
+        email: '',
+        phone: ''
+      },
+      // Legacy fields for backward compatibility
+      customerName: '',
+      customerStreet: '',
+      customerStreet2: '',
+      customerCity: '',
+      customerState: '',
+      customerZip: '',
+      customerEmail: '',
+      customerPhone: '',
+    };
+    
+    // Deep merge with any existing initial values
+    const initialValues = {
+      ...defaultInitialValues,
+      ...(rest.initialValues || {}),
+      billing: {
+        ...defaultInitialValues.billing,
+        ...(rest.initialValues?.billing || {})
+      },
+      shipping: {
+        ...defaultInitialValues.shipping,
+        ...(rest.initialValues?.shipping || {})
+      }
+    };
+    
+    const validate = values => {
+      const errors = {};
+      
+      // Only validate billing/shipping if they're collected within this form
+      if (this.props.requireInPaymentForm) {
+        const billErr = validateAddress(values.billing || {}, { requirePhone: false });
+        if (Object.keys(billErr).length) errors.billing = billErr;
+        if (!values.shippingSameAsBilling) {
+          const shipErr = validateAddress(values.shipping || {}, { requirePhone: true });
+          if (Object.keys(shipErr).length) errors.shipping = shipErr;
+        }
+      }
+      
+      // Validate required customer fields for protectedData
+      const shipping = values.shipping || {};
+      const billing = values.billing || {};
+      const effectiveShipping = values.shippingSameAsBilling ? billing : shipping;
+      
+      // Required fields validation
+      if (!effectiveShipping.name?.trim()) {
+        errors.customerName = 'Name is required';
+      }
+      if (!effectiveShipping.line1?.trim()) {
+        errors.customerStreet = 'Street address is required';
+      }
+      if (!effectiveShipping.city?.trim()) {
+        errors.customerCity = 'City is required';
+      }
+      if (!effectiveShipping.state?.trim()) {
+        errors.customerState = 'State is required';
+      }
+      if (!effectiveShipping.postalCode?.trim()) {
+        errors.customerZip = 'ZIP code is required';
+      } else if (!/^\d{5,}$/.test(effectiveShipping.postalCode.trim())) {
+        errors.customerZip = 'ZIP code must be at least 5 digits';
+      }
+      if (!effectiveShipping.email?.trim()) {
+        errors.customerEmail = 'Email is required';
+      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(effectiveShipping.email.trim())) {
+        errors.customerEmail = 'Please enter a valid email address';
+      }
+      if (!effectiveShipping.phone?.trim()) {
+        errors.customerPhone = 'Phone number is required';
+      } else {
+        const phone = effectiveShipping.phone.trim();
+        // Accept E.164 format (+1234567890) or 10-digit US format
+        if (!/^\+1\d{10}$/.test(phone) && !/^\d{10}$/.test(phone)) {
+          errors.customerPhone = 'Please enter a valid phone number (10 digits or E.164 format)';
+        }
+      }
+      
+      return errors;
+    };
 
-  return <FinalForm onSubmit={handleSubmit} initialValues={initialValues} {...props} render={paymentForm} />;
+    return <FinalForm onSubmit={this.handleSubmit} validate={validate} initialValues={initialValues} {...rest} render={this.paymentForm} />;
+  }
 }
 
 export default injectIntl(StripePaymentForm);
