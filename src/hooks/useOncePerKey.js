@@ -11,6 +11,12 @@ import { useEffect, useRef } from 'react';
  */
 export default function useOncePerKey(key, fn, { storage = window?.sessionStorage } = {}) {
   const ranRef = useRef(false);
+  const fnRef = useRef(fn);
+
+  // Keep the latest fn without making it a dependency of the effect
+  useEffect(() => {
+    fnRef.current = fn;
+  }, [fn]);
 
   useEffect(() => {
     if (!key || typeof fn !== 'function') return;
@@ -28,7 +34,7 @@ export default function useOncePerKey(key, fn, { storage = window?.sessionStorag
 
     ranRef.current = true;
     Promise.resolve()
-      .then(() => fn())
+      .then(() => fnRef.current && fnRef.current())
       .then(() => {
         try { storage?.setItem?.(`once:${key}`, '1'); } catch (_) {}
       })
@@ -41,8 +47,6 @@ export default function useOncePerKey(key, fn, { storage = window?.sessionStorag
           console.error('[useOncePerKey] error for key', key, err);
         }
       });
-  // key must be a string; fn is excluded on purpose to avoid re-run
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key]); // Only depends on the stable key
 }
 
