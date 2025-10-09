@@ -106,9 +106,15 @@ const prefixPriceVariantProperties = priceVariant => {
  * @param {Object} shippingDetails shipping address if applicable.
  * @param {Object} optionalPaymentParams (E.g. paymentMethod or setupPaymentMethodForSaving)
  * @param {Object} config app-wide configs. This contains hosted configs too.
+ * @param {Object} formValues form values containing customer data
  * @returns orderParams.
  */
-const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config, formValues = {}) => {
+const getOrderParams = (pageData = {}, shippingDetails = {}, optionalPaymentParams = {}, config = {}, formValues = {}) => {
+  // Validate required parameters
+  if (!pageData || !config) {
+    console.error('[getOrderParams] Missing required parameters:', { hasPageData: !!pageData, hasConfig: !!config });
+    return null;
+  }
   const quantity = pageData.orderData?.quantity;
   const quantityMaybe = quantity ? { quantity } : {};
   const seats = pageData.orderData?.seats;
@@ -260,6 +266,12 @@ export const loadInitialDataForStripePayments = ({
   console.log('📬 shippingDetails in loadInitialData:', shippingDetails);
   const optionalPaymentParams = {};
   const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
+
+  // Validate orderParams before proceeding
+  if (!orderParams) {
+    console.warn('[loadInitialData] getOrderParams returned null, skipping speculation');
+    return;
+  }
 
   // Use a more robust guard to prevent duplicate calls
   const prevKeyRef = { current: null };
@@ -620,7 +632,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
  * @param {Object} props.history.push - The push state function of the history object
  * @returns {JSX.Element}
  */
-export const CheckoutPageWithPayment = props => {
+const CheckoutPageWithPayment = props => {
   const [submitting, setSubmitting] = useState(false);
   // Initialized stripe library is saved to state - if it's needed at some point here too.
   const [stripe, setStripe] = useState(null);
@@ -691,12 +703,39 @@ export const CheckoutPageWithPayment = props => {
     return `checkout:${userOrAnon}:${lid}:${start}:${end}:${unitTypeFromListing || ''}`;
   }, [listingId?.uuid || listingId, bookingStart, bookingEnd, unitTypeFromListing, userId, anonymousId]);
 
-  // Stabilize orderParams with useMemo to prevent recreating on every render
+  // 🧩 Safe initialization for orderParams
   const stableOrderParams = useMemo(() => {
-    if (!sessionKey) return null;
-    // Don't include formValues here - they change too frequently
-    // We only need the essential booking params for initiation
-    return getOrderParams(pageData, {}, {}, config, {});
+    try {
+      if (!sessionKey || !pageData || !config) {
+        console.warn('[Checkout] missing required order fields', { 
+          hasSessionKey: !!sessionKey, 
+          hasPageData: !!pageData, 
+          hasConfig: !!config 
+        });
+        return null;
+      }
+      
+      // Don't include formValues here - they change too frequently
+      // We only need the essential booking params for initiation
+      const params = getOrderParams(pageData, {}, {}, config, {});
+      
+      // Validate that getOrderParams returned valid params
+      if (!params || !params.listingId) {
+        console.warn('[Checkout] getOrderParams returned invalid params');
+        return null;
+      }
+      
+      // Additional validation for required booking fields
+      if (!params.bookingStart || !params.bookingEnd) {
+        console.warn('[Checkout] missing booking dates in orderParams', { params });
+        return null;
+      }
+      
+      return params;
+    } catch (err) {
+      console.error('[Checkout] orderParams build error', err);
+      return null;
+    }
   }, [pageData, config, sessionKey]);
 
   // Kill-switch: Allow disabling auto-initiation via env var
@@ -708,35 +747,45 @@ export const CheckoutPageWithPayment = props => {
   const { onInitiatePrivilegedSpeculativeTransaction } = props;
   
   useEffect(() => {
-    console.debug('[Sherbrt] 🌀 Initiation effect triggered', { 
-      autoInitEnabled, 
-      hasSessionKey: !!sessionKey, 
-      hasOrderParams: !!stableOrderParams,
-      currentInitiatedSession: initiatedSessionRef.current,
-      newSession: sessionKey
-    });
+    try {
+      console.debug('[Sherbrt] 🌀 Initiation effect triggered', { 
+        autoInitEnabled, 
+        hasSessionKey: !!sessionKey, 
+        hasOrderParams: !!stableOrderParams,
+        currentInitiatedSession: initiatedSessionRef.current,
+        newSession: sessionKey
+      });
 
-    if (!autoInitEnabled || !sessionKey || !stableOrderParams) {
-      console.debug('[Sherbrt] ⛔ Skipping - missing requirements');
-      return;
-    }
-    
-    // Check if we've already initiated this specific session
-    if (initiatedSessionRef.current === sessionKey) {
-      console.debug('[Sherbrt] ⏭️ Skipping initiation - already initiated for session:', sessionKey);
-      return;
-    }
+      if (!autoInitEnabled || !sessionKey || !stableOrderParams) {
+        console.debug('[Sherbrt] ⛔ Skipping - missing requirements');
+        return;
+      }
+      
+      // 🧩 Guard all downstream usage
+      if (!stableOrderParams) {
+        console.error('[Checkout] ⚠️ Missing orderParams, skipping initiate.');
+        return;
+      }
+      
+      // Check if we've already initiated this specific session
+      if (initiatedSessionRef.current === sessionKey) {
+        console.debug('[Sherbrt] ⏭️ Skipping initiation - already initiated for session:', sessionKey);
+        return;
+      }
 
-    // Mark this session as initiated
-    initiatedSessionRef.current = sessionKey;
-    
-    console.debug('[Sherbrt] 🚀 Initiating privileged transaction once for', sessionKey);
-    console.log('[Sherbrt] orderParams:', stableOrderParams);
-    
-    // Call the action to initiate the privileged speculative transaction
-    onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
-    
-    console.debug('[Sherbrt] ✅ initiate-privileged dispatched for session:', sessionKey);
+      // Mark this session as initiated
+      initiatedSessionRef.current = sessionKey;
+      
+      console.debug('[Sherbrt] 🚀 Initiating privileged transaction once for', sessionKey);
+      console.log('[Sherbrt] orderParams:', stableOrderParams);
+      
+      // Call the action to initiate the privileged speculative transaction
+      onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
+      
+      console.debug('[Sherbrt] ✅ initiate-privileged dispatched for session:', sessionKey);
+    } catch (err) {
+      console.error('[Sherbrt] 💥 ReferenceError in CheckoutPageWithPayment initiation effect', err);
+    }
   }, [autoInitEnabled, sessionKey, stableOrderParams, onInitiatePrivilegedSpeculativeTransaction]);
 
   // Throttled logging for disabled gates
@@ -1039,4 +1088,6 @@ export const CheckoutPageWithPayment = props => {
   );
 };
 
+// Export both named and default (loadInitialDataForStripePayments is already exported above at line 255)
+export { CheckoutPageWithPayment };
 export default CheckoutPageWithPayment;

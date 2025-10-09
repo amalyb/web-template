@@ -63,6 +63,7 @@ module.exports = async (req, res) => {
 
   // Replace placeholders
   html = html
+    .replace('<!--!nonce-->', nonce || '')  // Add nonce to inline style tag
     .replace('<!--!preloadedStateScript-->', preloaded)
     .replace('<!--!ssrScripts-->', scriptTags)
     .replace('<!--!ssrStyles-->', cssPreloads) // optional, keep if you want the hint

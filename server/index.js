@@ -70,7 +70,9 @@ const redirectSSL =
 const REDIRECT_SSL = redirectSSL === 'true';
 const TRUST_PROXY = process.env.SERVER_SHARETRIBE_TRUST_PROXY || null;
 const CSP = process.env.REACT_APP_CSP;
-const CSP_MODE = process.env.CSP_MODE || 'report'; // 'block' for prod, 'report' for test
+// Safety toggle: CSP_REPORT_ONLY=true forces report-only mode (non-blocking)
+const CSP_REPORT_ONLY = process.env.CSP_REPORT_ONLY === 'true';
+const CSP_MODE = CSP_REPORT_ONLY ? 'report' : (process.env.CSP_MODE || 'block');
 const cspReportUrl = '/csp-report';
 const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
@@ -221,7 +223,8 @@ if (cspEnabled) {
   const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
   
   // Log CSP mode at startup
-  console.log(`🔐 CSP mode: ${CSP_MODE}`);
+  const modeLabel = CSP_REPORT_ONLY ? `${CSP_MODE} (CSP_REPORT_ONLY=true, non-blocking)` : CSP_MODE;
+  console.log(`🔐 CSP mode: ${modeLabel}`);
 
   if (CSP_MODE === 'block') {
     // Apply both enforce and reportOnly middlewares (enforce first)

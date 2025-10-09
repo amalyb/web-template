@@ -131,6 +131,7 @@ exports.render = async function render(req, res, data = {}) {
     link: '',
     meta: '',
     script: '',
+    nonce: nonce || '', // Add nonce for inline style tag
     preloadedStateScript,
     ssrStyles: extractor.getStyleTags(),
     ssrLinks: extractor.getLinkTags(),
