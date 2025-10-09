@@ -493,6 +493,14 @@ class StripePaymentForm extends Component {
       if (!this.reportedMounted) {
         this.reportedMounted = true;
         this.props.onStripeElementMounted?.(true);
+        
+        // Log Stripe Elements mount (dev only)
+        if (process.env.NODE_ENV !== 'production') {
+          const pi = this.props.paymentIntent;
+          const clientSecretTail = pi?.client_secret ? `...${pi.client_secret.slice(-10)}` : 'none';
+          // eslint-disable-next-line no-console
+          console.debug('[Stripe] 🎯 Elements mounted with clientSecret:', clientSecretTail);
+        }
       }
       
       // EventListener is the only way to simulate breakpoints with Stripe.

@@ -10,6 +10,9 @@ import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
 
+// Import hooks
+import useOncePerKey from '../../hooks/useOncePerKey';
+
 // Import shared components
 import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
 
@@ -668,22 +671,75 @@ export const CheckoutPageWithPayment = props => {
   const bookingEnd = pageData?.orderData?.bookingDates?.bookingEnd;
   const listingId = pageData?.listing?.id;
   const unitTypeFromListing = pageData?.listing?.attributes?.publicData?.unitType;
+  const userId = currentUser?.id?.uuid;
+  const anonymousId = !userId && typeof window !== 'undefined' 
+    ? window.sessionStorage?.getItem('anonymousId') || 'anonymous'
+    : null;
 
-  const specKey = useMemo(() => {
+  // Stable session key: includes user/listing/dates to identify unique checkout session
+  const sessionKey = useMemo(() => {
     if (!listingId || !bookingStart || !bookingEnd) return null;
     const lid = listingId?.uuid || listingId;
     const start = bookingStart?.toISOString?.() || bookingStart;
     const end = bookingEnd?.toISOString?.() || bookingEnd;
-    return [lid, start, end, unitTypeFromListing || ''].join('|');
-  }, [listingId?.uuid || listingId, bookingStart, bookingEnd, unitTypeFromListing]);
+    const userOrAnon = userId || anonymousId || 'unknown';
+    return `checkout:${userOrAnon}:${lid}:${start}:${end}:${unitTypeFromListing || ''}`;
+  }, [listingId?.uuid || listingId, bookingStart, bookingEnd, unitTypeFromListing, userId, anonymousId]);
 
-  // Handle speculative transaction initiation only when key changes
+  // Stabilize orderParams with useMemo to prevent recreating on every render
+  const stableOrderParams = useMemo(() => {
+    if (!sessionKey) return null;
+    // Don't include formValues here - they change too frequently
+    // We only need the essential booking params for initiation
+    return getOrderParams(pageData, {}, {}, config, {});
+  }, [pageData, config, sessionKey]);
+
+  // Kill-switch: Allow disabling auto-initiation via env var
+  // Set REACT_APP_INITIATE_ON_MOUNT_ENABLED=false in .env to disable auto-initiation
+  // This is an emergency flag to quickly stop the initiation if issues occur in production
+  const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
+
+  // Log session key creation (once per component mount)
   useEffect(() => {
-    if (!specKey) return;
+    if (sessionKey && process.env.NODE_ENV !== 'production') {
+      // eslint-disable-next-line no-console
+      console.log('[Checkout] Session key created:', sessionKey);
+      // eslint-disable-next-line no-console
+      console.log('[Checkout] Auto-init enabled:', autoInitEnabled);
+    }
+  }, [sessionKey, autoInitEnabled]);
 
-    const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
-    props.onInitiatePrivilegedSpeculativeTransaction?.(orderParams);
-  }, [specKey]);
+  // Use the once-per-key hook to ensure initiate-privileged is called only once per session
+  // This prevents the render loop that was causing repeated POST requests
+  useOncePerKey(
+    autoInitEnabled ? sessionKey : null, // Only run if enabled and we have a key
+    () => {
+      if (!stableOrderParams) return;
+      
+      // Log once per session (guarded by useOncePerKey)
+      if (process.env.NODE_ENV !== 'production') {
+        const keyTail = sessionKey ? `...${sessionKey.slice(-20)}` : 'unknown';
+        // eslint-disable-next-line no-console
+        console.debug('[Checkout] 🚀 START initiate-privileged for session:', keyTail);
+        // eslint-disable-next-line no-console
+        console.log('[Checkout] Full session key:', sessionKey);
+        // eslint-disable-next-line no-console
+        console.log('[Checkout] orderParams:', stableOrderParams);
+      }
+      
+      // Call the action to initiate the privileged speculative transaction
+      props.onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
+      
+      // Log success (wrapped in a microtask to happen after dispatch)
+      if (process.env.NODE_ENV !== 'production') {
+        const keyTail = sessionKey ? `...${sessionKey.slice(-20)}` : 'unknown';
+        Promise.resolve().then(() => {
+          // eslint-disable-next-line no-console
+          console.debug('[Checkout] ✅ SUCCESS initiate-privileged dispatched for session:', keyTail);
+        });
+      }
+    }
+  );
 
   // Throttled logging for disabled gates
   useEffect(() => {
