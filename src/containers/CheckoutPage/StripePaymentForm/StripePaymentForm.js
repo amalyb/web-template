@@ -43,14 +43,20 @@ const pickFromShippingOrBilling = (values, field) => {
 const mapToCustomerProtectedData = (values) => {
   // AddressForm typical keys: name, line1, line2, city, state, postalCode, phone, email
   const v = values || {};
-  const customerName   = pickFromShippingOrBilling(v, 'name');
-  const customerStreet = pickFromShippingOrBilling(v, 'line1');
-  const customerStreet2= pickFromShippingOrBilling(v, 'line2');
-  const customerCity   = pickFromShippingOrBilling(v, 'city');
-  const customerState  = pickFromShippingOrBilling(v, 'state');
-  const customerZip    = pickFromShippingOrBilling(v, 'postalCode');
-  const customerPhone  = pickFromShippingOrBilling(v, 'phone');
-  const customerEmail  = pickFromShippingOrBilling(v, 'email');
+  // Ensure nested objects default to {} to prevent undefined errors
+  const safeValues = {
+    ...v,
+    shipping: v.shipping || {},
+    billing: v.billing || {},
+  };
+  const customerName   = pickFromShippingOrBilling(safeValues, 'name');
+  const customerStreet = pickFromShippingOrBilling(safeValues, 'line1');
+  const customerStreet2= pickFromShippingOrBilling(safeValues, 'line2');
+  const customerCity   = pickFromShippingOrBilling(safeValues, 'city');
+  const customerState  = pickFromShippingOrBilling(safeValues, 'state');
+  const customerZip    = pickFromShippingOrBilling(safeValues, 'postalCode');
+  const customerPhone  = pickFromShippingOrBilling(safeValues, 'phone');
+  const customerEmail  = pickFromShippingOrBilling(safeValues, 'email');
 
   const pd = {
     customerName,
@@ -755,21 +761,25 @@ class StripePaymentForm extends Component {
     if (nextJSON !== this.lastValuesJSON) {
       this.lastValuesJSON = nextJSON;
       
+      // Guard against undefined nested objects
+      const safeShipping = values.shipping || {};
+      const safeBilling = values.billing || {};
+      
       // Map nested form values to flat structure expected by CheckoutPageWithPayment
       const mappedValues = {
         // Customer fields from shipping (primary) or billing (fallback)
-        customerName: values.shipping?.name || values.billing?.name || '',
-        customerStreet: values.shipping?.line1 || values.billing?.line1 || '',
-        customerStreet2: values.shipping?.line2 || values.billing?.line2 || '',
-        customerCity: values.shipping?.city || values.billing?.city || '',
-        customerState: values.shipping?.state || values.billing?.state || '',
-        customerZip: values.shipping?.postalCode || values.billing?.postalCode || '',
-        customerEmail: values.shipping?.email || values.billing?.email || '',
-        customerPhone: values.shipping?.phone || values.billing?.phone || '',
+        customerName: safeShipping.name || safeBilling.name || '',
+        customerStreet: safeShipping.line1 || safeBilling.line1 || '',
+        customerStreet2: safeShipping.line2 || safeBilling.line2 || '',
+        customerCity: safeShipping.city || safeBilling.city || '',
+        customerState: safeShipping.state || safeBilling.state || '',
+        customerZip: safeShipping.postalCode || safeBilling.postalCode || '',
+        customerEmail: safeShipping.email || safeBilling.email || '',
+        customerPhone: safeShipping.phone || safeBilling.phone || '',
         
         // Include original nested structure for backward compatibility
-        billing: values.billing || {},
-        shipping: values.shipping || {},
+        billing: safeBilling,
+        shipping: safeShipping,
         shippingSameAsBilling: values.shippingSameAsBilling || false,
       };
       

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -663,29 +663,31 @@ export const CheckoutPageWithPayment = props => {
     config,
   } = props;
 
-  // Handle speculative transaction initiation with proper guards (one-shot)
+  // Compute stable speculation key based on booking parameters
+  const bookingStart = pageData?.orderData?.bookingDates?.bookingStart;
+  const bookingEnd = pageData?.orderData?.bookingDates?.bookingEnd;
+  const listingId = pageData?.listing?.id;
+  const unitTypeFromListing = pageData?.listing?.attributes?.publicData?.unitType;
+
+  const specKey = useMemo(() => {
+    if (!listingId || !bookingStart || !bookingEnd) return null;
+    const lid = listingId?.uuid || listingId;
+    const start = bookingStart?.toISOString?.() || bookingStart;
+    const end = bookingEnd?.toISOString?.() || bookingEnd;
+    return [lid, start, end, unitTypeFromListing || ''].join('|');
+  }, [listingId?.uuid || listingId, bookingStart, bookingEnd, unitTypeFromListing]);
+
+  // Handle speculative transaction initiation only when key changes
   useEffect(() => {
-    const listingId = pageData?.listing?.id?.uuid || pageData?.listing?.id;
+    if (!specKey) return;
 
-    if (!listingId) return;
-
-    // only when listing changes & we still don't have a speculative tx
-    if (!speculativeTransaction?.id && !speculativeInProgress) {
-      const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
-      fetchSpeculatedTransactionIfNeeded(
-        orderParams,
-        pageData,
-        props.fetchSpeculatedTransaction,
-        prevSpecKeyRef // <-- use the stable ref
-      );
-    }
-    // depend on listingId only, so it's a true one-shot per listing
-  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress, formValues]);
+    const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
+    props.onInitiatePrivilegedSpeculativeTransaction?.(orderParams);
+  }, [specKey]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
-    const tx = speculativeTransaction;
-    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+    const hasTxId = !!props.speculativeTransactionId;
     const gates = { 
       hasSpeculativeTx: hasTxId, 
       stripeReady, 
@@ -699,7 +701,7 @@ export const CheckoutPageWithPayment = props => {
       lastReasonRef.current = disabledReason;
       console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
     }
-  }, [speculativeTransaction, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
+  }, [props.speculativeTransactionId, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -874,8 +876,7 @@ export const CheckoutPageWithPayment = props => {
               <>
                 {(() => {
                   // Canonical gating (parent)
-                  const tx = speculativeTransaction; // ✅ use normalized name
-                  const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                  const hasTxId = !!props.speculativeTransactionId;
 
                   // Compute stripe readiness (strict boolean)
                   const stripeReady = !!stripeElementMounted;
@@ -937,8 +938,7 @@ export const CheckoutPageWithPayment = props => {
                   requireInPaymentForm={false}  // billing/shipping collected outside this form
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
-                    const tx = speculativeTransaction; // ✅ use normalized name
-                    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                    const hasTxId = !!props.speculativeTransactionId;
                     
                     // Compute stripe readiness (strict boolean)
                     const stripeReady = !!stripeElementMounted;

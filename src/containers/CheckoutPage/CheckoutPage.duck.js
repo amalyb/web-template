@@ -5,6 +5,17 @@ import { storableError } from '../../util/errors';
 import * as log from '../../util/log';
 import { fetchCurrentUserHasOrdersSuccess, fetchCurrentUser } from '../../ducks/user.duck';
 
+// ================ Helper: Speculation Key ================ //
+
+export const makeSpeculationKey = ({ listingId, bookingStart, bookingEnd, unitType }) => {
+  const lid = typeof listingId === 'string'
+    ? listingId
+    : (listingId?.uuid || listingId?.id?.uuid || '');
+  const start = typeof bookingStart === 'string' ? bookingStart : bookingStart?.toISOString?.() || '';
+  const end   = typeof bookingEnd   === 'string' ? bookingEnd   : bookingEnd?.toISOString?.()   || '';
+  return [lid, start, end, unitType || ''].join('|');
+};
+
 // ================ Action types ================ //
 
 export const SET_INITIAL_VALUES = 'app/CheckoutPage/SET_INITIAL_VALUES';
@@ -33,6 +44,10 @@ export const INITIATE_INQUIRY_REQUEST = 'app/CheckoutPage/INITIATE_INQUIRY_REQUE
 export const INITIATE_INQUIRY_SUCCESS = 'app/CheckoutPage/INITIATE_INQUIRY_SUCCESS';
 export const INITIATE_INQUIRY_ERROR = 'app/CheckoutPage/INITIATE_INQUIRY_ERROR';
 
+export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST = 'app/CheckoutPage/INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST';
+export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS = 'app/CheckoutPage/INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS';
+export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR   = 'app/CheckoutPage/INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR';
+
 // ================ Reducer ================ //
 
 const initialState = {
@@ -50,6 +65,8 @@ const initialState = {
   initiateInquiryError: null,
   fetchLineItemsInProgress: false,
   fetchLineItemsError: null,
+  lastSpeculationKey: null,
+  speculativeTransactionId: null,
 };
 
 export default function checkoutPageReducer(state = initialState, action = {}) {
@@ -122,6 +139,20 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       return { ...state, initiateInquiryInProgress: false };
     case INITIATE_INQUIRY_ERROR:
       return { ...state, initiateInquiryInProgress: false, initiateInquiryError: payload };
+
+    case INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST:
+      return { ...state, lastSpeculationKey: payload.key };
+    case INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS: {
+      const { tx, key } = payload;
+      return {
+        ...state,
+        speculativeTransactionId: tx.id,
+        lastSpeculationKey: key,
+        speculatedTransaction: tx,
+      };
+    }
+    case INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR:
+      return state;
 
     default:
       return state;
@@ -623,4 +654,47 @@ export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }
       dispatch(fetchTransactionLineItemsError(storableError(e)));
       throw e;
     });
+};
+
+/**
+ * Initiate a privileged speculative transaction only if the key has changed.
+ * This prevents duplicate API calls and the resulting render loop.
+ */
+export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async (dispatch, getState, sdk) => {
+  const key = makeSpeculationKey({
+    listingId: params.listingId,
+    bookingStart: params.bookingDates?.bookingStart || params.bookingStart,
+    bookingEnd: params.bookingDates?.bookingEnd || params.bookingEnd,
+    unitType: params.protectedData?.unitType,
+  });
+  const state = getState().CheckoutPage || {};
+  if (state.lastSpeculationKey === key && state.speculativeTransactionId) {
+    console.info('[specTx] deduped key:', key, 'tx:', state.speculativeTransactionId);
+    return;
+  }
+  dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST, payload: { key }});
+
+  try {
+    // Call the existing speculateTransaction thunk which handles the API call
+    // We need to extract the necessary parameters for speculateTransaction
+    const orderParams = params;
+    const processAlias = 'default-booking/release-1';
+    const transactionId = null; // This is a new speculative transaction
+    const transitionName = 'transition/request-payment';
+    const isPrivilegedTransition = true;
+
+    // Call speculateTransaction and await its result
+    await dispatch(speculateTransaction(orderParams, processAlias, transactionId, transitionName, isPrivilegedTransition));
+    
+    // Get the speculated transaction from state
+    const updatedState = getState().CheckoutPage || {};
+    const tx = updatedState.speculatedTransaction;
+    
+    if (tx) {
+      dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
+    }
+  } catch (e) {
+    console.error('[specTx] error', e);
+    dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
+  }
 };

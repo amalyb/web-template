@@ -30,6 +30,7 @@ import {
   confirmPayment,
   sendMessage,
   initiateInquiryWithoutPayment,
+  initiatePrivilegedSpeculativeTransactionIfNeeded,
 } from './CheckoutPage.duck';
 
 import CustomTopbar from './CustomTopbar';
@@ -197,6 +198,8 @@ const mapStateToProps = state => {
     initiateInquiryError,
     initiateOrderError,
     confirmPaymentError,
+    lastSpeculationKey,
+    speculativeTransactionId,
   } = state.CheckoutPage;
   const { currentUser } = state.user;
   const { confirmCardPaymentError, paymentIntent, retrievePaymentIntentError } = state.stripe;
@@ -208,6 +211,9 @@ const mapStateToProps = state => {
     speculateTransactionInProgress,
     speculateTransactionError,
     speculatedTransaction,
+    // Normalize names for CheckoutPageWithPayment
+    speculativeTransaction: speculatedTransaction,
+    speculativeInProgress: speculateTransactionInProgress,
     isClockInSync,
     transaction,
     listing,
@@ -217,6 +223,8 @@ const mapStateToProps = state => {
     confirmPaymentError,
     paymentIntent,
     retrievePaymentIntentError,
+    lastSpeculationKey,
+    speculativeTransactionId,
   };
 };
 
@@ -236,6 +244,8 @@ const mapDispatchToProps = dispatch => ({
   onSendMessage: params => dispatch(sendMessage(params)),
   onSavePaymentMethod: (stripeCustomer, stripePaymentMethodId) =>
     dispatch(savePaymentMethod(stripeCustomer, stripePaymentMethodId)),
+  onInitiatePrivilegedSpeculativeTransaction: params =>
+    dispatch(initiatePrivilegedSpeculativeTransactionIfNeeded(params)),
 });
 
 const CheckoutPage = compose(
