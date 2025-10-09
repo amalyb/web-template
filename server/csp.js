@@ -43,6 +43,7 @@ const defaultDirectives = {
     '*.st-api.com',
     'wss:',
     'https://api.stripe.com',
+    'https://js.stripe.com',
     'https://m.stripe.network',
     '*.stripe.com',
     'maps.googleapis.com',
@@ -72,6 +73,7 @@ const defaultDirectives = {
   frameSrc: [
     self,
     'https://js.stripe.com',
+    'https://m.stripe.network',
     'https://hooks.stripe.com',
     '*.stripe.com',
     '*.youtube-nocookie.com',
@@ -117,10 +119,14 @@ const defaultDirectives = {
   ],
   scriptSrc: [
     self,
+    blob,
     (req, res) => `'nonce-${res.locals.cspNonce}'`,
-    "'strict-dynamic'",
+    // Removed 'strict-dynamic' to prevent CSP issues
+    // "'strict-dynamic'",
     'https://js.stripe.com',
     'https://m.stripe.network',
+    'https://api.mapbox.com',
+    'https://*.mapbox.com',
     unsafeEval,
     'maps.googleapis.com',
     'api.mapbox.com',
@@ -134,7 +140,8 @@ const defaultDirectives = {
     self, 
     blob, 
     (req, res) => `'nonce-${res.locals.cspNonce}'`,
-    "'strict-dynamic'",
+    // Removed 'strict-dynamic' to prevent CSP issues
+    // "'strict-dynamic'",
     "https://js.stripe.com",
     "https://m.stripe.network",
     "https://api.mapbox.com", 
