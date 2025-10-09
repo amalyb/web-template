@@ -61,6 +61,8 @@ const initialState = {
   currentUser: null,
   currentUserShowTimestamp: 0,
   currentUserShowError: null,
+  currentUserShowInProgress: false,
+  currentUserFetched: false,
   currentUserHasListings: false,
   currentUserHasListingsError: null,
   currentUserNotificationCount: 0,
@@ -75,17 +77,19 @@ export default function reducer(state = initialState, action = {}) {
   const { type, payload } = action;
   switch (type) {
     case CURRENT_USER_SHOW_REQUEST:
-      return { ...state, currentUserShowError: null };
+      return { ...state, currentUserShowError: null, currentUserShowInProgress: true };
     case CURRENT_USER_SHOW_SUCCESS:
       return {
         ...state,
         currentUser: mergeCurrentUser(state.currentUser, payload),
         currentUserShowTimestamp: payload ? new Date().getTime() : 0,
+        currentUserShowInProgress: false,
+        currentUserFetched: true,
       };
     case CURRENT_USER_SHOW_ERROR:
       // eslint-disable-next-line no-console
       console.error(payload);
-      return { ...state, currentUserShowError: payload };
+      return { ...state, currentUserShowError: payload, currentUserShowInProgress: false };
 
     case CLEAR_CURRENT_USER:
       return {
@@ -146,6 +150,18 @@ export default function reducer(state = initialState, action = {}) {
 }
 
 // ================ Selectors ================ //
+
+export const selectUserState = state => state.user || {};
+
+export const selectIsFetchingCurrentUser = state => {
+  const userState = selectUserState(state);
+  return !!userState.currentUserShowInProgress;
+};
+
+export const selectHasFetchedCurrentUser = state => {
+  const userState = selectUserState(state);
+  return !!userState.currentUserFetched;
+};
 
 export const hasCurrentUserErrors = state => {
   const { user } = state;
@@ -431,4 +447,98 @@ export const sendVerificationEmail = () => (dispatch, getState, sdk) => {
     .sendVerificationEmail()
     .then(() => dispatch(sendVerificationEmailSuccess()))
     .catch(e => dispatch(sendVerificationEmailError(storableError(e))));
+};
+
+// ================ Idempotent Current User Load ================ //
+
+// Module-level guards for preventing duplicate requests
+let currentUserInFlight = null;
+let lastLoadedAt = 0;
+
+/**
+ * Idempotent thunk to load current user with Stripe customer data.
+ * This prevents the loop of repeated GET currentUser.show?include=stripeCustomer.defaultPaymentMethod
+ * by ensuring only one request is in-flight at a time and caching the result.
+ */
+export const loadCurrentUserOnce = () => async (dispatch, getState, sdk) => {
+  const state = getState();
+  const userState = selectUserState(state);
+
+  // If already fetched successfully, bail early
+  if (userState.currentUserFetched) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[Sherbrt] user.duck loadCurrentUserOnce: already fetched, skipping');
+    }
+    return;
+  }
+
+  // If request already in flight, await it and bail
+  if (currentUserInFlight) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[Sherbrt] user.duck loadCurrentUserOnce: request in-flight, awaiting');
+    }
+    try {
+      await currentUserInFlight;
+    } catch (_) {
+      // Swallow error - already handled in the original promise
+    }
+    return;
+  }
+
+  // Optional: throttle repeated loads within 60s if we already have a user
+  const now = Date.now();
+  if (now - lastLoadedAt < 60000 && userState.currentUser) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[Sherbrt] user.duck loadCurrentUserOnce: throttled (loaded recently)');
+    }
+    return;
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.debug('[Sherbrt] user.duck loadCurrentUserOnce: initiating request');
+  }
+
+  dispatch(currentUserShowRequest());
+
+  // Create the in-flight promise
+  currentUserInFlight = (async () => {
+    try {
+      const resp = await sdk.currentUser.show({
+        include: ['stripeCustomer.defaultPaymentMethod'],
+      });
+
+      const entities = denormalisedResponseEntities(resp);
+      if (entities.length !== 1) {
+        throw new Error('Expected a resource in the sdk.currentUser.show response');
+      }
+      const currentUser = entities[0];
+
+      // Save stripeAccount if it exists
+      if (currentUser.stripeAccount) {
+        dispatch(stripeAccountCreateSuccess(currentUser.stripeAccount));
+      }
+
+      // Set user ID in logger
+      log.setUserId(currentUser.id.uuid);
+      
+      dispatch(currentUserShowSuccess(currentUser));
+      lastLoadedAt = Date.now();
+
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Sherbrt] user.duck loadCurrentUserOnce: success');
+      }
+    } catch (err) {
+      dispatch(currentUserShowError(storableError(err)));
+      log.error(err, 'load-current-user-once-failed');
+      throw err;
+    } finally {
+      currentUserInFlight = null;
+    }
+  })();
+
+  try {
+    await currentUserInFlight;
+  } catch (_) {
+    // Error already dispatched
+  }
 };

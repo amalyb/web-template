@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { compose } from 'redux';
 import { connect } from 'react-redux';
 import { useHistory } from 'react-router-dom';
 import { useIntl } from 'react-intl';
+import { useSelector } from 'react-redux';
 
 import { useConfiguration } from '../../context/configurationContext';
 import { useRouteConfiguration } from '../../context/routeConfigurationContext';
@@ -18,6 +19,7 @@ import { INQUIRY_PROCESS_NAME, resolveLatestProcessName } from '../../transactio
 import { isScrollingDisabled } from '../../ducks/ui.duck';
 import { confirmCardPayment, retrievePaymentIntent } from '../../ducks/stripe.duck';
 import { savePaymentMethod } from '../../ducks/paymentMethods.duck';
+import { selectHasFetchedCurrentUser } from '../../ducks/user.duck';
 
 import { NamedRedirect, Page } from '../../components';
 import { storeData, clearData, handlePageData } from './CheckoutPageSessionHelpers';
@@ -70,6 +72,9 @@ const EnhancedCheckoutPage = props => {
   const intl = useIntl();
   const history = useHistory();
 
+  // Use selector to check if current user with Stripe customer has been fetched
+  const hasFetchedStripeCustomer = useSelector(selectHasFetchedCurrentUser);
+  
   useEffect(() => {
     const {
       currentUser,
@@ -100,10 +105,11 @@ const EnhancedCheckoutPage = props => {
     // }
 
     // Still need to fetch Stripe customer for saved payment methods
-    if (isUserAuthorized(currentUser)) {
+    // Guard: only fetch if we haven't already fetched the current user with stripe customer
+    if (isUserAuthorized(currentUser) && !hasFetchedStripeCustomer) {
       fetchStripeCustomer();
     }
-  }, []);
+  }, [hasFetchedStripeCustomer]);
 
   const {
     currentUser,

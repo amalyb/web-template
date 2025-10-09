@@ -3,7 +3,7 @@ import { initiatePrivileged, transitionPrivileged } from '../../util/api';
 import { denormalisedResponseEntities } from '../../util/data';
 import { storableError } from '../../util/errors';
 import * as log from '../../util/log';
-import { fetchCurrentUserHasOrdersSuccess, fetchCurrentUser } from '../../ducks/user.duck';
+import { fetchCurrentUserHasOrdersSuccess, loadCurrentUserOnce } from '../../ducks/user.duck';
 
 // ================ Helper: Speculation Key ================ //
 
@@ -615,13 +615,9 @@ export const speculateTransaction = (
 // We need to fetch currentUser with correct params to include relationship
 export const stripeCustomer = () => (dispatch, getState, sdk) => {
   dispatch(stripeCustomerRequest());
-  const fetchCurrentUserOptions = {
-    callParams: { include: ['stripeCustomer.defaultPaymentMethod'] },
-    updateHasListings: false,
-    updateNotifications: false,
-  };
-
-  return dispatch(fetchCurrentUser(fetchCurrentUserOptions))
+  
+  // Use the idempotent loadCurrentUserOnce to prevent duplicate requests
+  return dispatch(loadCurrentUserOnce())
     .then(response => {
       dispatch(stripeCustomerSuccess());
     })
