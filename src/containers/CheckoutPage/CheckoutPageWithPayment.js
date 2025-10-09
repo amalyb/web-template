@@ -40,6 +40,52 @@ import { __DEV__ } from '../../util/envFlags';
 // https://stripe.com/docs/payments/payment-intents/status
 const STRIPE_PI_USER_ACTIONS_DONE_STATUSES = ['processing', 'requires_capture', 'succeeded'];
 
+// NOTE: Helper functions declared above first use to avoid TDZ
+/**
+ * Extract listing ID from various formats (SDK UUID, plain string, Redux state)
+ */
+function extractListingId(listing, listingId) {
+  if (listing?.id?.uuid) return listing.id.uuid;
+  if (typeof listingId === 'string') return listingId;
+  if (typeof listingId?.uuid === 'string') return listingId.uuid;
+  return null;
+}
+
+/**
+ * Normalize date values to ISO string format
+ */
+function normalizeISO(value) {
+  if (!value) return null;
+  try {
+    if (typeof value === 'string') return value;
+    if (value?.toISOString) return value.toISOString();
+    if (value?.toISO) return value.toISO();
+    return new Date(value).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build robust orderParams with validation
+ */
+function buildOrderParams({ listing, listingId, start, end, protectedData }) {
+  const id = extractListingId(listing, listingId);
+  const startISO = normalizeISO(start);
+  const endISO = normalizeISO(end);
+
+  const bookingDates =
+    startISO && endISO ? { start: startISO, end: endISO } : null;
+
+  return {
+    ok: Boolean(id && bookingDates),
+    reason: !id ? 'missing-listingId' : (!bookingDates ? 'missing-bookingDates' : null),
+    params: id && bookingDates
+      ? { listingId: id, bookingDates, protectedData: protectedData || {} }
+      : null,
+  };
+}
+
 // Payment charge options
 const ONETIME_PAYMENT = 'ONETIME_PAYMENT';
 const PAY_AND_SAVE_FOR_LATER_USE = 'PAY_AND_SAVE_FOR_LATER_USE';
@@ -643,18 +689,21 @@ const CheckoutPageWithPayment = props => {
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   const stripeReady = !!stripeElementMounted;
 
-  const handleFormValuesChange = useCallback((next) => {
-    const prev = JSON.stringify(formValues || {});
-    const json = JSON.stringify(next || {});
-    if (json !== prev) setFormValues(next || {});
-  }, [formValues]);
-  
+  // NOTE: declared above first use to avoid TDZ
   // Ref to prevent speculative transaction loops
   const prevSpecKeyRef = useRef(null);
   // Ref to throttle disabled gates logging
   const lastReasonRef = useRef(null);
   // Guard ref to track which session has been initiated (includes sessionKey to allow reset on new session)
   const initiatedSessionRef = useRef(null);
+  // Track last session key to detect changes
+  const lastSessionKeyRef = useRef(null);
+
+  const handleFormValuesChange = useCallback((next) => {
+    const prev = JSON.stringify(formValues || {});
+    const json = JSON.stringify(next || {});
+    if (json !== prev) setFormValues(next || {});
+  }, [formValues]);
 
   const {
     scrollingDisabled,
@@ -680,63 +729,50 @@ const CheckoutPageWithPayment = props => {
   // Compute stable speculation key based on booking parameters
   const bookingStart = pageData?.orderData?.bookingDates?.bookingStart;
   const bookingEnd = pageData?.orderData?.bookingDates?.bookingEnd;
-  const listingId = pageData?.listing?.id;
+  const pageDataListing = pageData?.listing;
+  const listingIdRaw = pageData?.listing?.id;
   const unitTypeFromListing = pageData?.listing?.attributes?.publicData?.unitType;
   const userId = currentUser?.id?.uuid;
   const anonymousId = !userId && typeof window !== 'undefined' 
     ? window.sessionStorage?.getItem('anonymousId') || 'anonymous'
     : null;
 
-  // Debug: Track component renders
-  const startISO = bookingStart?.toISOString?.() || bookingStart || 'none';
-  const endISO = bookingEnd?.toISOString?.() || bookingEnd || 'none';
-  const lid = listingId?.uuid || listingId || 'none';
-  console.debug('[Sherbrt] 🔍 Checkout render', { listingId: lid, startISO, endISO });
+  // Extract normalized listing ID
+  const listingIdNormalized = extractListingId(pageDataListing, listingIdRaw);
+
+  // Build order params with validation using new robust builder
+  const orderResult = useMemo(() => buildOrderParams({
+    listing: pageDataListing,
+    listingId: listingIdNormalized,
+    start: bookingStart || pageData?.bookingDates?.start,
+    end: bookingEnd || pageData?.bookingDates?.end,
+    protectedData: {}, // Will be populated later with form data
+  }), [pageDataListing, listingIdNormalized, bookingStart, bookingEnd, pageData?.bookingDates]);
+
+  // Debug logging for invalid params (dev only)
+  if (!orderResult.ok && process.env.NODE_ENV !== 'production') {
+    console.debug('[Checkout] orderParams invalid:', orderResult.reason, orderResult);
+  }
+
+  // Debug: Track component renders with valid data
+  if (process.env.NODE_ENV !== 'production') {
+    const { listingId: lid, bookingDates } = orderResult.params || {};
+    console.debug('[Sherbrt] 🔍 Checkout render', {
+      listingId: lid || 'none',
+      startISO: bookingDates?.start || 'none',
+      endISO: bookingDates?.end || 'none',
+    });
+  }
 
   // Stable session key: includes user/listing/dates to identify unique checkout session
   const sessionKey = useMemo(() => {
-    if (!listingId || !bookingStart || !bookingEnd) return null;
-    const lid = listingId?.uuid || listingId;
-    const start = bookingStart?.toISOString?.() || bookingStart;
-    const end = bookingEnd?.toISOString?.() || bookingEnd;
-    const userOrAnon = userId || anonymousId || 'unknown';
-    return `checkout:${userOrAnon}:${lid}:${start}:${end}:${unitTypeFromListing || ''}`;
-  }, [listingId?.uuid || listingId, bookingStart, bookingEnd, unitTypeFromListing, userId, anonymousId]);
-
-  // 🧩 Safe initialization for orderParams
-  const stableOrderParams = useMemo(() => {
-    try {
-      if (!sessionKey || !pageData || !config) {
-        console.warn('[Checkout] missing required order fields', { 
-          hasSessionKey: !!sessionKey, 
-          hasPageData: !!pageData, 
-          hasConfig: !!config 
-        });
-        return null;
-      }
-      
-      // Don't include formValues here - they change too frequently
-      // We only need the essential booking params for initiation
-      const params = getOrderParams(pageData, {}, {}, config, {});
-      
-      // Validate that getOrderParams returned valid params
-      if (!params || !params.listingId) {
-        console.warn('[Checkout] getOrderParams returned invalid params');
-        return null;
-      }
-      
-      // Additional validation for required booking fields
-      if (!params.bookingStart || !params.bookingEnd) {
-        console.warn('[Checkout] missing booking dates in orderParams', { params });
-        return null;
-      }
-      
-      return params;
-    } catch (err) {
-      console.error('[Checkout] orderParams build error', err);
-      return null;
-    }
-  }, [pageData, config, sessionKey]);
+    const userKey = userId || anonymousId || 'unknown';
+    // Include end date to prevent collisions
+    const start = orderResult.params?.bookingDates?.start || 'na';
+    const end = orderResult.params?.bookingDates?.end || 'na';
+    const lid = orderResult.params?.listingId || 'na';
+    return `${userKey}|${lid}|${start}|${end}`;
+  }, [userId, anonymousId, orderResult.params]);
 
   // Kill-switch: Allow disabling auto-initiation via env var
   // Set REACT_APP_INITIATE_ON_MOUNT_ENABLED=false in .env to disable auto-initiation
@@ -747,46 +783,40 @@ const CheckoutPageWithPayment = props => {
   const { onInitiatePrivilegedSpeculativeTransaction } = props;
   
   useEffect(() => {
-    try {
-      console.debug('[Sherbrt] 🌀 Initiation effect triggered', { 
-        autoInitEnabled, 
-        hasSessionKey: !!sessionKey, 
-        hasOrderParams: !!stableOrderParams,
-        currentInitiatedSession: initiatedSessionRef.current,
-        newSession: sessionKey
-      });
-
-      if (!autoInitEnabled || !sessionKey || !stableOrderParams) {
-        console.debug('[Sherbrt] ⛔ Skipping - missing requirements');
-        return;
+    // Never initiate with bad params
+    if (!orderResult.ok) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] ⛔ Skipping initiate - invalid params:', orderResult.reason);
       }
-      
-      // 🧩 Guard all downstream usage
-      if (!stableOrderParams) {
-        console.error('[Checkout] ⚠️ Missing orderParams, skipping initiate.');
-        return;
-      }
-      
-      // Check if we've already initiated this specific session
-      if (initiatedSessionRef.current === sessionKey) {
-        console.debug('[Sherbrt] ⏭️ Skipping initiation - already initiated for session:', sessionKey);
-        return;
-      }
-
-      // Mark this session as initiated
-      initiatedSessionRef.current = sessionKey;
-      
-      console.debug('[Sherbrt] 🚀 Initiating privileged transaction once for', sessionKey);
-      console.log('[Sherbrt] orderParams:', stableOrderParams);
-      
-      // Call the action to initiate the privileged speculative transaction
-      onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
-      
-      console.debug('[Sherbrt] ✅ initiate-privileged dispatched for session:', sessionKey);
-    } catch (err) {
-      console.error('[Sherbrt] 💥 ReferenceError in CheckoutPageWithPayment initiation effect', err);
+      return;
     }
-  }, [autoInitEnabled, sessionKey, stableOrderParams, onInitiatePrivilegedSpeculativeTransaction]);
+
+    // Reset the guard if sessionKey changed
+    if (lastSessionKeyRef.current !== sessionKey) {
+      initiatedSessionRef.current = false;
+      lastSessionKeyRef.current = sessionKey;
+    }
+
+    // Skip if already initiated for this session
+    if (initiatedSessionRef.current) {
+      return;
+    }
+
+    // Mark as initiated before calling to prevent race conditions
+    initiatedSessionRef.current = true;
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[Checkout] 🚀 initiating once for', sessionKey);
+      const { listingId, bookingDates } = orderResult.params;
+      console.debug('[Sherbrt] 🔍 Checkout render', {
+        listingId,
+        startISO: bookingDates?.start,
+        endISO: bookingDates?.end,
+      });
+    }
+
+    props.onInitiatePrivilegedSpeculativeTransaction?.(orderResult.params);
+  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, props]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
@@ -1091,3 +1121,4 @@ const CheckoutPageWithPayment = props => {
 // Export both named and default (loadInitialDataForStripePayments is already exported above at line 255)
 export { CheckoutPageWithPayment };
 export default CheckoutPageWithPayment;
+
