@@ -10,9 +10,6 @@ import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
 
-// Import hooks
-import useOncePerKey from '../../hooks/useOncePerKey';
-
 // Import shared components
 import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
 
@@ -644,6 +641,8 @@ export const CheckoutPageWithPayment = props => {
   const prevSpecKeyRef = useRef(null);
   // Ref to throttle disabled gates logging
   const lastReasonRef = useRef(null);
+  // Guard ref to track which session has been initiated (includes sessionKey to allow reset on new session)
+  const initiatedSessionRef = useRef(null);
 
   const {
     scrollingDisabled,
@@ -676,6 +675,12 @@ export const CheckoutPageWithPayment = props => {
     ? window.sessionStorage?.getItem('anonymousId') || 'anonymous'
     : null;
 
+  // Debug: Track component renders
+  const startISO = bookingStart?.toISOString?.() || bookingStart || 'none';
+  const endISO = bookingEnd?.toISOString?.() || bookingEnd || 'none';
+  const lid = listingId?.uuid || listingId || 'none';
+  console.debug('[Sherbrt] 🔍 Checkout render', { listingId: lid, startISO, endISO });
+
   // Stable session key: includes user/listing/dates to identify unique checkout session
   const sessionKey = useMemo(() => {
     if (!listingId || !bookingStart || !bookingEnd) return null;
@@ -699,47 +704,40 @@ export const CheckoutPageWithPayment = props => {
   // This is an emergency flag to quickly stop the initiation if issues occur in production
   const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
 
-  // Log session key creation (once per component mount)
+  // Single initiation effect with ref-based guard
+  const { onInitiatePrivilegedSpeculativeTransaction } = props;
+  
   useEffect(() => {
-    if (sessionKey && process.env.NODE_ENV !== 'production') {
-      // eslint-disable-next-line no-console
-      console.log('[Checkout] Session key created:', sessionKey);
-      // eslint-disable-next-line no-console
-      console.log('[Checkout] Auto-init enabled:', autoInitEnabled);
-    }
-  }, [sessionKey, autoInitEnabled]);
+    console.debug('[Sherbrt] 🌀 Initiation effect triggered', { 
+      autoInitEnabled, 
+      hasSessionKey: !!sessionKey, 
+      hasOrderParams: !!stableOrderParams,
+      currentInitiatedSession: initiatedSessionRef.current,
+      newSession: sessionKey
+    });
 
-  // Use the once-per-key hook to ensure initiate-privileged is called only once per session
-  // This prevents the render loop that was causing repeated POST requests
-  useOncePerKey(
-    autoInitEnabled ? sessionKey : null, // Only run if enabled and we have a key
-    () => {
-      if (!stableOrderParams) return;
-      
-      // Log once per session (guarded by useOncePerKey)
-      if (process.env.NODE_ENV !== 'production') {
-        const keyTail = sessionKey ? `...${sessionKey.slice(-20)}` : 'unknown';
-        // eslint-disable-next-line no-console
-        console.debug('[Checkout] 🚀 START initiate-privileged for session:', keyTail);
-        // eslint-disable-next-line no-console
-        console.log('[Checkout] Full session key:', sessionKey);
-        // eslint-disable-next-line no-console
-        console.log('[Checkout] orderParams:', stableOrderParams);
-      }
-      
-      // Call the action to initiate the privileged speculative transaction
-      props.onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
-      
-      // Log success (wrapped in a microtask to happen after dispatch)
-      if (process.env.NODE_ENV !== 'production') {
-        const keyTail = sessionKey ? `...${sessionKey.slice(-20)}` : 'unknown';
-        Promise.resolve().then(() => {
-          // eslint-disable-next-line no-console
-          console.debug('[Checkout] ✅ SUCCESS initiate-privileged dispatched for session:', keyTail);
-        });
-      }
+    if (!autoInitEnabled || !sessionKey || !stableOrderParams) {
+      console.debug('[Sherbrt] ⛔ Skipping - missing requirements');
+      return;
     }
-  );
+    
+    // Check if we've already initiated this specific session
+    if (initiatedSessionRef.current === sessionKey) {
+      console.debug('[Sherbrt] ⏭️ Skipping initiation - already initiated for session:', sessionKey);
+      return;
+    }
+
+    // Mark this session as initiated
+    initiatedSessionRef.current = sessionKey;
+    
+    console.debug('[Sherbrt] 🚀 Initiating privileged transaction once for', sessionKey);
+    console.log('[Sherbrt] orderParams:', stableOrderParams);
+    
+    // Call the action to initiate the privileged speculative transaction
+    onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
+    
+    console.debug('[Sherbrt] ✅ initiate-privileged dispatched for session:', sessionKey);
+  }, [autoInitEnabled, sessionKey, stableOrderParams, onInitiatePrivilegedSpeculativeTransaction]);
 
   // Throttled logging for disabled gates
   useEffect(() => {

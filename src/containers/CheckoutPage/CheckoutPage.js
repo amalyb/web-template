@@ -85,15 +85,23 @@ const EnhancedCheckoutPage = props => {
     setPageData(data || {});
     setIsDataLoaded(true);
 
+    // ⚠️ DISABLED: Moved to CheckoutPageWithPayment to prevent duplicate initiation
+    // The child component now handles all initiation via onInitiatePrivilegedSpeculativeTransaction
+    // This prevents the render loop caused by multiple initiation paths
+    // if (isUserAuthorized(currentUser)) {
+    //   if (getProcessName(data) !== INQUIRY_PROCESS_NAME) {
+    //     loadInitialDataForStripePayments({
+    //       pageData: data || {},
+    //       fetchSpeculatedTransaction,
+    //       fetchStripeCustomer,
+    //       config,
+    //     });
+    //   }
+    // }
+
+    // Still need to fetch Stripe customer for saved payment methods
     if (isUserAuthorized(currentUser)) {
-      if (getProcessName(data) !== INQUIRY_PROCESS_NAME) {
-        loadInitialDataForStripePayments({
-          pageData: data || {},
-          fetchSpeculatedTransaction,
-          fetchStripeCustomer,
-          config,
-        });
-      }
+      fetchStripeCustomer();
     }
   }, []);
 
