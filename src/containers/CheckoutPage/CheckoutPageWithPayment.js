@@ -780,7 +780,8 @@ const CheckoutPageWithPayment = props => {
   const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
 
   // Single initiation effect with ref-based guard
-  const { onInitiatePrivilegedSpeculativeTransaction } = props;
+  // Extract callback before useEffect to avoid TDZ issues
+  const onInitiatePrivilegedSpeculativeTransaction = props.onInitiatePrivilegedSpeculativeTransaction;
   
   useEffect(() => {
     // Never initiate with bad params
@@ -807,7 +808,7 @@ const CheckoutPageWithPayment = props => {
 
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
-      const { listingId, bookingDates } = orderResult.params;
+      const { listingId, bookingDates } = orderResult.params || {};
       console.debug('[Sherbrt] 🔍 Checkout render', {
         listingId,
         startISO: bookingDates?.start,
@@ -815,8 +816,8 @@ const CheckoutPageWithPayment = props => {
       });
     }
 
-    props.onInitiatePrivilegedSpeculativeTransaction?.(orderResult.params);
-  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, props]);
+    onInitiatePrivilegedSpeculativeTransaction?.(orderResult.params);
+  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, onInitiatePrivilegedSpeculativeTransaction]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
@@ -957,6 +958,25 @@ const CheckoutPageWithPayment = props => {
     listing.attributes.price.currency,
     'stripe'
   );
+
+  // Don't render if orderParams are invalid (prevents Stripe mounting with bad data)
+  if (!orderResult.ok) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[Checkout] Cannot render - invalid orderParams:', orderResult.reason);
+    }
+    return (
+      <Page title={title} scrollingDisabled={scrollingDisabled}>
+        <CustomTopbar intl={intl} linkToExternalSite={config?.topbar?.logoLink} />
+        <div className={css.contentContainer}>
+          <section className={css.incompatibleCurrency}>
+            <H4 as="h1" className={css.heading}>
+              <FormattedMessage id="CheckoutPage.incompleteBookingData" />
+            </H4>
+          </section>
+        </div>
+      </Page>
+    );
+  }
 
   // Render an error message if the listing is using a non Stripe supported currency
   // and is using a transaction process with Stripe actions (default-booking or default-purchase)
