@@ -36,55 +36,18 @@ import MobileOrderBreakdown from './MobileOrderBreakdown';
 import css from './CheckoutPage.module.css';
 import { __DEV__ } from '../../util/envFlags';
 
+// Import shared modules to break circular dependencies and avoid TDZ
+import { 
+  extractListingId, 
+  normalizeISO, 
+  buildOrderParams, 
+  normalizeBookingDates 
+} from './shared/orderParams';
+import { buildCheckoutSessionKey } from './shared/sessionKey';
+
 // Stripe PaymentIntent statuses, where user actions are already completed
 // https://stripe.com/docs/payments/payment-intents/status
 const STRIPE_PI_USER_ACTIONS_DONE_STATUSES = ['processing', 'requires_capture', 'succeeded'];
-
-// NOTE: Helper functions declared above first use to avoid TDZ
-/**
- * Extract listing ID from various formats (SDK UUID, plain string, Redux state)
- */
-function extractListingId(listing, listingId) {
-  if (listing?.id?.uuid) return listing.id.uuid;
-  if (typeof listingId === 'string') return listingId;
-  if (typeof listingId?.uuid === 'string') return listingId.uuid;
-  return null;
-}
-
-/**
- * Normalize date values to ISO string format
- */
-function normalizeISO(value) {
-  if (!value) return null;
-  try {
-    if (typeof value === 'string') return value;
-    if (value?.toISOString) return value.toISOString();
-    if (value?.toISO) return value.toISO();
-    return new Date(value).toISOString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Build robust orderParams with validation
- */
-function buildOrderParams({ listing, listingId, start, end, protectedData }) {
-  const id = extractListingId(listing, listingId);
-  const startISO = normalizeISO(start);
-  const endISO = normalizeISO(end);
-
-  const bookingDates =
-    startISO && endISO ? { start: startISO, end: endISO } : null;
-
-  return {
-    ok: Boolean(id && bookingDates),
-    reason: !id ? 'missing-listingId' : (!bookingDates ? 'missing-bookingDates' : null),
-    params: id && bookingDates
-      ? { listingId: id, bookingDates, protectedData: protectedData || {} }
-      : null,
-  };
-}
 
 // Payment charge options
 const ONETIME_PAYMENT = 'ONETIME_PAYMENT';
@@ -726,9 +689,9 @@ const CheckoutPageWithPayment = props => {
     config,
   } = props;
 
-  // Compute stable speculation key based on booking parameters
-  const bookingStart = pageData?.orderData?.bookingDates?.bookingStart;
-  const bookingEnd = pageData?.orderData?.bookingDates?.bookingEnd;
+  // Normalize booking dates from pageData (handles multiple shapes)
+  const { startISO, endISO } = useMemo(() => normalizeBookingDates(pageData), [pageData]);
+  
   const pageDataListing = pageData?.listing;
   const listingIdRaw = pageData?.listing?.id;
   const unitTypeFromListing = pageData?.listing?.attributes?.publicData?.unitType;
@@ -740,14 +703,28 @@ const CheckoutPageWithPayment = props => {
   // Extract normalized listing ID
   const listingIdNormalized = extractListingId(pageDataListing, listingIdRaw);
 
-  // Build order params with validation using new robust builder
-  const orderResult = useMemo(() => buildOrderParams({
-    listing: pageDataListing,
-    listingId: listingIdNormalized,
-    start: bookingStart || pageData?.bookingDates?.start,
-    end: bookingEnd || pageData?.bookingDates?.end,
-    protectedData: {}, // Will be populated later with form data
-  }), [pageDataListing, listingIdNormalized, bookingStart, bookingEnd, pageData?.bookingDates]);
+  // Build order params with validation using new robust builder with normalized dates
+  const orderResult = useMemo(() => {
+    if (!startISO || !endISO) {
+      // Log once for debugging (only in development)
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] Missing booking dates in orderParams', { 
+          startISO, 
+          endISO, 
+          pageDataKeys: Object.keys(pageData || {}) 
+        });
+      }
+      return { ok: false, reason: 'missing-bookingDates', params: null };
+    }
+    
+    return buildOrderParams({
+      listing: pageDataListing,
+      listingId: listingIdNormalized,
+      start: startISO,
+      end: endISO,
+      protectedData: {}, // Will be populated later with form data
+    });
+  }, [pageDataListing, listingIdNormalized, startISO, endISO, pageData]);
 
   // Debug logging for invalid params (dev only)
   if (!orderResult.ok && process.env.NODE_ENV !== 'production') {
@@ -766,12 +743,13 @@ const CheckoutPageWithPayment = props => {
 
   // Stable session key: includes user/listing/dates to identify unique checkout session
   const sessionKey = useMemo(() => {
-    const userKey = userId || anonymousId || 'unknown';
-    // Include end date to prevent collisions
-    const start = orderResult.params?.bookingDates?.start || 'na';
-    const end = orderResult.params?.bookingDates?.end || 'na';
-    const lid = orderResult.params?.listingId || 'na';
-    return `${userKey}|${lid}|${start}|${end}`;
+    return buildCheckoutSessionKey({
+      userId,
+      anonymousId,
+      listingId: orderResult.params?.listingId,
+      startISO: orderResult.params?.bookingDates?.start,
+      endISO: orderResult.params?.bookingDates?.end,
+    });
   }, [userId, anonymousId, orderResult.params]);
 
   // Kill-switch: Allow disabling auto-initiation via env var

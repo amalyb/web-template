@@ -19,7 +19,8 @@ import { INQUIRY_PROCESS_NAME, resolveLatestProcessName } from '../../transactio
 import { isScrollingDisabled } from '../../ducks/ui.duck';
 import { confirmCardPayment, retrievePaymentIntent } from '../../ducks/stripe.duck';
 import { savePaymentMethod } from '../../ducks/paymentMethods.duck';
-import { selectHasFetchedCurrentUser } from '../../ducks/user.duck';
+// Import from shared to break circular dependency
+import { selectHasFetchedCurrentUser } from './shared/selectors';
 
 import { NamedRedirect, Page } from '../../components';
 import { storeData, clearData, handlePageData } from './CheckoutPageSessionHelpers';

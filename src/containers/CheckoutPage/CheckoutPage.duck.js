@@ -5,16 +5,11 @@ import { storableError } from '../../util/errors';
 import * as log from '../../util/log';
 import { fetchCurrentUserHasOrdersSuccess, loadCurrentUserOnce } from '../../ducks/user.duck';
 
-// ================ Helper: Speculation Key ================ //
+// Import shared session key builder to avoid circular deps
+import { makeSpeculationKey } from './shared/sessionKey';
 
-export const makeSpeculationKey = ({ listingId, bookingStart, bookingEnd, unitType }) => {
-  const lid = typeof listingId === 'string'
-    ? listingId
-    : (listingId?.uuid || listingId?.id?.uuid || '');
-  const start = typeof bookingStart === 'string' ? bookingStart : bookingStart?.toISOString?.() || '';
-  const end   = typeof bookingEnd   === 'string' ? bookingEnd   : bookingEnd?.toISOString?.()   || '';
-  return [lid, start, end, unitType || ''].join('|');
-};
+// Re-export for backward compatibility
+export { makeSpeculationKey };
 
 // ================ Action types ================ //
 
