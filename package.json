@@ -1,6 +1,6 @@
 {
   "name": "app",
-  "version": "8.0.1",
+  "version": "8.0.2",
   "proxy": "http://localhost:3500",
   "private": true,
   "license": "Apache-2.0",
