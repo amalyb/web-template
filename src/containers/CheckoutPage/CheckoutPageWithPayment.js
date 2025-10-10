@@ -770,33 +770,26 @@ const CheckoutPageWithPayment = props => {
   // Single initiation effect with ref-based guard
   // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
   useEffect(() => {
-    // ✅ AUTH GUARD: Verify user is authenticated before attempting privileged transaction
-    // This prevents 401 errors during checkout initiation
-    if (!currentUser?.id) {
+    // ✅ Hard-gate #1: User must exist
+    const hasUser = Boolean(currentUser && currentUser.id);
+    if (!hasUser) {
       if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ⛔ Skipping initiate - user not authenticated yet', {
-          hasCurrentUser: !!currentUser,
-          hasUserId: !!currentUser?.id,
-        });
+        console.debug('[Checkout] ⛔ Skipping initiate - user not authenticated yet');
       }
       return;
     }
 
-    // OPTIONAL: Double-check for auth token presence (belt-and-suspenders approach)
-    // The backend middleware will validate the actual token; this is just an early client-side guard
-    if (typeof window !== 'undefined') {
-      const token = window.localStorage?.getItem('authToken') || window.sessionStorage?.getItem('authToken');
-      if (!token) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.debug('[Checkout] ⛔ Skipping initiate - no auth token in storage');
-        }
-        return;
+    // ✅ Hard-gate #2: Token must exist (check all common locations)
+    const hasToken = Boolean(
+      window.localStorage?.getItem('st-auth') || 
+      window.sessionStorage?.getItem('st-auth') || 
+      document.cookie?.includes('st=')
+    );
+    if (!hasToken) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] ⛔ Skipping initiate - no auth token found');
       }
-    }
-
-    // Log auth ready state
-    if (process.env.NODE_ENV !== 'production') {
-      console.debug('[Checkout] ✅ Auth verified, proceeding with initiate');
+      return;
     }
 
     // Never initiate with bad params
@@ -813,7 +806,7 @@ const CheckoutPageWithPayment = props => {
       lastSessionKeyRef.current = sessionKey;
     }
 
-    // Skip if already initiated for this session
+    // ✅ Hard-gate #3: 1-shot guard per listing/session
     if (initiatedSessionRef.current) {
       return;
     }
@@ -823,18 +816,11 @@ const CheckoutPageWithPayment = props => {
 
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
-      const { listingId, bookingDates } = orderResult.params || {};
-      console.debug('[Sherbrt] 🔍 Checkout render', {
-        listingId,
-        startISO: bookingDates?.start,
-        endISO: bookingDates?.end,
-        currentUser: currentUser?.id?.uuid,
-      });
     }
 
     // TDZ-safe function invocation: extract from props at runtime to prevent minifier hoisting issues
-    const initiateFn = props?.onInitiatePrivilegedSpeculativeTransaction;
-    if (typeof initiateFn === 'function') {
+    const initiateFn = props && props.onInitiatePrivilegedSpeculativeTransaction;
+    if (typeof initiateFn === 'function' && hasUser && hasToken && orderResult?.ok) {
       initiateFn(orderResult.params);
     }
   }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, currentUser, props]);

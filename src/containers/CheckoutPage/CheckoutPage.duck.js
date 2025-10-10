@@ -240,10 +240,18 @@ export const initiateOrder = (
   // Guard: Check if user is authenticated for privileged transitions
   const state = getState();
   const currentUser = state.user?.currentUser;
-  if (isPrivilegedTransition && !currentUser?.id) {
-    const error = new Error('Cannot initiate privileged transaction - user not authenticated');
+  if (!currentUser?.id) {
+    const error = new Error('Cannot initiate transaction - user not authenticated');
     error.status = 401;
-    console.warn('[Sherbrt] Attempted privileged transition without authentication');
+    console.warn('[Sherbrt] Attempted transaction without authentication');
+    return Promise.reject(error);
+  }
+  
+  // Guard: Check for auth token (belt-and-suspenders)
+  if (!sdk?.authToken && typeof document !== 'undefined' && !document.cookie?.includes('st=')) {
+    const error = new Error('Cannot initiate transaction - no auth token found');
+    error.status = 401;
+    console.warn('[Sherbrt] Attempted transaction without auth token');
     return Promise.reject(error);
   }
 
@@ -527,6 +535,14 @@ export const speculateTransaction = (
     console.warn('[Sherbrt] Attempted privileged speculation without authentication');
     return Promise.reject(error);
   }
+  
+  // Guard: Check for auth token (belt-and-suspenders)
+  if (isPrivilegedTransition && !sdk?.authToken && typeof document !== 'undefined' && !document.cookie?.includes('st=')) {
+    const error = new Error('Cannot speculate privileged transaction - no auth token found');
+    error.status = 401;
+    console.warn('[Sherbrt] Attempted privileged speculation without auth token');
+    return Promise.reject(error);
+  }
 
   // Log transactionId before determining flow
   console.log('speculateTransaction: transactionId =', transactionId);
@@ -702,6 +718,12 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
       hasUserId: !!currentUser?.id,
     });
     // Don't throw - just skip silently to prevent blocking the UI
+    return;
+  }
+  
+  // Guard: Check for auth token (belt-and-suspenders)
+  if (!sdk?.authToken && typeof document !== 'undefined' && !document.cookie?.includes('st=')) {
+    console.warn('[Sherbrt] ⛔ Attempted privileged speculation without auth token');
     return;
   }
 

@@ -492,7 +492,11 @@ class StripePaymentForm extends Component {
       // Notify parent that Stripe element is mounted (only once)
       if (!this.reportedMounted) {
         this.reportedMounted = true;
-        this.props.onStripeElementMounted?.(true);
+        // TDZ-safe: extract function before calling
+        const onMounted = this.props && this.props.onStripeElementMounted;
+        if (typeof onMounted === 'function') {
+          onMounted(true);
+        }
         
         // Log Stripe Elements mount (dev only)
         if (process.env.NODE_ENV !== 'production') {
@@ -761,7 +765,11 @@ class StripePaymentForm extends Component {
     // 🔒 bubble validity only when it changes
     if (effectiveInvalid !== this.lastEffectiveInvalid) {
       this.lastEffectiveInvalid = effectiveInvalid;
-      this.props.onFormValidityChange?.(!effectiveInvalid);
+      // TDZ-safe: extract function before calling
+      const onValidityChange = this.props && this.props.onFormValidityChange;
+      if (typeof onValidityChange === 'function') {
+        onValidityChange(!effectiveInvalid);
+      }
     }
 
     // 🔒 bubble values only when they change
@@ -806,7 +814,11 @@ class StripePaymentForm extends Component {
         });
       }
       
-      this.props.onFormValuesChange?.(mappedValues);
+      // TDZ-safe: extract function before calling
+      const onValuesChange = this.props && this.props.onFormValuesChange;
+      if (typeof onValuesChange === 'function') {
+        onValuesChange(mappedValues);
+      }
     }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);

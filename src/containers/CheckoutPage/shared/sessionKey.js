@@ -12,8 +12,18 @@ export function makeSpeculationKey({ listingId, bookingStart, bookingEnd, unitTy
   const lid = typeof listingId === 'string'
     ? listingId
     : (listingId?.uuid || listingId?.id?.uuid || '');
-  const start = typeof bookingStart === 'string' ? bookingStart : bookingStart?.toISOString?.() || '';
-  const end   = typeof bookingEnd   === 'string' ? bookingEnd   : bookingEnd?.toISOString?.()   || '';
+  
+  // TDZ-safe: extract method reference before calling
+  const startToISO = bookingStart && bookingStart.toISOString;
+  const start = typeof bookingStart === 'string' 
+    ? bookingStart 
+    : (typeof startToISO === 'function' ? startToISO.call(bookingStart) : '');
+  
+  const endToISO = bookingEnd && bookingEnd.toISOString;
+  const end = typeof bookingEnd === 'string' 
+    ? bookingEnd 
+    : (typeof endToISO === 'function' ? endToISO.call(bookingEnd) : '');
+  
   return [lid, start, end, unitType || ''].join('|');
 }
 
