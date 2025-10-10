@@ -54,7 +54,7 @@ const ONETIME_PAYMENT = 'ONETIME_PAYMENT';
 const PAY_AND_SAVE_FOR_LATER_USE = 'PAY_AND_SAVE_FOR_LATER_USE';
 const USE_SAVED_CARD = 'USE_SAVED_CARD';
 
-const paymentFlow = (selectedPaymentMethod, saveAfterOnetimePayment) => {
+function paymentFlow(selectedPaymentMethod, saveAfterOnetimePayment) {
   // Payment mode could be 'replaceCard', but without explicit saveAfterOnetimePayment flag,
   // we'll handle it as one-time payment
   return selectedPaymentMethod === 'defaultCard'
@@ -62,21 +62,25 @@ const paymentFlow = (selectedPaymentMethod, saveAfterOnetimePayment) => {
     : saveAfterOnetimePayment
     ? PAY_AND_SAVE_FOR_LATER_USE
     : ONETIME_PAYMENT;
-};
+}
 
 // Helper to build customer protectedData from shipping form
-const buildCustomerPD = (shipping, currentUser) => ({
-  customerName: shipping?.recipientName || shipping?.name || '',
-  customerStreet: shipping?.streetAddress || shipping?.street || '',
-  customerStreet2: shipping?.streetAddress2 || shipping?.street2 || '',
-  customerCity: shipping?.city || '',
-  customerState: shipping?.state || '',
-  customerZip: shipping?.zip || shipping?.postalCode || shipping?.zipCode || '',
-  customerPhone: shipping?.phone || '',
-  customerEmail: shipping?.email || currentUser?.attributes?.email || '',
-});
+function buildCustomerPD(shipping, currentUser) {
+  return {
+    customerName: shipping?.recipientName || shipping?.name || '',
+    customerStreet: shipping?.streetAddress || shipping?.street || '',
+    customerStreet2: shipping?.streetAddress2 || shipping?.street2 || '',
+    customerCity: shipping?.city || '',
+    customerState: shipping?.state || '',
+    customerZip: shipping?.zip || shipping?.postalCode || shipping?.zipCode || '',
+    customerPhone: shipping?.phone || '',
+    customerEmail: shipping?.email || currentUser?.attributes?.email || '',
+  };
+}
 
-const capitalizeString = s => `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
+function capitalizeString(s) {
+  return `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
+}
 
 /**
  * Prefix the properties of the chosen price variant as first level properties for the protected data of the transaction
@@ -94,7 +98,7 @@ const capitalizeString = s => `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
  * @param {Object} priceVariant - The price variant object
  * @returns {Object} The price variant object with the properties prefixed with priceVariant*
  */
-const prefixPriceVariantProperties = priceVariant => {
+function prefixPriceVariantProperties(priceVariant) {
   if (!priceVariant) {
     return {};
   }
@@ -103,7 +107,7 @@ const prefixPriceVariantProperties = priceVariant => {
     return [`priceVariant${capitalizeString(key)}`, value];
   });
   return Object.fromEntries(entries);
-};
+}
 
 /**
  * Construct orderParams object using pageData from session storage, shipping details, and optional payment params.
@@ -118,7 +122,7 @@ const prefixPriceVariantProperties = priceVariant => {
  * @param {Object} formValues form values containing customer data
  * @returns orderParams.
  */
-const getOrderParams = (pageData = {}, shippingDetails = {}, optionalPaymentParams = {}, config = {}, formValues = {}) => {
+function getOrderParams(pageData = {}, shippingDetails = {}, optionalPaymentParams = {}, config = {}, formValues = {}) {
   // Validate required parameters
   if (!pageData || !config) {
     console.error('[getOrderParams] Missing required parameters:', { hasPageData: !!pageData, hasConfig: !!config });
@@ -191,9 +195,9 @@ const getOrderParams = (pageData = {}, shippingDetails = {}, optionalPaymentPara
   console.log('📦 Final orderParams:', orderParams);
 
   return orderParams;
-};
+}
 
-const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) => {
+function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) {
   const tx = pageData ? pageData.transaction : null;
   const pageDataListing = pageData.listing;
   const processName =
@@ -243,7 +247,7 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
       );
     }
   }
-};
+}
 
 /**
  * Load initial data for the page
@@ -261,12 +265,12 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
  * This function also sets of fetching the speculative transaction
  * based on this initial data.
  */
-export const loadInitialDataForStripePayments = ({
+export function loadInitialDataForStripePayments({
   pageData,
   fetchSpeculatedTransaction,
   fetchStripeCustomer,
   config,
-}) => {
+}) {
   // Fetch currentUser with stripeCustomer entity
   fetchStripeCustomer();
 
@@ -285,9 +289,9 @@ export const loadInitialDataForStripePayments = ({
   // Use a more robust guard to prevent duplicate calls
   const prevKeyRef = { current: null };
   fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
-};
+}
 
-const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting) => {
+async function handleSubmit(values, process, props, stripe, submitting, setSubmitting) {
   if (submitting) {
     return;
   }
@@ -599,7 +603,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     // Re-throw to ensure form submission state is properly reset
     throw err;
   }
-};
+}
 
 /**
  * A component that renders the checkout page with payment.
@@ -771,8 +775,22 @@ const CheckoutPageWithPayment = props => {
       return;
     }
 
+    // OPTIONAL: Double-check for auth token presence (belt-and-suspenders approach)
+    // The backend middleware will validate the actual token; this is just an early client-side guard
+    if (typeof window !== 'undefined') {
+      const token = window.localStorage?.getItem('authToken') || window.sessionStorage?.getItem('authToken');
+      if (!token) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[Checkout] ⛔ Skipping initiate - no auth token in storage');
+        }
+        return;
+      }
+    }
+
     // Log auth ready state
-    console.warn('[Checkout] Auth ready?', !!currentUser, 'OrderData:', orderResult.params);
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[Checkout] ✅ Auth verified, proceeding with initiate');
+    }
 
     // Never initiate with bad params
     if (!orderResult.ok) {
