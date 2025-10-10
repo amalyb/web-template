@@ -1,4 +1,24 @@
 .root {
+  position: relative;
+}
+
+.select {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+.root label {
+  position: static; /* avoid absolute labels covering the control */
+}
+
+.root::after {
+  /* If there is any decorative overlay, disable pointer interception */
+  pointer-events: none;
+}
+
+.root {
+  overflow: visible; /* allow native dropdown to render */
 }
 
 .selectError {

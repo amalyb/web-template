@@ -845,7 +845,8 @@ const CheckoutPageWithPayment = props => {
     }
 
     // Runtime gate diagnostics - logged before initiation
-    console.debug('[INIT_GATES]', {
+    const dump = o => JSON.parse(JSON.stringify(o));
+    console.debug('[INIT_GATES]', dump({
       hasUser: !!currentUser?.id,
       hasToken: Boolean(
         window.localStorage?.getItem('st-auth') ||
@@ -854,7 +855,7 @@ const CheckoutPageWithPayment = props => {
       ),
       orderOk: !!orderResult?.ok,
       sessionKey,
-    });
+    }));
 
     // Call the latest handler via ref (no identity in deps)
     const fn = initiateRef.current;
@@ -945,6 +946,10 @@ const CheckoutPageWithPayment = props => {
     !retrievePaymentIntentError &&
     !isPaymentExpired
   );
+  
+  // Ensure Stripe form mounts once we have a speculative tx
+  const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
+  const showStripeForm = hasSpeculativeTx && !!txProcess;
 
   const firstImage = listing?.images?.length > 0 ? listing.images[0] : null;
 
@@ -989,9 +994,10 @@ const CheckoutPageWithPayment = props => {
     name: userName, 
     recipientName: userName
   };
-  const askShippingDetails =
-    orderData?.deliveryMethod === 'shipping' &&
-    !hasTransactionPassedPendingPayment(existingTransaction, txProcess);
+  
+  // Loosen form-mounting conditions to ensure UI appears
+  // (Once working, can re-tighten if needed)
+  const askShippingDetails = orderData?.deliveryMethod === 'shipping' && !!txProcess;
 
   // Check if the listing currency is compatible with Stripe for the specified transaction process.
   // This function validates the currency against the transaction process requirements and
@@ -1072,37 +1078,39 @@ const CheckoutPageWithPayment = props => {
             {showPaymentForm ? (
               <>
                 {(() => {
-                  // Canonical gating (parent)
-                  const hasTxId = !!props.speculativeTransactionId;
+                  // Define submit gates clearly
+                  const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
+                  const canSubmit =
+                    hasSpeculativeTx &&                 // we require a speculative tx
+                    formValid &&                        // Stripe/Shipping fields valid
+                    stripeReady &&                      // Stripe mounted
+                    !!orderResult?.ok &&                // order params valid
+                    !submitting;                        // not currently submitting
 
-                  // Compute stripe readiness (strict boolean)
-                  const stripeReady = !!stripeElementMounted;
+                  const disabled = !canSubmit;
+                  const disabledReason = !hasSpeculativeTx ? 'noSpeculativeTx'
+                    : !formValid ? 'validationErrors'
+                    : !stripeReady ? 'stripeNotReady'
+                    : !orderResult?.ok ? 'orderParamsInvalid'
+                    : submitting ? 'submitting'
+                    : null;
 
-                  const gates = {
-                    hasSpeculativeTx: hasTxId,
-                    stripeReady: stripeReady,                 // 👈 simplified
-                    paymentElementComplete: !!paymentElementComplete,
-                    formValid: formValid,                   // ✅ bubbled up from child form
-                    notSubmitting: !submitting,      // local state (no duck submitInProgress available)
-                    notSpeculating: !speculativeInProgress  // ✅ use normalized name
-                  };
-
-                  const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
-                  const submitDisabled = !!disabledReason;
-
-                  // Runtime gate diagnostics for submit button
-                  console.debug('[SUBMIT_GATES]', {
-                    hasSpeculativeTx: hasTxId,
-                    hasValidationErrors: !formValid,
-                    isStripeReady: stripeReady,
-                    submitInProgress: submitting,
+                  // Log with JSON.stringify so we can see actual boolean values
+                  const dump = o => JSON.parse(JSON.stringify(o));
+                  console.debug('[SUBMIT_GATES]', dump({
+                    hasSpeculativeTx,
+                    formValid,
+                    stripeReady,
                     orderOk: !!orderResult?.ok,
+                    submitting,
                     txId: props?.speculativeTransactionId,
-                  });
+                    disabled,
+                    disabledReason,
+                  }));
 
                   return (
                     <>
-                      {submitDisabled && (
+                      {disabled && (
                         <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
                           Can't submit yet: <code>{disabledReason}</code>
                         </div>
@@ -1110,6 +1118,7 @@ const CheckoutPageWithPayment = props => {
                     </>
                   );
                 })()}
+                {showStripeForm ? (
                 <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
@@ -1145,20 +1154,15 @@ const CheckoutPageWithPayment = props => {
                   requireInPaymentForm={false}  // billing/shipping collected outside this form
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
-                    const hasTxId = !!props.speculativeTransactionId;
-                    
-                    // Compute stripe readiness (strict boolean)
-                    const stripeReady = !!stripeElementMounted;
-                    
-                    const gates = {
-                      hasSpeculativeTx: hasTxId,
-                      stripeReady: stripeReady,                 // 👈 simplified
-                      paymentElementComplete: !!paymentElementComplete,
-                      formValid: formValid,
-                      notSubmitting: !submitting,
-                      notSpeculating: !speculativeInProgress, // ✅ use normalized name
-                    };
-                    return !!Object.entries(gates).find(([, ok]) => !ok)?.[0];
+                    // Use same gating logic as above
+                    const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
+                    const canSubmit =
+                      hasSpeculativeTx &&                 // we require a speculative tx
+                      formValid &&                        // Stripe/Shipping fields valid
+                      stripeReady &&                      // Stripe mounted
+                      !!orderResult?.ok &&                // order params valid
+                      !submitting;                        // not currently submitting
+                    return !canSubmit;
                   })()}
                   askShippingDetails={askShippingDetails}
                   showPickUplocation={orderData?.deliveryMethod === 'pickup'}
@@ -1170,6 +1174,11 @@ const CheckoutPageWithPayment = props => {
                   isBooking={isBookingProcessAlias(transactionProcessAlias)}
                   isFuzzyLocation={config.maps.fuzzy.enabled}
                 />
+                ) : (
+                  <div style={{ fontSize: 14, opacity: 0.7, marginTop: 16, padding: 16, background: '#f5f5f5', borderRadius: 4 }}>
+                    Waiting for transaction initialization...
+                  </div>
+                )}
               </>
             ) : null}
           </section>
