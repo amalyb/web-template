@@ -206,14 +206,14 @@ function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculat
   const processName =
     tx?.attributes?.processName ||
     pageDataListing?.attributes?.publicData?.transactionProcessAlias?.split('/')[0];
-  const process = processName ? getProcess(processName) : null;
+  const txProcess = processName ? getProcess(processName) : null;
 
   // If transaction has passed payment-pending state, speculated tx is not needed.
   const shouldFetchSpeculatedTransaction =
     !!pageData?.listing?.id &&
     !!pageData.orderData &&
-    !!process &&
-    !hasTransactionPassedPendingPayment(tx, process);
+    !!txProcess &&
+    !hasTransactionPassedPendingPayment(tx, txProcess);
 
   if (shouldFetchSpeculatedTransaction) {
     // Create a stable key based on parameters that should trigger a new fetch
@@ -234,12 +234,12 @@ function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculat
       const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
       const transactionId = tx ? tx.id : null;
       const isInquiryInPaymentProcess =
-        tx?.attributes?.lastTransition === process.transitions.INQUIRE;
+        tx?.attributes?.lastTransition === txProcess.transitions.INQUIRE;
 
       const requestTransition = isInquiryInPaymentProcess
-        ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
-        : process.transitions.REQUEST_PAYMENT;
-      const isPrivileged = process.isPrivileged(requestTransition);
+        ? txProcess.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+        : txProcess.transitions.REQUEST_PAYMENT;
+      const isPrivileged = txProcess.isPrivileged(requestTransition);
 
       fetchSpeculatedTransaction(
         orderParams,
@@ -294,7 +294,7 @@ export function loadInitialDataForStripePayments({
   fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 }
 
-async function handleSubmit(values, process, props, stripe, submitting, setSubmitting) {
+async function handleSubmit(values, txProcess, props, stripe, submitting, setSubmitting) {
   if (submitting) {
     return;
   }
@@ -559,7 +559,7 @@ async function handleSubmit(values, process, props, stripe, submitting, setSubmi
     paymentIntent,
     hasPaymentIntentUserActionsDone,
     stripePaymentMethodId,
-    process,
+    txProcess,
     onInitiateOrder,
     onConfirmCardPayment,
     onConfirmPayment,
@@ -919,9 +919,9 @@ const CheckoutPageWithPayment = props => {
   const totalPrice =
     tx?.attributes?.lineItems?.length > 0 ? getFormattedTotalPrice(tx, intl) : null;
 
-  const process = processName ? getProcess(processName) : null;
-  const transitions = process.transitions;
-  const isPaymentExpired = hasPaymentExpired(existingTransaction, process, isClockInSync);
+  const txProcess = processName ? getProcess(processName) : null;
+  const transitions = txProcess?.transitions || {};
+  const isPaymentExpired = hasPaymentExpired(existingTransaction, txProcess, isClockInSync);
 
   // Allow showing page when currentUser is still being downloaded,
   // but show payment form only when user info is loaded.
@@ -979,7 +979,7 @@ const CheckoutPageWithPayment = props => {
   };
   const askShippingDetails =
     orderData?.deliveryMethod === 'shipping' &&
-    !hasTransactionPassedPendingPayment(existingTransaction, process);
+    !hasTransactionPassedPendingPayment(existingTransaction, txProcess);
 
   // Check if the listing currency is compatible with Stripe for the specified transaction process.
   // This function validates the currency against the transaction process requirements and
@@ -1091,7 +1091,7 @@ const CheckoutPageWithPayment = props => {
                 <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
-                    handleSubmit(values, process, props, stripe, submitting, setSubmitting)
+                    handleSubmit(values, txProcess, props, stripe, submitting, setSubmitting)
                   }
                   inProgress={submitting}
                   formId="CheckoutPagePaymentForm"

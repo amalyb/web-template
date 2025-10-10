@@ -139,23 +139,23 @@ export const hasDefaultPaymentMethod = (stripeCustomerFetched, currentUser) =>
  * @param {Object} process
  * @returns true if payment has expired.
  */
-export const hasPaymentExpired = (existingTransaction, process, isClockInSync) => {
-  const state = process.getState(existingTransaction);
-  return state === process.states.PAYMENT_EXPIRED
+export const hasPaymentExpired = (existingTransaction, txProcess, isClockInSync) => {
+  const state = txProcess.getState(existingTransaction);
+  return state === txProcess.states.PAYMENT_EXPIRED
     ? true
-    : state === process.states.PENDING_PAYMENT && isClockInSync
+    : state === txProcess.states.PENDING_PAYMENT && isClockInSync
     ? minutesBetween(existingTransaction.attributes.lastTransitionedAt, new Date()) >= 15
     : false;
 };
 
 /**
- * Check if the transaction has passed PENDING_PAYMENT state (assumes that process has that state)
+ * Check if the transaction has passed PENDING_PAYMENT state (assumes that txProcess has that state)
  * @param {Object} tx
- * @param {Object} process
+ * @param {Object} txProcess
  * @returns true if the transaction has passed that state
  */
-export const hasTransactionPassedPendingPayment = (tx, process) => {
-  return process.hasPassedState(process.states.PENDING_PAYMENT, tx);
+export const hasTransactionPassedPendingPayment = (tx, txProcess) => {
+  return txProcess.hasPassedState(txProcess.states.PENDING_PAYMENT, tx);
 };
 
 const persistTransaction = (order, pageData, storeData, setPageData, sessionStorageKey) => {
@@ -188,7 +188,7 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     onSendMessage,
     pageData,
     paymentIntent,
-    process,
+    txProcess,
     setPageData,
     sessionStorageKey,
     stripeCustomer,
@@ -210,10 +210,10 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     const hasPaymentIntents = storedTx.attributes.protectedData?.stripePaymentIntents;
 
     const requestTransition =
-      storedTx?.attributes?.lastTransition === process.transitions.INQUIRE
-        ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
-        : process.transitions.REQUEST_PAYMENT;
-    const isPrivileged = process.isPrivileged(requestTransition);
+      storedTx?.attributes?.lastTransition === txProcess.transitions.INQUIRE
+        ? txProcess.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+        : txProcess.transitions.REQUEST_PAYMENT;
+    const isPrivileged = txProcess.isPrivileged(requestTransition);
 
     // Add debug logging for transition
     console.log('🧾 Using transition for initiatePrivileged:', requestTransition);
@@ -287,7 +287,7 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     // Remember the created PaymentIntent for step 5
     createdPaymentIntent = fnParams.paymentIntent;
     const transactionId = fnParams.transactionId;
-    const transitionName = process.transitions.CONFIRM_PAYMENT;
+    const transitionName = txProcess.transitions.CONFIRM_PAYMENT;
     const isTransitionedAlready = storedTx?.attributes?.lastTransition === transitionName;
     const orderPromise = isTransitionedAlready
       ? Promise.resolve(storedTx)
