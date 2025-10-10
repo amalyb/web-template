@@ -10,8 +10,11 @@ import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
 
-// Import shared components
-import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
+// Import shared components (direct imports to avoid circular deps via barrel)
+import { H3, H4 } from '../../components/Heading/Heading';
+import NamedLink from '../../components/NamedLink/NamedLink';
+import OrderBreakdown from '../../components/OrderBreakdown/OrderBreakdown';
+import Page from '../../components/Page/Page';
 
 import {
   bookingDatesMaybe,
@@ -696,7 +699,10 @@ const CheckoutPageWithPayment = props => {
   }, [formValues]);
 
   // Normalize booking dates from pageData (handles multiple shapes)
-  const { startISO, endISO } = useMemo(() => normalizeBookingDates(pageData), [pageData]);
+  // Use object assignment first to avoid minifier reordering TDZ issues
+  const normalizedDates = useMemo(() => normalizeBookingDates(pageData), [pageData]);
+  const startISO = normalizedDates?.startISO;
+  const endISO = normalizedDates?.endISO;
   
   const pageDataListing = pageData?.listing;
   const listingIdRaw = pageData?.listing?.id;
@@ -732,29 +738,8 @@ const CheckoutPageWithPayment = props => {
     });
   }, [pageDataListing, listingIdNormalized, startISO, endISO, pageData]);
 
-  // Dev-only diagnostics deferred to effect to avoid TDZ in minified builds
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'production') return;
-    if (!orderResult || typeof orderResult !== 'object') return;
-    try {
-      if (!orderResult.ok) {
-        console.debug('[Checkout] orderParams invalid:', orderResult.reason, orderResult);
-        return;
-      }
-      const p = orderResult.params || {};
-      const lid = p.listingId;
-      const bookingDates = p.bookingDates;
-      console.debug('[Sherbrt] 🔍 Checkout render', {
-        lid,
-        hasBookingDates: Boolean(bookingDates && bookingDates.start && bookingDates.end),
-        ok: orderResult.ok,
-      });
-    } catch (_) {
-      // swallow dev-only diagnostics errors
-    }
-  }, [orderResult]);
-
   // Stable session key: includes user/listing/dates to identify unique checkout session
+  // MUST be declared before any effects that use it in deps
   const sessionKey = useMemo(() => {
     return buildCheckoutSessionKey({
       userId,
@@ -764,6 +749,39 @@ const CheckoutPageWithPayment = props => {
       endISO: orderResult.params?.bookingDates?.end,
     });
   }, [userId, anonymousId, orderResult.params]);
+
+  // Dev-only diagnostics deferred to effect to avoid TDZ in minified builds
+  // Consolidated logging with primitive deps only (no complex objects)
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    try {
+      // Log orderParams validity
+      if (!orderResult?.ok) {
+        console.debug('[Checkout] orderParams invalid:', orderResult?.reason, orderResult);
+      } else {
+        const p = orderResult.params || {};
+        const lid = p.listingId;
+        const bookingDates = p.bookingDates;
+        console.debug('[Sherbrt] 🔍 Checkout render', {
+          lid,
+          hasBookingDates: Boolean(bookingDates && bookingDates.start && bookingDates.end),
+          ok: orderResult.ok,
+        });
+      }
+      
+      // Log normalized dates
+      if (startISO && endISO) {
+        console.debug('[Checkout] Normalized dates:', { startISO, endISO });
+      }
+      
+      // Log session key
+      if (sessionKey) {
+        console.debug('[Checkout] Session key:', sessionKey);
+      }
+    } catch (_) {
+      // swallow dev-only diagnostics errors - never block component
+    }
+  }, [sessionKey, !!orderResult?.ok, startISO, endISO]);
 
   // Kill-switch: Allow disabling auto-initiation via env var
   // Set REACT_APP_INITIATE_ON_MOUNT_ENABLED=false in .env to disable auto-initiation

@@ -22,7 +22,9 @@ import { savePaymentMethod } from '../../ducks/paymentMethods.duck';
 // Import from shared to break circular dependency
 import { selectHasFetchedCurrentUser } from './shared/selectors';
 
-import { NamedRedirect, Page } from '../../components';
+// Direct imports to avoid circular deps via barrel
+import NamedRedirect from '../../components/NamedRedirect/NamedRedirect';
+import Page from '../../components/Page/Page';
 import { storeData, clearData, handlePageData } from './CheckoutPageSessionHelpers';
 
 import {
