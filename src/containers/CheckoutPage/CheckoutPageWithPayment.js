@@ -42,7 +42,7 @@ import {
   normalizeISO, 
   buildOrderParams, 
   normalizeBookingDates 
-} from './shared/orderParams';
+} from './shared/orderParamsCore';
 import { buildCheckoutSessionKey } from './shared/sessionKey';
 
 // Stripe PaymentIntent statuses, where user actions are already completed
