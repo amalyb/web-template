@@ -729,20 +729,27 @@ const CheckoutPageWithPayment = props => {
     });
   }, [pageDataListing, listingIdNormalized, startISO, endISO, pageData]);
 
-  // Debug logging for invalid params (dev only)
-  if (!orderResult.ok && process.env.NODE_ENV !== 'production') {
-    console.debug('[Checkout] orderParams invalid:', orderResult.reason, orderResult);
-  }
-
-  // Debug: Track component renders with valid data
-  if (process.env.NODE_ENV !== 'production') {
-    const { listingId: lid, bookingDates } = orderResult.params || {};
-    console.debug('[Sherbrt] 🔍 Checkout render', {
-      listingId: lid || 'none',
-      startISO: bookingDates?.start || 'none',
-      endISO: bookingDates?.end || 'none',
-    });
-  }
+  // Dev-only diagnostics deferred to effect to avoid TDZ in minified builds
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    if (!orderResult || typeof orderResult !== 'object') return;
+    try {
+      if (!orderResult.ok) {
+        console.debug('[Checkout] orderParams invalid:', orderResult.reason, orderResult);
+        return;
+      }
+      const p = orderResult.params || {};
+      const lid = p.listingId;
+      const bookingDates = p.bookingDates;
+      console.debug('[Sherbrt] 🔍 Checkout render', {
+        lid,
+        hasBookingDates: Boolean(bookingDates && bookingDates.start && bookingDates.end),
+        ok: orderResult.ok,
+      });
+    } catch (_) {
+      // swallow dev-only diagnostics errors
+    }
+  }, [orderResult]);
 
   // Stable session key: includes user/listing/dates to identify unique checkout session
   const sessionKey = useMemo(() => {
