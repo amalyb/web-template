@@ -237,6 +237,16 @@ export const initiateOrder = (
 ) => (dispatch, getState, sdk) => {
   dispatch(initiateOrderRequest());
 
+  // Guard: Check if user is authenticated for privileged transitions
+  const state = getState();
+  const currentUser = state.user?.currentUser;
+  if (isPrivilegedTransition && !currentUser?.id) {
+    const error = new Error('Cannot initiate privileged transaction - user not authenticated');
+    error.status = 401;
+    console.warn('[Sherbrt] Attempted privileged transition without authentication');
+    return Promise.reject(error);
+  }
+
   // Log transactionId before determining flow
   console.log('initiateOrder: transactionId =', transactionId);
 
@@ -313,6 +323,15 @@ export const initiateOrder = (
   };
 
   const handleError = e => {
+    // Enhanced error handling for 401 unauthorized
+    if (e.status === 401) {
+      console.error('[Sherbrt] 401 Unauthorized in initiateOrder - user may need to log in again');
+      log.error(e, 'initiate-order-unauthorized', {
+        endpoint: e.endpoint || 'unknown',
+        message: 'User authentication failed or session expired',
+      });
+    }
+    
     dispatch(initiateOrderError(storableError(e)));
     const transactionIdMaybe = transactionId ? { transactionId: transactionId.uuid } : {};
     log.error(e, 'initiate-order-failed', {
@@ -499,6 +518,16 @@ export const speculateTransaction = (
 ) => (dispatch, getState, sdk) => {
   dispatch(speculateTransactionRequest());
 
+  // Guard: Check if user is authenticated for privileged transitions
+  const state = getState();
+  const currentUser = state.user?.currentUser;
+  if (isPrivilegedTransition && !currentUser?.id) {
+    const error = new Error('Cannot speculate privileged transaction - user not authenticated');
+    error.status = 401;
+    console.warn('[Sherbrt] Attempted privileged speculation without authentication');
+    return Promise.reject(error);
+  }
+
   // Log transactionId before determining flow
   console.log('speculateTransaction: transactionId =', transactionId);
 
@@ -547,6 +576,15 @@ export const speculateTransaction = (
   };
 
   const handleError = e => {
+    // Enhanced error handling for 401 unauthorized
+    if (e.status === 401) {
+      console.error('[Sherbrt] 401 Unauthorized in speculateTransaction - user may need to log in again');
+      log.error(e, 'speculate-transaction-unauthorized', {
+        endpoint: e.endpoint || 'unknown',
+        message: 'User authentication failed or session expired',
+      });
+    }
+    
     log.error(e, 'speculate-transaction-failed', {
       listingId: transitionParams.listingId?.uuid || transitionParams.listingId,
       ...quantityMaybe,
@@ -685,6 +723,15 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
       dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
     }
   } catch (e) {
+    // Enhanced error handling for 401 unauthorized
+    if (e.status === 401) {
+      console.error('[Sherbrt] 401 Unauthorized in initiatePrivilegedSpeculativeTransaction - user may need to log in again');
+      log.error(e, 'init-priv-spec-tx-unauthorized', {
+        endpoint: e.endpoint || 'unknown',
+        message: 'User authentication failed during speculative transaction',
+      });
+    }
+    
     console.error('[specTx] error', e);
     dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
   }

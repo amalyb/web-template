@@ -73,11 +73,27 @@ const request = (path, options = {}) => {
     const contentType = contentTypeHeader ? contentTypeHeader.split(';')[0] : null;
 
     if (res.status >= 400) {
+      // Special handling for 401 Unauthorized
+      if (res.status === 401) {
+        console.warn('[Sherbrt] 401 response from', path, '- session may be expired');
+      }
+      
       return res.json().then(data => {
         let e = new Error();
         e = Object.assign(e, data);
+        e.status = res.status; // Ensure status is preserved
+        e.endpoint = path; // Track which endpoint failed
 
         throw e;
+      }).catch(jsonError => {
+        // If response is not JSON, create a generic error
+        if (jsonError instanceof SyntaxError) {
+          let e = new Error(`HTTP ${res.status}: ${res.statusText}`);
+          e.status = res.status;
+          e.endpoint = path;
+          throw e;
+        }
+        throw jsonError;
       });
     }
     if (contentType === 'application/transit+json') {

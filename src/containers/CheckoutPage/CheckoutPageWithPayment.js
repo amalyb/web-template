@@ -668,6 +668,7 @@ const CheckoutPageWithPayment = props => {
     if (json !== prev) setFormValues(next || {});
   }, [formValues]);
 
+  // Extract all props at the top to avoid any TDZ issues
   const {
     scrollingDisabled,
     speculateTransactionError,
@@ -687,6 +688,7 @@ const CheckoutPageWithPayment = props => {
     listingTitle,
     title,
     config,
+    onInitiatePrivilegedSpeculativeTransaction, // Extract callback here to avoid TDZ
   } = props;
 
   // Normalize booking dates from pageData (handles multiple shapes)
@@ -758,9 +760,7 @@ const CheckoutPageWithPayment = props => {
   const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
 
   // Single initiation effect with ref-based guard
-  // Extract callback before useEffect to avoid TDZ issues
-  const onInitiatePrivilegedSpeculativeTransaction = props.onInitiatePrivilegedSpeculativeTransaction;
-  
+  // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
   useEffect(() => {
     // Never initiate with bad params
     if (!orderResult.ok) {

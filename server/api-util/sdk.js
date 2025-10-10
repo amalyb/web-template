@@ -123,6 +123,16 @@ exports.getSdk = (req, res) => {
 exports.getTrustedSdk = req => {
   const userToken = getUserToken(req);
 
+  // Guard: Check if user token exists
+  if (!userToken) {
+    const error = new Error('User token is missing - user may not be logged in');
+    error.status = 401;
+    error.statusText = 'Unauthorized';
+    error.data = { message: 'User authentication token is missing' };
+    log.error(error, 'get-trusted-sdk-no-token');
+    return Promise.reject(error);
+  }
+
   // Initiate an SDK instance for token exchange
   const sdk = sharetribeSdk.createInstance({
     transitVerbose: TRANSIT_VERBOSE,
@@ -135,27 +145,43 @@ exports.getTrustedSdk = req => {
     ...baseUrlMaybe,
   });
 
-  // Perform a token exchange
-  return sdk.exchangeToken().then(response => {
-    // Setup a trusted sdk with the token we got from the exchange:
-    const trustedToken = response.data;
+  // Perform a token exchange with error handling
+  return sdk.exchangeToken()
+    .then(response => {
+      // Setup a trusted sdk with the token we got from the exchange:
+      const trustedToken = response.data;
 
-    return sharetribeSdk.createInstance({
-      transitVerbose: TRANSIT_VERBOSE,
+      return sharetribeSdk.createInstance({
+        transitVerbose: TRANSIT_VERBOSE,
 
-      // We don't need CLIENT_SECRET here anymore
-      clientId: CLIENT_ID,
+        // We don't need CLIENT_SECRET here anymore
+        clientId: CLIENT_ID,
 
-      // Important! Do not use a cookieTokenStore here but a memoryStore
-      // instead so that we don't leak the token back to browser client.
-      tokenStore: memoryStore(trustedToken),
+        // Important! Do not use a cookieTokenStore here but a memoryStore
+        // instead so that we don't leak the token back to browser client.
+        tokenStore: memoryStore(trustedToken),
 
-      httpAgent,
-      httpsAgent,
-      typeHandlers,
-      ...baseUrlMaybe,
+        httpAgent,
+        httpsAgent,
+        typeHandlers,
+        ...baseUrlMaybe,
+      });
+    })
+    .catch(error => {
+      // Enhanced error logging for token exchange failures
+      if (error.status === 401) {
+        log.error(error, 'token-exchange-unauthorized', {
+          message: 'User token expired or invalid',
+          hasUserToken: !!userToken,
+        });
+      } else {
+        log.error(error, 'token-exchange-failed', {
+          status: error.status,
+          hasUserToken: !!userToken,
+        });
+      }
+      throw error;
     });
-  });
 };
 
 // Fetch commission asset with 'latest' alias.
