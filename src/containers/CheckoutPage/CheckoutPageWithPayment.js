@@ -818,12 +818,12 @@ const CheckoutPageWithPayment = props => {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
     }
 
-    // TDZ-safe function invocation: extract from props at runtime to prevent minifier hoisting issues
-    const initiateFn = props && props.onInitiatePrivilegedSpeculativeTransaction;
-    if (typeof initiateFn === 'function' && hasUser && hasToken && orderResult?.ok) {
-      initiateFn(orderResult.params);
+    // Use the already-destructured prop with stable, primitive dependencies
+    if (typeof onInitiatePrivilegedSpeculativeTransaction === 'function'
+        && hasUser && hasToken && orderResult?.ok) {
+      onInitiatePrivilegedSpeculativeTransaction(orderResult.params);
     }
-  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, currentUser, props]);
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, onInitiatePrivilegedSpeculativeTransaction]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
