@@ -680,6 +680,7 @@ const CheckoutPageWithPayment = props => {
   const [formValues, setFormValues] = useState({});
   const [formValid, setFormValid] = useState(false);
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
+  const [tokenTick, setTokenTick] = useState(0); // Force re-render when token appears via storage event
   const stripeReady = !!stripeElementMounted;
 
   // ✅ STEP 3: Initialize all refs
@@ -788,10 +789,29 @@ const CheckoutPageWithPayment = props => {
   // This is an emergency flag to quickly stop the initiation if issues occur in production
   const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
 
+  // Keep this lightweight boolean computed each render:
+  const hasToken = Boolean(
+    window.localStorage?.getItem('st-auth') ||
+    window.sessionStorage?.getItem('st-auth') ||
+    document.cookie?.includes('st=')
+  );
+
   // Update the ref whenever the handler changes
   useEffect(() => {
     initiateRef.current = onInitiatePrivilegedSpeculativeTransaction;
   }, [onInitiatePrivilegedSpeculativeTransaction]);
+
+  // Listen for storage events to force re-render when token appears (e.g., from login in another tab)
+  useEffect(() => {
+    const onStorage = e => {
+      if (e.key === 'st-auth') {
+        // Tiny state bump to force re-render and re-check hasToken
+        setTokenTick(t => t + 1);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
   // Single initiation effect with ref-based guard
   // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
@@ -805,15 +825,10 @@ const CheckoutPageWithPayment = props => {
       return;
     }
 
-    // ✅ Hard-gate #2: Token must exist (check all common locations)
-    const hasToken = Boolean(
-      window.localStorage?.getItem('st-auth') || 
-      window.sessionStorage?.getItem('st-auth') || 
-      document.cookie?.includes('st=')
-    );
+    // ✅ Hard-gate #2: Token must exist
     if (!hasToken) {
       if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ⛔ Skipping initiate - no auth token found');
+        console.debug('[Checkout] ⛔ Skipping initiate - no auth token found (will retry when token appears)');
       }
       return;
     }
@@ -862,7 +877,20 @@ const CheckoutPageWithPayment = props => {
     if (typeof fn === 'function') {
       fn(orderResult.params);
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id]); // ← no handler in deps
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, hasToken]); // ← hasToken added so effect re-runs when token appears
+
+  // Verify the speculative transaction state lands in props
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[TX_STATE]', {
+        speculativeTransactionId: props?.speculativeTransactionId,
+        hasSpeculativeTx: !!props?.speculativeTransactionId,
+        speculativeInProgress,
+        hasToken,
+        hasUser: !!currentUser?.id,
+      });
+    }
+  }, [props?.speculativeTransactionId, speculativeInProgress, hasToken, currentUser?.id]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
