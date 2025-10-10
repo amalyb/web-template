@@ -552,7 +552,11 @@ export const speculateTransaction = (
 
   const { deliveryMethod, quantity, bookingDates, ...otherOrderParams } = orderParams;
   const quantityMaybe = quantity ? { stockReservationQuantity: quantity } : {};
-  const bookingParamsMaybe = bookingDates || {};
+  
+  // Transform bookingDates structure: { start, end } → bookingStart, bookingEnd
+  const bookingParamsMaybe = bookingDates?.start && bookingDates?.end 
+    ? { bookingStart: bookingDates.start, bookingEnd: bookingDates.end }
+    : {};
 
   // Parameters only for client app's server
   const orderData = deliveryMethod ? { deliveryMethod } : {};
@@ -564,6 +568,14 @@ export const speculateTransaction = (
     ...otherOrderParams,
     cardToken: 'CheckoutPage_speculative_card_token',
   };
+  
+  // Log the actual params being sent to the API
+  console.log('[speculateTransaction] transitionParams:', {
+    listingId: transitionParams.listingId,
+    bookingStart: transitionParams.bookingStart,
+    bookingEnd: transitionParams.bookingEnd,
+    hasProtectedData: !!transitionParams.protectedData,
+  });
 
   const bodyParams = isTransition
     ? {
@@ -710,6 +722,8 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
   const state = getState();
   const currentUser = state.user?.currentUser;
   
+  console.log('[speculate] dispatching', params);
+  
   if (!currentUser?.id) {
     const authError = new Error('Cannot initiate privileged speculative transaction - user not authenticated');
     authError.status = 401;
@@ -763,9 +777,11 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     const tx = updatedState.speculatedTransaction;
     
     if (tx) {
+      console.log('[speculate] success', tx?.id?.uuid || tx?.id);
       dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
     }
   } catch (e) {
+    console.error('[speculate] failed', e);
     // Enhanced error handling for 401 unauthorized
     if (e.status === 401) {
       console.error('[Sherbrt] 401 Unauthorized in initiatePrivilegedSpeculativeTransaction - user may need to log in again');

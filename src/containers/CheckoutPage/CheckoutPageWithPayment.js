@@ -825,7 +825,7 @@ const CheckoutPageWithPayment = props => {
   // ✅ Single initiation effect with ref-based guard
   // This triggers the speculative transaction AS SOON AS orderData is present
   // The orderResult.ok gate ensures we have valid booking dates from orderData
-  // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
+  // Note: Token/Stripe gates REMOVED - speculation fires immediately to get PaymentIntent
   useEffect(() => {
     // Get txProcess in this scope for gate checking
     const pageDataListing = pageData?.listing;
@@ -841,17 +841,21 @@ const CheckoutPageWithPayment = props => {
     const hasProcess = Boolean(txProcessForGate);
 
     // Check all gates - orderResult.ok means we have valid orderData with booking dates
-    const allGatesPassed = hasToken && hasUser && orderResult?.ok && !hasTxId && hasProcess;
+    // ✅ REMOVED hasToken gate - speculate fires immediately after orderData exists
+    const allGatesPassed = hasUser && orderResult?.ok && !hasTxId && hasProcess;
+
+    // Log orderData and listingId for debugging
+    console.log('[CheckoutWithPayment] orderData from selector:', orderResult.params);
+    console.log('[CheckoutWithPayment] listingId:', listingIdNormalized);
 
     // Log the exact gate state
     if (allGatesPassed) {
-      console.debug('[INITIATE_TX] calling privileged speculation', { 
-        sessionKey, 
-        orderParams: orderResult.value 
+      console.log('[Checkout] triggering speculate…', { 
+        listingId: listingIdNormalized, 
+        orderData: orderResult.params 
       });
     } else {
       console.debug('[INIT_GATES]', { 
-        hasToken, 
         hasUser: !!currentUser?.id, 
         orderOk: !!orderResult?.ok, 
         hasTxId, 
@@ -864,14 +868,6 @@ const CheckoutPageWithPayment = props => {
     if (!hasUser) {
       if (process.env.NODE_ENV !== 'production') {
         console.debug('[Checkout] ⛔ Skipping initiate - user not authenticated yet');
-      }
-      return;
-    }
-
-    // ✅ Hard-gate #2: Token must exist
-    if (!hasToken) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ⛔ Skipping initiate - no auth token found (will retry when token appears)');
       }
       return;
     }
@@ -935,7 +931,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[INITIATE_TX] FAILED', err);
         });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, hasToken, props?.speculativeTransactionId, processName]); // Added txId and processName deps
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized]); // Removed hasToken dep, added listingIdNormalized
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
@@ -944,11 +940,30 @@ const CheckoutPageWithPayment = props => {
         hasTxId: !!props?.speculativeTransactionId,
         txId: props?.speculativeTransactionId,
         speculativeInProgress,
-        hasToken,
         hasUser: !!currentUser?.id,
       });
     }
-  }, [props?.speculativeTransactionId, speculativeInProgress, hasToken, currentUser?.id]);
+  }, [props?.speculativeTransactionId, speculativeInProgress, currentUser?.id]);
+
+  // Retry speculation handler
+  const handleRetrySpeculation = useCallback(() => {
+    console.log('[Checkout] Retrying speculation...');
+    // Reset the guard to allow re-triggering
+    initiatedSessionRef.current = false;
+    lastSessionKeyRef.current = null;
+    
+    // Call the speculation handler
+    const fn = initiateRef.current;
+    if (typeof fn === 'function' && orderResult?.ok) {
+      fn(orderResult.params)
+        .then(res => {
+          console.log('[Checkout] Retry succeeded', { id: res?.id || res?.payload?.id });
+        })
+        .catch(err => {
+          console.error('[Checkout] Retry failed', err);
+        });
+    }
+  }, [orderResult]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
@@ -1070,7 +1085,8 @@ const CheckoutPageWithPayment = props => {
     isPaymentExpired,
     retrievePaymentIntentError,
     speculateTransactionError,
-    listingLink
+    listingLink,
+    handleRetrySpeculation
   );
 
   const txTransitions = existingTransaction?.attributes?.transitions || [];
@@ -1176,6 +1192,24 @@ const CheckoutPageWithPayment = props => {
             {errorMessages.speculateErrorMessage}
             {errorMessages.retrievePaymentIntentErrorMessage}
             {errorMessages.paymentExpiredMessage}
+            
+            {/* Show loading indicator while speculation is in progress */}
+            {speculativeInProgress && !props.speculativeTransactionId && (
+              <div style={{ 
+                padding: '16px', 
+                marginBottom: '16px', 
+                backgroundColor: '#f0f4f8', 
+                borderRadius: '4px',
+                textAlign: 'center'
+              }}>
+                <p style={{ margin: 0, color: '#4A5568' }}>
+                  <FormattedMessage 
+                    id="CheckoutPage.initializingTransaction" 
+                    defaultMessage="Initializing transaction..." 
+                  />
+                </p>
+              </div>
+            )}
 
             {showPaymentForm ? (
               <>
