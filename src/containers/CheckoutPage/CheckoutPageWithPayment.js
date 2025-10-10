@@ -825,8 +825,12 @@ const CheckoutPageWithPayment = props => {
       });
     }
 
-    onInitiatePrivilegedSpeculativeTransaction?.(orderResult.params);
-  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, onInitiatePrivilegedSpeculativeTransaction, currentUser]);
+    // TDZ-safe function invocation: extract from props at runtime to prevent minifier hoisting issues
+    const initiateFn = props?.onInitiatePrivilegedSpeculativeTransaction;
+    if (typeof initiateFn === 'function') {
+      initiateFn(orderResult.params);
+    }
+  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, currentUser, props]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
