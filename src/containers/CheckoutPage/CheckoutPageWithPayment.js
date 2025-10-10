@@ -642,33 +642,8 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
  * @returns {JSX.Element}
  */
 const CheckoutPageWithPayment = props => {
-  const [submitting, setSubmitting] = useState(false);
-  // Initialized stripe library is saved to state - if it's needed at some point here too.
-  const [stripe, setStripe] = useState(null);
-  // Payment element completion state
-  const [paymentElementComplete, setPaymentElementComplete] = useState(false);
-  const [formValues, setFormValues] = useState({});
-  const [formValid, setFormValid] = useState(false);
-  const [stripeElementMounted, setStripeElementMounted] = useState(false);
-  const stripeReady = !!stripeElementMounted;
-
-  // NOTE: declared above first use to avoid TDZ
-  // Ref to prevent speculative transaction loops
-  const prevSpecKeyRef = useRef(null);
-  // Ref to throttle disabled gates logging
-  const lastReasonRef = useRef(null);
-  // Guard ref to track which session has been initiated (includes sessionKey to allow reset on new session)
-  const initiatedSessionRef = useRef(null);
-  // Track last session key to detect changes
-  const lastSessionKeyRef = useRef(null);
-
-  const handleFormValuesChange = useCallback((next) => {
-    const prev = JSON.stringify(formValues || {});
-    const json = JSON.stringify(next || {});
-    if (json !== prev) setFormValues(next || {});
-  }, [formValues]);
-
-  // Extract all props at the top to avoid any TDZ issues
+  // ✅ STEP 1: Extract ALL props at the very top before any hooks or state
+  // This prevents TDZ errors in production builds where minification can reorder code
   const {
     scrollingDisabled,
     speculateTransactionError,
@@ -690,6 +665,28 @@ const CheckoutPageWithPayment = props => {
     config,
     onInitiatePrivilegedSpeculativeTransaction, // Extract callback here to avoid TDZ
   } = props;
+
+  // ✅ STEP 2: Initialize all state hooks
+  const [submitting, setSubmitting] = useState(false);
+  const [stripe, setStripe] = useState(null);
+  const [paymentElementComplete, setPaymentElementComplete] = useState(false);
+  const [formValues, setFormValues] = useState({});
+  const [formValid, setFormValid] = useState(false);
+  const [stripeElementMounted, setStripeElementMounted] = useState(false);
+  const stripeReady = !!stripeElementMounted;
+
+  // ✅ STEP 3: Initialize all refs
+  const prevSpecKeyRef = useRef(null);
+  const lastReasonRef = useRef(null);
+  const initiatedSessionRef = useRef(null);
+  const lastSessionKeyRef = useRef(null);
+
+  // ✅ STEP 4: Define callbacks
+  const handleFormValuesChange = useCallback((next) => {
+    const prev = JSON.stringify(formValues || {});
+    const json = JSON.stringify(next || {});
+    if (json !== prev) setFormValues(next || {});
+  }, [formValues]);
 
   // Normalize booking dates from pageData (handles multiple shapes)
   const { startISO, endISO } = useMemo(() => normalizeBookingDates(pageData), [pageData]);
@@ -762,6 +759,21 @@ const CheckoutPageWithPayment = props => {
   // Single initiation effect with ref-based guard
   // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
   useEffect(() => {
+    // ✅ AUTH GUARD: Verify user is authenticated before attempting privileged transaction
+    // This prevents 401 errors during checkout initiation
+    if (!currentUser?.id) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] ⛔ Skipping initiate - user not authenticated yet', {
+          hasCurrentUser: !!currentUser,
+          hasUserId: !!currentUser?.id,
+        });
+      }
+      return;
+    }
+
+    // Log auth ready state
+    console.warn('[Checkout] Auth ready?', !!currentUser, 'OrderData:', orderResult.params);
+
     // Never initiate with bad params
     if (!orderResult.ok) {
       if (process.env.NODE_ENV !== 'production') {
@@ -791,11 +803,12 @@ const CheckoutPageWithPayment = props => {
         listingId,
         startISO: bookingDates?.start,
         endISO: bookingDates?.end,
+        currentUser: currentUser?.id?.uuid,
       });
     }
 
     onInitiatePrivilegedSpeculativeTransaction?.(orderResult.params);
-  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, onInitiatePrivilegedSpeculativeTransaction]);
+  }, [sessionKey, orderResult.ok, orderResult.params, orderResult.reason, onInitiatePrivilegedSpeculativeTransaction, currentUser]);
 
   // Throttled logging for disabled gates
   useEffect(() => {

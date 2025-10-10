@@ -690,15 +690,36 @@ export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }
  * This prevents duplicate API calls and the resulting render loop.
  */
 export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async (dispatch, getState, sdk) => {
+  // ✅ AUTH GUARD: Verify user is authenticated before privileged speculation
+  const state = getState();
+  const currentUser = state.user?.currentUser;
+  
+  if (!currentUser?.id) {
+    const authError = new Error('Cannot initiate privileged speculative transaction - user not authenticated');
+    authError.status = 401;
+    console.warn('[Sherbrt] ⛔ Attempted privileged speculation without authentication', {
+      hasUser: !!currentUser,
+      hasUserId: !!currentUser?.id,
+    });
+    // Don't throw - just skip silently to prevent blocking the UI
+    return;
+  }
+
+  // Log auth state before proceeding
+  console.log('[Sherbrt] ✅ Auth verified for speculative transaction', {
+    userId: currentUser.id.uuid,
+    listingId: params.listingId,
+  });
+
   const key = makeSpeculationKey({
     listingId: params.listingId,
     bookingStart: params.bookingDates?.bookingStart || params.bookingStart,
     bookingEnd: params.bookingDates?.bookingEnd || params.bookingEnd,
     unitType: params.protectedData?.unitType,
   });
-  const state = getState().CheckoutPage || {};
-  if (state.lastSpeculationKey === key && state.speculativeTransactionId) {
-    console.info('[specTx] deduped key:', key, 'tx:', state.speculativeTransactionId);
+  const checkoutState = getState().CheckoutPage || {};
+  if (checkoutState.lastSpeculationKey === key && checkoutState.speculativeTransactionId) {
+    console.info('[specTx] deduped key:', key, 'tx:', checkoutState.speculativeTransactionId);
     return;
   }
   dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST, payload: { key }});
@@ -729,6 +750,7 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
       log.error(e, 'init-priv-spec-tx-unauthorized', {
         endpoint: e.endpoint || 'unknown',
         message: 'User authentication failed during speculative transaction',
+        userId: currentUser?.id?.uuid || 'unknown',
       });
     }
     
