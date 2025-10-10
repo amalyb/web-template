@@ -112,6 +112,7 @@
     "postbuild": "node scripts/check-built-index.js && node scripts/check-icons.js",
     "build-web": "sharetribe-scripts build",
     "build-server": "sharetribe-scripts build-server",
+    "smoke:chunks": "node scripts/smoke-chunk-integrity.js",
     "format": "prettier --write '**/*.{js,css}'",
     "format-ci": "prettier --list-different '**/*.{js,css}'",
     "format-docs": "prettier --write '**/*.md'",

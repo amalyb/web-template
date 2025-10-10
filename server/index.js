@@ -274,7 +274,40 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.use(compression());
-// Serve static assets from build directory
+
+// ============================================================================
+// CRITICAL: Serve /static/** assets BEFORE general static middleware
+// This ensures code-split chunks are NEVER rewritten to index.html
+// ============================================================================
+app.use('/static', express.static(path.join(buildDir, 'static'), {
+  immutable: true,
+  maxAge: '1y',
+  fallthrough: false, // Return 404 instead of falling through to SSR
+  setHeaders: (res, filePath) => {
+    // Enforce correct MIME types to prevent text/html from being served
+    if (filePath.endsWith('.js')) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+    } else if (filePath.endsWith('.css')) {
+      res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    } else if (filePath.endsWith('.json')) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+  },
+}));
+
+// Serve critical top-level assets with proper cache headers
+app.get(['/asset-manifest.json', '/manifest.json', '/loadable-stats.json'], (req, res, next) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const filePath = path.join(buildDir, req.path);
+  if (fs.existsSync(filePath)) {
+    res.sendFile(filePath);
+  } else {
+    next();
+  }
+});
+
+// Serve other static assets from build directory (favicon, etc.)
 app.use(express.static(buildDir, { index: false }));
 app.use(cookieParser());
 
