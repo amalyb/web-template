@@ -243,25 +243,18 @@ const mapStateToProps = state => {
   };
 };
 
-const mapDispatchToProps = dispatch => ({
-  dispatch,
-  fetchSpeculatedTransaction: (params, processAlias, txId, transitionName, isPrivileged) =>
-    dispatch(speculateTransaction(params, processAlias, txId, transitionName, isPrivileged)),
-  fetchStripeCustomer: () => dispatch(stripeCustomer()),
-  onInquiryWithoutPayment: (params, processAlias, transitionName) =>
-    dispatch(initiateInquiryWithoutPayment(params, processAlias, transitionName)),
-  onInitiateOrder: (params, processAlias, transactionId, transitionName, isPrivileged) =>
-    dispatch(initiateOrder(params, processAlias, transactionId, transitionName, isPrivileged)),
-  onRetrievePaymentIntent: params => dispatch(retrievePaymentIntent(params)),
-  onConfirmCardPayment: params => dispatch(confirmCardPayment(params)),
-  onConfirmPayment: (transactionId, transitionName, transitionParams) =>
-    dispatch(confirmPayment(transactionId, transitionName, transitionParams)),
-  onSendMessage: params => dispatch(sendMessage(params)),
-  onSavePaymentMethod: (stripeCustomer, stripePaymentMethodId) =>
-    dispatch(savePaymentMethod(stripeCustomer, stripePaymentMethodId)),
-  onInitiatePrivilegedSpeculativeTransaction: params =>
-    dispatch(initiatePrivilegedSpeculativeTransactionIfNeeded(params)),
-});
+const mapDispatchToProps = {
+  fetchSpeculatedTransaction: speculateTransaction,
+  fetchStripeCustomer: stripeCustomer,
+  onInquiryWithoutPayment: initiateInquiryWithoutPayment,
+  onInitiateOrder: initiateOrder,
+  onRetrievePaymentIntent: retrievePaymentIntent,
+  onConfirmCardPayment: confirmCardPayment,
+  onConfirmPayment: confirmPayment,
+  onSendMessage: sendMessage,
+  onSavePaymentMethod: savePaymentMethod,
+  onInitiatePrivilegedSpeculativeTransaction: initiatePrivilegedSpeculativeTransactionIfNeeded,
+};
 
 const CheckoutPage = compose(
   connect(

@@ -684,6 +684,9 @@ const CheckoutPageWithPayment = props => {
   const lastReasonRef = useRef(null);
   const initiatedSessionRef = useRef(null);
   const lastSessionKeyRef = useRef(null);
+  
+  // Keep a stable ref to the handler so effect doesn't depend on its identity
+  const initiateRef = useRef(onInitiatePrivilegedSpeculativeTransaction);
 
   // ✅ STEP 4: Define callbacks
   const handleFormValuesChange = useCallback((next) => {
@@ -767,6 +770,11 @@ const CheckoutPageWithPayment = props => {
   // This is an emergency flag to quickly stop the initiation if issues occur in production
   const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
 
+  // Update the ref whenever the handler changes
+  useEffect(() => {
+    initiateRef.current = onInitiatePrivilegedSpeculativeTransaction;
+  }, [onInitiatePrivilegedSpeculativeTransaction]);
+
   // Single initiation effect with ref-based guard
   // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
   useEffect(() => {
@@ -818,12 +826,12 @@ const CheckoutPageWithPayment = props => {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
     }
 
-    // Use the already-destructured prop with stable, primitive dependencies
-    if (typeof onInitiatePrivilegedSpeculativeTransaction === 'function'
-        && hasUser && hasToken && orderResult?.ok) {
-      onInitiatePrivilegedSpeculativeTransaction(orderResult.params);
+    // Call the latest handler via ref (no identity in deps)
+    const fn = initiateRef.current;
+    if (typeof fn === 'function') {
+      fn(orderResult.params);
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, onInitiatePrivilegedSpeculativeTransaction]);
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id]); // ← no handler in deps
 
   // Throttled logging for disabled gates
   useEffect(() => {
