@@ -4,10 +4,12 @@ import { connect } from 'react-redux';
 import { useHistory } from 'react-router-dom';
 import { useIntl } from 'react-intl';
 import { useSelector } from 'react-redux';
+import Decimal from 'decimal.js';
 
 import { useConfiguration } from '../../context/configurationContext';
 import { useRouteConfiguration } from '../../context/routeConfigurationContext';
 import { userDisplayNameAsString } from '../../util/data';
+import { types as sdkTypes } from '../../util/sdkLoader';
 import {
   NO_ACCESS_PAGE_INITIATE_TRANSACTIONS,
   NO_ACCESS_PAGE_USER_PENDING_APPROVAL,
@@ -87,8 +89,43 @@ const EnhancedCheckoutPage = props => {
       fetchSpeculatedTransaction,
       fetchStripeCustomer,
     } = props;
-    const initialData = { orderData, listing, transaction };
-    console.log('🚨 orderData in CheckoutPage.js:', orderData);
+    
+    // ✅ HYDRATE orderData from sessionStorage if missing from location.state
+    const ORDER_KEY = 'sherbrt.checkout.orderData.v1';
+    let hydratedOrderData = orderData;
+    let hydratedListing = listing;
+    let hydratedTransaction = transaction;
+    
+    if (!orderData || !listing) {
+      try {
+        const storedData = sessionStorage.getItem(ORDER_KEY);
+        if (storedData) {
+          // Use proper SDK deserialization to handle UUID, Money, and Decimal types
+          const reviver = (k, v) => {
+            if (v && typeof v === 'object' && v._serializedType === 'SerializableDate') {
+              return new Date(v.date);
+            } else if (v && typeof v === 'object' && v._serializedType === 'SerializableDecimal') {
+              return new Decimal(v.decimal);
+            }
+            return sdkTypes.reviver(k, v);
+          };
+          const parsed = JSON.parse(storedData, reviver);
+          hydratedOrderData = hydratedOrderData || parsed.orderData;
+          hydratedListing = hydratedListing || parsed.listing;
+          hydratedTransaction = hydratedTransaction || parsed.transaction;
+          console.log('✅ Hydrated orderData from sessionStorage:', ORDER_KEY);
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to hydrate orderData from sessionStorage:', e);
+      }
+    }
+    
+    const initialData = { 
+      orderData: hydratedOrderData, 
+      listing: hydratedListing, 
+      transaction: hydratedTransaction 
+    };
+    console.log('🚨 orderData in CheckoutPage.js:', hydratedOrderData);
     const data = handlePageData(initialData, STORAGE_KEY, history);
     setPageData(data || {});
     setIsDataLoaded(true);

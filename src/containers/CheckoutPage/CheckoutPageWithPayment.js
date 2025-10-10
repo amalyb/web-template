@@ -822,7 +822,9 @@ const CheckoutPageWithPayment = props => {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  // Single initiation effect with ref-based guard
+  // ✅ Single initiation effect with ref-based guard
+  // This triggers the speculative transaction AS SOON AS orderData is present
+  // The orderResult.ok gate ensures we have valid booking dates from orderData
   // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
   useEffect(() => {
     // Get txProcess in this scope for gate checking
@@ -838,7 +840,7 @@ const CheckoutPageWithPayment = props => {
     const hasTxId = Boolean(props?.speculativeTransactionId);
     const hasProcess = Boolean(txProcessForGate);
 
-    // Check all gates
+    // Check all gates - orderResult.ok means we have valid orderData with booking dates
     const allGatesPassed = hasToken && hasUser && orderResult?.ok && !hasTxId && hasProcess;
 
     // Log the exact gate state
