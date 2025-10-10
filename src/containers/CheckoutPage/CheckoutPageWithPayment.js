@@ -844,6 +844,18 @@ const CheckoutPageWithPayment = props => {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
     }
 
+    // Runtime gate diagnostics - logged before initiation
+    console.debug('[INIT_GATES]', {
+      hasUser: !!currentUser?.id,
+      hasToken: Boolean(
+        window.localStorage?.getItem('st-auth') ||
+        window.sessionStorage?.getItem('st-auth') ||
+        document.cookie?.includes('st=')
+      ),
+      orderOk: !!orderResult?.ok,
+      sessionKey,
+    });
+
     // Call the latest handler via ref (no identity in deps)
     const fn = initiateRef.current;
     if (typeof fn === 'function') {
@@ -1077,6 +1089,16 @@ const CheckoutPageWithPayment = props => {
 
                   const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
                   const submitDisabled = !!disabledReason;
+
+                  // Runtime gate diagnostics for submit button
+                  console.debug('[SUBMIT_GATES]', {
+                    hasSpeculativeTx: hasTxId,
+                    hasValidationErrors: !formValid,
+                    isStripeReady: stripeReady,
+                    submitInProgress: submitting,
+                    orderOk: !!orderResult?.ok,
+                    txId: props?.speculativeTransactionId,
+                  });
 
                   return (
                     <>
