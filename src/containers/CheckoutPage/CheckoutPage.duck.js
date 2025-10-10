@@ -777,6 +777,31 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     }
     
     console.error('[specTx] error', e);
+    
+    // Fallback to non-privileged speculation so UI can mount
+    console.warn('[INITIATE_TX] privileged failed, falling back to public speculation', e);
+    try {
+      const orderParams = params;
+      const processAlias = 'default-booking/release-1';
+      const transactionId = null;
+      const transitionName = 'transition/request-payment';
+      const isPrivilegedTransition = false; // Use non-privileged path
+      
+      await dispatch(speculateTransaction(orderParams, processAlias, transactionId, transitionName, isPrivilegedTransition));
+      
+      // Get the speculated transaction from state
+      const updatedState = getState().CheckoutPage || {};
+      const tx = updatedState.speculatedTransaction;
+      
+      if (tx) {
+        console.log('[INITIATE_TX] fallback succeeded, txId:', tx.id);
+        dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
+        return; // Exit successfully
+      }
+    } catch (fallbackError) {
+      console.error('[INITIATE_TX] fallback also failed', fallbackError);
+    }
+    
     dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
   }
 };

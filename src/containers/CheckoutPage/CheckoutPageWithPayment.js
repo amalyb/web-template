@@ -816,8 +816,40 @@ const CheckoutPageWithPayment = props => {
   // Single initiation effect with ref-based guard
   // Note: onInitiatePrivilegedSpeculativeTransaction is already extracted from props above
   useEffect(() => {
-    // ✅ Hard-gate #1: User must exist
+    // Get txProcess in this scope for gate checking
+    const pageDataListing = pageData?.listing;
+    const tx = pageData?.transaction;
+    const processNameForGate = 
+      tx?.attributes?.processName ||
+      pageDataListing?.attributes?.publicData?.transactionProcessAlias?.split('/')[0];
+    const txProcessForGate = processNameForGate ? getProcess(processNameForGate) : null;
+    
+    // Extract all gate values
     const hasUser = Boolean(currentUser && currentUser.id);
+    const hasTxId = Boolean(props?.speculativeTransactionId);
+    const hasProcess = Boolean(txProcessForGate);
+
+    // Check all gates
+    const allGatesPassed = hasToken && hasUser && orderResult?.ok && !hasTxId && hasProcess;
+
+    // Log the exact gate state
+    if (allGatesPassed) {
+      console.debug('[INITIATE_TX] calling privileged speculation', { 
+        sessionKey, 
+        orderParams: orderResult.value 
+      });
+    } else {
+      console.debug('[INIT_GATES]', { 
+        hasToken, 
+        hasUser: !!currentUser?.id, 
+        orderOk: !!orderResult?.ok, 
+        hasTxId, 
+        hasProcess: !!txProcessForGate, 
+        sessionKey 
+      });
+    }
+
+    // ✅ Hard-gate #1: User must exist
     if (!hasUser) {
       if (process.env.NODE_ENV !== 'production') {
         console.debug('[Checkout] ⛔ Skipping initiate - user not authenticated yet');
@@ -841,14 +873,31 @@ const CheckoutPageWithPayment = props => {
       return;
     }
 
-    // Reset the guard if sessionKey changed
-    if (lastSessionKeyRef.current !== sessionKey) {
+    // ✅ Hard-gate #4: Wait for txProcess to exist
+    if (!hasProcess) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] ⛔ Skipping initiate - txProcess not ready yet');
+      }
+      return;
+    }
+
+    // ✅ Hard-gate #5: Skip if we already have a txId (success!)
+    if (hasTxId) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] ✅ Already have txId:', props?.speculativeTransactionId);
+      }
+      return;
+    }
+
+    // Reset the guard if sessionKey changed OR if we don't have a txId
+    // This allows retries after auth appears even if sessionKey was previously used
+    if (lastSessionKeyRef.current !== sessionKey || !hasTxId) {
       initiatedSessionRef.current = false;
       lastSessionKeyRef.current = sessionKey;
     }
 
-    // ✅ Hard-gate #3: 1-shot guard per listing/session
-    if (initiatedSessionRef.current) {
+    // ✅ Hard-gate #6: 1-shot guard per listing/session (but allow retry if no txId)
+    if (initiatedSessionRef.current && hasTxId) {
       return;
     }
 
@@ -859,32 +908,27 @@ const CheckoutPageWithPayment = props => {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
     }
 
-    // Runtime gate diagnostics - logged before initiation
-    const dump = o => JSON.parse(JSON.stringify(o));
-    console.debug('[INIT_GATES]', dump({
-      hasUser: !!currentUser?.id,
-      hasToken: Boolean(
-        window.localStorage?.getItem('st-auth') ||
-        window.sessionStorage?.getItem('st-auth') ||
-        document.cookie?.includes('st=')
-      ),
-      orderOk: !!orderResult?.ok,
-      sessionKey,
-    }));
-
     // Call the latest handler via ref (no identity in deps)
     const fn = initiateRef.current;
     if (typeof fn === 'function') {
-      fn(orderResult.params);
+      fn(orderResult.params)
+        .then(res => {
+          console.debug('[INITIATE_TX] success', { 
+            id: res?.id || res?.payload?.id 
+          });
+        })
+        .catch(err => {
+          console.error('[INITIATE_TX] FAILED', err);
+        });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, hasToken]); // ← hasToken added so effect re-runs when token appears
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, hasToken, props?.speculativeTransactionId, processName]); // Added txId and processName deps
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[TX_STATE]', {
-        speculativeTransactionId: props?.speculativeTransactionId,
-        hasSpeculativeTx: !!props?.speculativeTransactionId,
+        hasTxId: !!props?.speculativeTransactionId,
+        txId: props?.speculativeTransactionId,
         speculativeInProgress,
         hasToken,
         hasUser: !!currentUser?.id,
@@ -963,6 +1007,9 @@ const CheckoutPageWithPayment = props => {
   const txProcess = processName ? getProcess(processName) : null;
   const transitions = txProcess?.transitions || {};
   const isPaymentExpired = hasPaymentExpired(existingTransaction, txProcess, isClockInSync);
+
+  // Extract txId for gate checks
+  const hasTxId = Boolean(props?.speculativeTransactionId);
 
   // Allow showing page when currentUser is still being downloaded,
   // but show payment form only when user info is loaded.
