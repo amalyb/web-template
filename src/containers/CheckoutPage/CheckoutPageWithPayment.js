@@ -48,6 +48,15 @@ import {
 } from './shared/orderParamsCore';
 import { buildCheckoutSessionKey } from './shared/sessionKey';
 
+// [DEBUG] one-shot logger
+const __LOG_ONCE = new Set();
+const logOnce = (key, ...args) => {
+  if (!__LOG_ONCE.has(key)) {
+    console.log(key, ...args);
+    __LOG_ONCE.add(key);
+  }
+};
+
 // Stripe PaymentIntent statuses, where user actions are already completed
 // https://stripe.com/docs/payments/payment-intents/status
 const STRIPE_PI_USER_ACTIONS_DONE_STATUSES = ['processing', 'requires_capture', 'succeeded'];
@@ -908,6 +917,9 @@ const CheckoutPageWithPayment = props => {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
     }
 
+    // [DEBUG] about to dispatch (one-shot)
+    logOnce('[INITIATE_TX] about to dispatch', { sessionKey, orderParams: orderResult.params });
+
     // Call the latest handler via ref (no identity in deps)
     const fn = initiateRef.current;
     if (typeof fn === 'function') {
@@ -1010,6 +1022,19 @@ const CheckoutPageWithPayment = props => {
 
   // Extract txId for gate checks
   const hasTxId = Boolean(props?.speculativeTransactionId);
+
+  // [DEBUG] INIT gates snapshot (one-shot)
+  logOnce('[INIT_GATES.hasToken]', hasToken);
+  logOnce('[INIT_GATES.hasUser]', !!currentUser?.id);
+  logOnce('[INIT_GATES.orderOk]', !!orderResult?.ok);
+  logOnce('[INIT_GATES.hasProcess]', !!txProcess);
+  logOnce('[INIT_GATES.hasTxId]', !!props?.speculativeTransactionId, props?.speculativeTransactionId);
+
+  // [DEBUG] TX_STATE snapshot (one-shot)
+  logOnce('[TX_STATE]', {
+    hasTxId: !!props?.speculativeTransactionId,
+    txId: props?.speculativeTransactionId,
+  });
 
   // Allow showing page when currentUser is still being downloaded,
   // but show payment form only when user info is loaded.
