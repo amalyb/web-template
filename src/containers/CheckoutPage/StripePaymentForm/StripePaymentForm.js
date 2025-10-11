@@ -438,6 +438,7 @@ class StripePaymentForm extends Component {
     this.lastValuesJSON = '';
     this.lastEffectiveInvalid = undefined;
     this.reportedMounted = false;
+    this.loggedPaymentIntent = false;
   }
 
   componentDidMount() {
@@ -1035,7 +1036,13 @@ class StripePaymentForm extends Component {
   }
 
   render() {
-    const { onSubmit, ...rest } = this.props;
+    const { onSubmit, paymentIntent, ...rest } = this.props;
+    
+    // Log paymentIntent presence once
+    if (!this.loggedPaymentIntent && paymentIntent) {
+      console.log('[STRIPE_FORM] paymentIntent present:', !!paymentIntent);
+      this.loggedPaymentIntent = true;
+    }
     
     // Deep merge initial values to avoid nuking nested fields from previous drafts
     const defaultInitialValues = {

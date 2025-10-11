@@ -254,6 +254,9 @@ const mapStateToProps = state => {
     confirmPaymentError,
     lastSpeculationKey,
     speculativeTransactionId,
+    speculateStatus,
+    stripeClientSecret,
+    lastSpeculateError,
   } = state.CheckoutPage;
   const { currentUser } = state.user;
   const { confirmCardPaymentError, paymentIntent, retrievePaymentIntentError } = state.stripe;
@@ -279,6 +282,9 @@ const mapStateToProps = state => {
     retrievePaymentIntentError,
     lastSpeculationKey,
     speculativeTransactionId,
+    speculateStatus,
+    stripeClientSecret,
+    lastSpeculateError,
   };
 };
 

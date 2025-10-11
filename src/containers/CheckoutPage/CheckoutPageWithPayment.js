@@ -680,6 +680,9 @@ const CheckoutPageWithPayment = props => {
     title,
     config,
     onInitiatePrivilegedSpeculativeTransaction, // Extract callback here to avoid TDZ
+    // New props for enhanced speculation state
+    speculateStatus,
+    stripeClientSecret,
   } = props;
 
   // ✅ STEP 2: Initialize all state hooks
@@ -697,6 +700,7 @@ const CheckoutPageWithPayment = props => {
   const lastReasonRef = useRef(null);
   const initiatedSessionRef = useRef(null);
   const lastSessionKeyRef = useRef(null);
+  const retrievedRef = useRef(null);
   
   // Keep a stable ref to the handler so effect doesn't depend on its identity
   const initiateRef = useRef(onInitiatePrivilegedSpeculativeTransaction);
@@ -945,6 +949,35 @@ const CheckoutPageWithPayment = props => {
     }
   }, [props?.speculativeTransactionId, speculativeInProgress, currentUser?.id]);
 
+  // Log after speculation success with enhanced data
+  useEffect(() => {
+    if (speculateStatus === 'succeeded') {
+      console.log('[POST-SPECULATE]', {
+        speculativeTransactionId: props?.speculativeTransactionId,
+        clientSecretPresent: !!stripeClientSecret,
+        clientSecretLength: stripeClientSecret?.length || 0,
+      });
+    }
+  }, [speculateStatus, props?.speculativeTransactionId, stripeClientSecret]);
+
+  // 🔑 CRITICAL: Retrieve PaymentIntent after speculation succeeds
+  // This populates state.stripe.paymentIntent which StripePaymentForm needs to mount Elements
+  useEffect(() => {
+    if (!stripeClientSecret) return;
+    if (retrievedRef.current === stripeClientSecret) return;
+    if (!stripe || !props.onRetrievePaymentIntent) return;
+    
+    console.log('[STRIPE] Retrieving PaymentIntent with clientSecret');
+    props.onRetrievePaymentIntent({ 
+      stripe, 
+      stripePaymentIntentClientSecret: stripeClientSecret 
+    })
+      .catch(err => {
+        console.error('[STRIPE] Failed to retrieve PaymentIntent:', err);
+      });
+    retrievedRef.current = stripeClientSecret;
+  }, [stripeClientSecret, stripe, props.onRetrievePaymentIntent]);
+
   // Retry speculation handler
   const handleRetrySpeculation = useCallback(() => {
     console.log('[Checkout] Retrying speculation...');
@@ -965,23 +998,20 @@ const CheckoutPageWithPayment = props => {
     }
   }, [orderResult]);
 
-  // Throttled logging for disabled gates
+  // Comprehensive logging for submit gates (recomputes after each key state change)
   useEffect(() => {
-    const hasTxId = !!props.speculativeTransactionId;
-    const gates = { 
-      hasSpeculativeTx: hasTxId, 
-      stripeReady, 
-      paymentElementComplete, 
-      formValid, 
-      notSubmitting: !submitting, 
-      notSpeculating: !speculativeInProgress 
-    };
-    const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
-    if (disabledReason !== lastReasonRef.current) {
-      lastReasonRef.current = disabledReason;
-      console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
-    }
-  }, [props.speculativeTransactionId, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
+    const hasSpeculativeTx = !!props.speculativeTransactionId;
+    const canSubmit = hasSpeculativeTx && stripeReady && paymentElementComplete && formValid && !submitting;
+    
+    console.log('[SUBMIT_GATES]', {
+      hasSpeculativeTx,
+      stripeReady,
+      paymentElementComplete,
+      formValid,
+      notSubmitting: !submitting,
+      canSubmit,
+    });
+  }, [props.speculativeTransactionId, stripeReady, paymentElementComplete, formValid, submitting]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -1217,38 +1247,38 @@ const CheckoutPageWithPayment = props => {
                   // Define submit gates clearly
                   const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
                   const canSubmit =
-                    hasSpeculativeTx &&                 // we require a speculative tx
-                    formValid &&                        // Stripe/Shipping fields valid
-                    stripeReady &&                      // Stripe mounted
-                    !!orderResult?.ok &&                // order params valid
-                    !submitting;                        // not currently submitting
+                    hasSpeculativeTx &&
+                    stripeReady &&
+                    paymentElementComplete &&
+                    formValid &&
+                    !submitting;
 
                   const disabled = !canSubmit;
-                  const disabledReason = !hasSpeculativeTx ? 'noSpeculativeTx'
-                    : !formValid ? 'validationErrors'
-                    : !stripeReady ? 'stripeNotReady'
-                    : !orderResult?.ok ? 'orderParamsInvalid'
-                    : submitting ? 'submitting'
+                  const disabledReason = !hasSpeculativeTx ? 'Waiting for transaction initialization…'
+                    : !stripeReady ? 'Setting up secure payment…'
+                    : !paymentElementComplete ? 'Enter payment details…'
+                    : !formValid ? 'Complete required fields…'
+                    : submitting ? 'Processing…'
                     : null;
-
-                  // Log with JSON.stringify so we can see actual boolean values
-                  const dump = o => JSON.parse(JSON.stringify(o));
-                  console.debug('[SUBMIT_GATES]', dump({
-                    hasSpeculativeTx,
-                    formValid,
-                    stripeReady,
-                    orderOk: !!orderResult?.ok,
-                    submitting,
-                    txId: props?.speculativeTransactionId,
-                    disabled,
-                    disabledReason,
-                  }));
 
                   return (
                     <>
                       {disabled && (
-                        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
-                          Can't submit yet: <code>{disabledReason}</code>
+                        <div style={{ 
+                          fontSize: 12, 
+                          opacity: 0.7, 
+                          marginTop: 8, 
+                          padding: '8px 12px',
+                          backgroundColor: '#f7fafc',
+                          borderRadius: '4px',
+                          border: '1px solid #e2e8f0'
+                        }}>
+                          Can't submit yet: <code style={{ 
+                            backgroundColor: '#fff', 
+                            padding: '2px 6px', 
+                            borderRadius: '3px',
+                            fontSize: 11
+                          }}>{disabledReason}</code>
                         </div>
                       )}
                     </>
@@ -1293,11 +1323,11 @@ const CheckoutPageWithPayment = props => {
                     // Use same gating logic as above
                     const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
                     const canSubmit =
-                      hasSpeculativeTx &&                 // we require a speculative tx
-                      formValid &&                        // Stripe/Shipping fields valid
-                      stripeReady &&                      // Stripe mounted
-                      !!orderResult?.ok &&                // order params valid
-                      !submitting;                        // not currently submitting
+                      hasSpeculativeTx &&
+                      stripeReady &&
+                      paymentElementComplete &&
+                      formValid &&
+                      !submitting;
                     return !canSubmit;
                   })()}
                   askShippingDetails={askShippingDetails}

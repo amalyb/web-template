@@ -62,6 +62,10 @@ const initialState = {
   fetchLineItemsError: null,
   lastSpeculationKey: null,
   speculativeTransactionId: null,
+  // Enhanced speculation state
+  speculateStatus: 'idle', // 'idle' | 'pending' | 'succeeded' | 'failed'
+  stripeClientSecret: null,
+  lastSpeculateError: null,
 };
 
 export default function checkoutPageReducer(state = initialState, action = {}) {
@@ -83,17 +87,32 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         speculateTransactionInProgress: true,
         speculateTransactionError: null,
         speculatedTransaction: null,
+        speculateStatus: 'pending',
+        lastSpeculateError: null,
       };
     case SPECULATE_TRANSACTION_SUCCESS: {
       // Check that the local devices clock is within a minute from the server
       const lastTransitionedAt = payload.transaction?.attributes?.lastTransitionedAt;
       const localTime = new Date();
       const minute = 60000;
+      
+      // Extract Stripe client secret from transaction attributes
+      const clientSecret = payload.transaction?.attributes?.protectedData?.stripePaymentIntentClientSecret || null;
+      
+      // Log what we extracted for debugging
+      console.log('[SPECULATE_SUCCESS_PAYLOAD]', {
+        keys: Object.keys(payload.transaction?.attributes || {}),
+        hasProtectedData: !!payload.transaction?.attributes?.protectedData,
+        hasClientSecret: !!clientSecret,
+      });
+      
       return {
         ...state,
         speculateTransactionInProgress: false,
         speculatedTransaction: payload.transaction,
         isClockInSync: Math.abs(lastTransitionedAt?.getTime() - localTime.getTime()) < minute,
+        speculateStatus: 'succeeded',
+        stripeClientSecret: clientSecret,
       };
     }
     case SPECULATE_TRANSACTION_ERROR:
@@ -102,6 +121,9 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         ...state,
         speculateTransactionInProgress: false,
         speculateTransactionError: payload,
+        speculateStatus: 'failed',
+        lastSpeculateError: payload,
+        stripeClientSecret: null,
       };
 
     case INITIATE_ORDER_REQUEST:
@@ -136,18 +158,36 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       return { ...state, initiateInquiryInProgress: false, initiateInquiryError: payload };
 
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST:
-      return { ...state, lastSpeculationKey: payload.key };
+      return { 
+        ...state, 
+        lastSpeculationKey: payload.key,
+        speculateStatus: 'pending',
+      };
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS: {
       const { tx, key } = payload;
+      // Extract client secret from transaction
+      const clientSecret = tx?.attributes?.protectedData?.stripePaymentIntentClientSecret || null;
+      
+      console.log('[INITIATE_TX] success', {
+        txId: tx?.id?.uuid || tx?.id,
+        hasClientSecret: !!clientSecret,
+      });
+      
       return {
         ...state,
         speculativeTransactionId: tx.id,
         lastSpeculationKey: key,
         speculatedTransaction: tx,
+        stripeClientSecret: clientSecret,
+        speculateStatus: 'succeeded',
       };
     }
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR:
-      return state;
+      return {
+        ...state,
+        speculateStatus: 'failed',
+        lastSpeculateError: state.payload,
+      };
 
     default:
       return state;
@@ -600,6 +640,15 @@ export const speculateTransaction = (
       throw new Error('Expected a resource in the speculate response');
     }
     const tx = entities[0];
+    
+    // Extract client secret for logging
+    const clientSecret = tx?.attributes?.protectedData?.stripePaymentIntentClientSecret;
+    console.log('[speculate] success', {
+      txId: tx?.id?.uuid || tx?.id,
+      hasClientSecret: !!clientSecret,
+      protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
+    });
+    
     dispatch(speculateTransactionSuccess(tx));
   };
 
