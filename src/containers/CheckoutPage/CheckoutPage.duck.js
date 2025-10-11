@@ -96,14 +96,21 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       const localTime = new Date();
       const minute = 60000;
       
-      // Extract Stripe client secret from transaction attributes
-      const clientSecret = payload.transaction?.attributes?.protectedData?.stripePaymentIntentClientSecret || null;
+      // Extract Stripe client secret from transaction attributes - try both possible paths
+      const clientSecret =
+        payload.transaction?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
+        payload.transaction?.attributes?.metadata?.stripePaymentIntentClientSecret ||
+        null;
       
       // Log what we extracted for debugging
       console.log('[SPECULATE_SUCCESS_PAYLOAD]', {
         keys: Object.keys(payload.transaction?.attributes || {}),
         hasProtectedData: !!payload.transaction?.attributes?.protectedData,
+        protectedDataKeys: Object.keys(payload.transaction?.attributes?.protectedData || {}),
+        hasMetadata: !!payload.transaction?.attributes?.metadata,
+        metadataKeys: Object.keys(payload.transaction?.attributes?.metadata || {}),
         hasClientSecret: !!clientSecret,
+        clientSecretLength: clientSecret?.length || 0,
       });
       
       return {
@@ -165,15 +172,29 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       };
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS: {
       const { tx, key } = payload;
-      // Extract client secret from transaction
-      const clientSecret = tx?.attributes?.protectedData?.stripePaymentIntentClientSecret || null;
+      
+      // Log payload structure to help diagnose if clientSecret is missing
+      console.log('[SPECULATE_SUCCESS_PAYLOAD_KEYS]', {
+        attributeKeys: Object.keys(tx?.attributes || {}),
+        hasProtectedData: !!tx?.attributes?.protectedData,
+        protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
+        hasMetadata: !!tx?.attributes?.metadata,
+        metadataKeys: Object.keys(tx?.attributes?.metadata || {}),
+      });
+      
+      // Extract client secret from transaction - try both possible paths
+      const clientSecret =
+        tx?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
+        tx?.attributes?.metadata?.stripePaymentIntentClientSecret ||
+        null;
       
       console.log('[INITIATE_TX] success', {
         txId: tx?.id?.uuid || tx?.id,
         hasClientSecret: !!clientSecret,
+        clientSecretLength: clientSecret?.length || 0,
       });
       
-      return {
+      const newState = {
         ...state,
         speculativeTransactionId: tx.id,
         lastSpeculationKey: key,
@@ -181,6 +202,15 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         stripeClientSecret: clientSecret,
         speculateStatus: 'succeeded',
       };
+      
+      // Verification log immediately after state update
+      console.log('[POST-SPECULATE]', {
+        speculativeTransactionId: newState.speculativeTransactionId,
+        clientSecretPresent: !!newState.stripeClientSecret,
+        clientSecretLen: newState.stripeClientSecret?.length || 0,
+      });
+      
+      return newState;
     }
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR:
       return {
@@ -641,12 +671,18 @@ export const speculateTransaction = (
     }
     const tx = entities[0];
     
-    // Extract client secret for logging
-    const clientSecret = tx?.attributes?.protectedData?.stripePaymentIntentClientSecret;
+    // Extract client secret for logging - try both possible paths
+    const clientSecret =
+      tx?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
+      tx?.attributes?.metadata?.stripePaymentIntentClientSecret ||
+      null;
+    
     console.log('[speculate] success', {
       txId: tx?.id?.uuid || tx?.id,
       hasClientSecret: !!clientSecret,
+      clientSecretLength: clientSecret?.length || 0,
       protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
+      metadataKeys: Object.keys(tx?.attributes?.metadata || {}),
     });
     
     dispatch(speculateTransactionSuccess(tx));
