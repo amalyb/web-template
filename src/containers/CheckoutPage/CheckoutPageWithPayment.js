@@ -963,20 +963,17 @@ const CheckoutPageWithPayment = props => {
   // 🔑 CRITICAL: Retrieve PaymentIntent after speculation succeeds
   // This populates state.stripe.paymentIntent which StripePaymentForm needs to mount Elements
   useEffect(() => {
-    if (!stripeClientSecret) return;
+    if (!stripe || !stripeClientSecret) return;
     if (retrievedRef.current === stripeClientSecret) return;
-    if (!stripe || !props.onRetrievePaymentIntent) return;
-    
+
     console.log('[STRIPE] Retrieving PaymentIntent with clientSecret');
-    props.onRetrievePaymentIntent({ 
-      stripe, 
-      stripePaymentIntentClientSecret: stripeClientSecret 
-    })
-      .catch(err => {
-        console.error('[STRIPE] Failed to retrieve PaymentIntent:', err);
-      });
+    props.onRetrievePaymentIntent({
+      stripe,
+      stripePaymentIntentClientSecret: stripeClientSecret,
+    });
+
     retrievedRef.current = stripeClientSecret;
-  }, [stripeClientSecret, stripe, props.onRetrievePaymentIntent]);
+  }, [stripe, stripeClientSecret, props.onRetrievePaymentIntent]);
 
   // Retry speculation handler
   const handleRetrySpeculation = useCallback(() => {
@@ -1001,8 +998,13 @@ const CheckoutPageWithPayment = props => {
   // Comprehensive logging for submit gates (recomputes after each key state change)
   useEffect(() => {
     const hasSpeculativeTx = !!props.speculativeTransactionId;
-    const canSubmit = hasSpeculativeTx && stripeReady && paymentElementComplete && formValid && !submitting;
-    
+    const canSubmit =
+      hasSpeculativeTx &&
+      stripeReady &&
+      paymentElementComplete &&
+      formValid &&
+      !submitting;
+
     console.log('[SUBMIT_GATES]', {
       hasSpeculativeTx,
       stripeReady,

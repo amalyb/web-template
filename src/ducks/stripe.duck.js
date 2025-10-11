@@ -136,8 +136,7 @@ export default function reducer(state = initialState, action = {}) {
     case RETRIEVE_PAYMENT_INTENT_SUCCESS:
       console.log('[STRIPE] PaymentIntent retrieved successfully', {
         hasPI: !!payload,
-        clientSecretTail: payload?.client_secret?.slice(-6),
-        status: payload?.status,
+        tail: payload?.client_secret?.slice(-6),
       });
       return { ...state, paymentIntent: payload, retrievePaymentIntentInProgress: false };
     case RETRIEVE_PAYMENT_INTENT_ERROR:

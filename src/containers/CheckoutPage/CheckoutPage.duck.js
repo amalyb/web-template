@@ -96,31 +96,32 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       const localTime = new Date();
       const minute = 60000;
       
+      const tx = payload.transaction;
+      
       // Extract Stripe client secret from transaction attributes - try both possible paths
       const clientSecret =
-        payload.transaction?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
-        payload.transaction?.attributes?.metadata?.stripePaymentIntentClientSecret ||
+        tx?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
+        tx?.attributes?.metadata?.stripePaymentIntentClientSecret ||
         null;
       
-      // Log what we extracted for debugging
-      console.log('[SPECULATE_SUCCESS_PAYLOAD]', {
-        keys: Object.keys(payload.transaction?.attributes || {}),
-        hasProtectedData: !!payload.transaction?.attributes?.protectedData,
-        protectedDataKeys: Object.keys(payload.transaction?.attributes?.protectedData || {}),
-        hasMetadata: !!payload.transaction?.attributes?.metadata,
-        metadataKeys: Object.keys(payload.transaction?.attributes?.metadata || {}),
-        hasClientSecret: !!clientSecret,
-        clientSecretLength: clientSecret?.length || 0,
-      });
-      
-      return {
+      const next = {
         ...state,
         speculateTransactionInProgress: false,
-        speculatedTransaction: payload.transaction,
+        speculatedTransaction: tx,
         isClockInSync: Math.abs(lastTransitionedAt?.getTime() - localTime.getTime()) < minute,
         speculateStatus: 'succeeded',
         stripeClientSecret: clientSecret,
+        speculativeTransactionId: tx?.id?.uuid || tx?.id || null,
       };
+      
+      // Log after state construction
+      console.log('[POST-SPECULATE]', {
+        txId: next.speculativeTransactionId,
+        clientSecretPresent: !!next.stripeClientSecret,
+        clientSecretLen: next.stripeClientSecret?.length || 0,
+      });
+      
+      return next;
     }
     case SPECULATE_TRANSACTION_ERROR:
       console.error(payload); // eslint-disable-line no-console
@@ -670,6 +671,15 @@ export const speculateTransaction = (
       throw new Error('Expected a resource in the speculate response');
     }
     const tx = entities[0];
+    
+    // Log raw response structure before processing
+    console.log('[SPECULATE_SUCCESS_RAW]', {
+      keys: Object.keys(response || {}),
+      txKeys: Object.keys(tx || {}),
+      attrKeys: Object.keys(tx?.attributes || {}),
+      protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
+      metadataKeys: Object.keys(tx?.attributes?.metadata || {}),
+    });
     
     // Extract client secret for logging - try both possible paths
     const clientSecret =
