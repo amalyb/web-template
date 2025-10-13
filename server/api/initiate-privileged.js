@@ -36,6 +36,9 @@ function buildLenderMsg(tx, listingTitle) {
 }
 
 module.exports = (req, res) => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[SERVER_PROXY] /api/initiate-privileged hit');
+  }
   console.log('🚀 initiate-privileged endpoint HIT!');
   console.log('📋 Request method:', req.method);
   console.log('📋 Request URL:', req.url);

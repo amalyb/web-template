@@ -646,6 +646,9 @@ async function createShippingLabels({
 }
 
 module.exports = async (req, res) => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[SERVER_PROXY] /api/transition-privileged hit');
+  }
   console.log('🚀 transition-privileged endpoint HIT!');
   console.log('📋 Request method:', req.method);
   console.log('📋 Request URL:', req.url);

@@ -607,12 +607,9 @@ export const speculateTransaction = (
     return Promise.reject(error);
   }
   
-  // Guard: Check for auth token (belt-and-suspenders)
-  if (isPrivilegedTransition && !sdk?.authToken && typeof document !== 'undefined' && !document.cookie?.includes('st=')) {
-    const error = new Error('Cannot speculate privileged transaction - no auth token found');
-    error.status = 401;
-    console.warn('[Sherbrt] Attempted privileged speculation without auth token');
-    return Promise.reject(error);
+  // Info: Client cannot verify auth token directly; let server enforce auth
+  if (isPrivilegedTransition && process.env.NODE_ENV !== 'production') {
+    console.log('[Sherbrt] (info) client cannot verify auth token; proceeding to /api where server enforces auth');
   }
 
   // Log transactionId before determining flow
@@ -830,10 +827,9 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     return;
   }
   
-  // Guard: Check for auth token (belt-and-suspenders)
-  if (!sdk?.authToken && typeof document !== 'undefined' && !document.cookie?.includes('st=')) {
-    console.warn('[Sherbrt] ⛔ Attempted privileged speculation without auth token');
-    return;
+  // Info: Client cannot verify auth token directly; let server enforce auth
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[Sherbrt] (info) client cannot verify auth token; proceeding to /api where server enforces auth');
   }
 
   // Log auth state before proceeding

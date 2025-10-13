@@ -134,6 +134,9 @@ export const transactionLineItems = body => {
 // See `server/api/initiate-privileged.js` to see what data should be
 // sent in the body.
 export const initiatePrivileged = body => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[PROXY_VERIFY] POST →', `${apiBaseUrl()}/api/initiate-privileged`);
+  }
   return post('/api/initiate-privileged', body);
 };
 
@@ -146,6 +149,9 @@ export const initiatePrivileged = body => {
 // See `server/api/transition-privileged.js` to see what data should
 // be sent in the body.
 export const transitionPrivileged = body => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[PROXY_VERIFY] POST →', `${apiBaseUrl()}/api/transition-privileged`);
+  }
   return post('/api/transition-privileged', body);
 };
 
