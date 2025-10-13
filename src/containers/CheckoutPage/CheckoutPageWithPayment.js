@@ -209,6 +209,9 @@ function getOrderParams(pageData = {}, shippingDetails = {}, optionalPaymentPara
   return orderParams;
 }
 
+// Module-level cache to prevent speculation loops when loadInitialDataForStripePayments is called
+const MODULE_SPEC_CACHE = { current: null };
+
 function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) {
   const tx = pageData ? pageData.transaction : null;
   const pageDataListing = pageData.listing;
@@ -298,9 +301,8 @@ export function loadInitialDataForStripePayments({
     return;
   }
 
-  // Use a more robust guard to prevent duplicate calls
-  const prevKeyRef = { current: null };
-  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
+  // Use module-level cache to prevent duplicate calls across function invocations
+  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, MODULE_SPEC_CACHE);
 }
 
 async function handleSubmit(values, txProcess, props, stripe, submitting, setSubmitting) {
@@ -313,7 +315,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
     history,
     config,
     routeConfiguration,
-    speculatedTransaction,
+    speculativeTransaction,  // ← FIXED: Use new prop name
     currentUser,
     stripeCustomerFetched,
     paymentIntent,
@@ -560,7 +562,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
   // Construct requestPaymentParams before calling processCheckoutWithPayment
   const requestPaymentParams = {
     pageData,
-    speculatedTransaction,
+    speculativeTransaction,  // ← FIXED: Use new prop name
     stripe,
     card,
     billingDetails: getBillingDetails(formValues, currentUser),
@@ -624,7 +626,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
  * @param {Object} props
  * @param {boolean} props.scrollingDisabled - Whether the page should scroll
  * @param {string} props.speculateTransactionError - The error message for the speculate transaction
- * @param {propTypes.transaction} props.speculatedTransaction - The speculated transaction
+ * @param {propTypes.transaction} props.speculativeTransaction - The speculative transaction (normalized name)
  * @param {boolean} props.isClockInSync - Whether the clock is in sync
  * @param {string} props.initiateOrderError - The error message for the initiate order
  * @param {string} props.confirmPaymentError - The error message for the confirm payment
