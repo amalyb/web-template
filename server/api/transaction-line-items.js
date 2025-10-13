@@ -35,11 +35,20 @@ module.exports = (req, res) => {
         startDate: raw.bookingStart,
         endDate: raw.bookingEnd,
       };
+      
+      // Extract actual booking dates (not breakdown)
+      const bookingDates = {
+        bookingStart: raw.bookingStart,
+        bookingEnd: raw.bookingEnd,
+      };
 
+      // ✅ FIX: Wrap in 'data' property to match Sharetribe SDK pattern
       const payload = {
-        lineItems: validLineItems,
-        breakdownData,
-        bookingDates: breakdownData,
+        data: {
+          lineItems: validLineItems,
+          breakdownData,
+          bookingDates,  // Use actual dates, not breakdownData
+        }
       };
 
       res

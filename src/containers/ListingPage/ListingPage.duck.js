@@ -647,8 +647,7 @@ export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }
   dispatch(fetchLineItemsRequest());
   transactionLineItems({ orderData, listingId, isOwnListing })
     .then(response => {
-      // ✅ FIX: Handle both old format { data: [...] } and new format { lineItems: [...], breakdownData, bookingDates }
-      // Defensive: response.data might be undefined or have different shapes
+      // ✅ FIX: Handle both old format { data: [...] } and new format { data: { lineItems, breakdownData, bookingDates } }
       const data = response?.data;
       
       if (!data) {
@@ -656,18 +655,32 @@ export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }
         throw new Error('Line items response is empty');
       }
       
-      // Check if data has the new format (with lineItems property) or old format (array directly)
+      // Support both:
+      //  A) New object shape: { lineItems, breakdownData, bookingDates }
+      //  B) Legacy array shape: [...]
       let payload;
-      if (data.lineItems) {
-        // New format: { lineItems: [...], breakdownData: {...}, bookingDates: {...} }
-        payload = data;
-      } else if (Array.isArray(data)) {
-        // Old format: [...] (array directly)
-        payload = { lineItems: data };
+      if (Array.isArray(data)) {
+        // Legacy format: data is array directly
+        payload = { 
+          lineItems: data,
+          breakdownData: undefined,
+          bookingDates: undefined,
+        };
+      } else if (data.lineItems) {
+        // New format: data is object with lineItems property
+        payload = {
+          lineItems: data.lineItems || [],
+          breakdownData: data.breakdownData,
+          bookingDates: data.bookingDates,
+        };
       } else {
         // Unexpected format - log and try to recover
         console.warn('[fetchLineItems] Unexpected data format:', data);
-        payload = { lineItems: [] };
+        payload = { 
+          lineItems: [],
+          breakdownData: undefined,
+          bookingDates: undefined,
+        };
       }
       
       dispatch(fetchLineItemsSuccess(payload));
