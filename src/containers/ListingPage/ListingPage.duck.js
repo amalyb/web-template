@@ -648,8 +648,28 @@ export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }
   transactionLineItems({ orderData, listingId, isOwnListing })
     .then(response => {
       // ✅ FIX: Handle both old format { data: [...] } and new format { lineItems: [...], breakdownData, bookingDates }
-      const data = response.data;
-      const payload = data.lineItems ? data : { lineItems: data };
+      // Defensive: response.data might be undefined or have different shapes
+      const data = response?.data;
+      
+      if (!data) {
+        console.error('[fetchLineItems] response.data is undefined', response);
+        throw new Error('Line items response is empty');
+      }
+      
+      // Check if data has the new format (with lineItems property) or old format (array directly)
+      let payload;
+      if (data.lineItems) {
+        // New format: { lineItems: [...], breakdownData: {...}, bookingDates: {...} }
+        payload = data;
+      } else if (Array.isArray(data)) {
+        // Old format: [...] (array directly)
+        payload = { lineItems: data };
+      } else {
+        // Unexpected format - log and try to recover
+        console.warn('[fetchLineItems] Unexpected data format:', data);
+        payload = { lineItems: [] };
+      }
+      
       dispatch(fetchLineItemsSuccess(payload));
     })
     .catch(e => {
