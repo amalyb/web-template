@@ -76,6 +76,33 @@ function paymentFlow(selectedPaymentMethod, saveAfterOnetimePayment) {
     : ONETIME_PAYMENT;
 }
 
+// Dev-safe helper: build protectedData from form/order data, omitting empty values.
+const buildProtectedData = (formValues = {}, profileFallback = {}) => {
+  const {
+    customerName,
+    customerStreet,
+    customerCity,
+    customerState,
+    customerZip,
+    customerEmail,
+    customerPhone,
+  } = formValues || {};
+
+  // Allow profile phone as fallback only if form doesn't provide it
+  const normalized = {
+    ...(customerName && { customerName: customerName.trim() }),
+    ...(customerStreet && { customerStreet: customerStreet.trim() }),
+    ...(customerCity && { customerCity: customerCity.trim() }),
+    ...(customerState && { customerState: customerState.trim() }),
+    ...(customerZip && { customerZip: customerZip.trim() }),
+    ...(customerEmail && { customerEmail: customerEmail.trim() }),
+    ...((customerPhone || profileFallback.customerPhone) && {
+      customerPhone: (customerPhone || profileFallback.customerPhone).trim(),
+    }),
+  };
+  return normalized;
+};
+
 // Helper to build customer protectedData from shipping form
 function buildCustomerPD(shipping, currentUser) {
   return {
@@ -711,6 +738,7 @@ const CheckoutPageWithPayment = props => {
   const initiatedSessionRef = useRef(null);
   const lastSessionKeyRef = useRef(null);
   const retrievedRef = useRef(null);
+  const lastPDKeysSentRef = useRef([]);
   
   // Keep a stable ref to the handler so effect doesn't depend on its identity
   const initiateRef = useRef(onInitiatePrivilegedSpeculativeTransaction);
@@ -932,10 +960,37 @@ const CheckoutPageWithPayment = props => {
     // [DEBUG] about to dispatch (one-shot)
     logOnce('[INITIATE_TX] about to dispatch', { sessionKey, orderParams: orderResult.params });
 
+    // Build protectedData from form values (if available)
+    const profileFallback = {
+      customerPhone: currentUser?.attributes?.profile?.privateData?.phone
+        || currentUser?.attributes?.profile?.protectedData?.phone
+        || '',
+    };
+    
+    const protectedDataFromForm = buildProtectedData(formValues, profileFallback);
+    
+    // Merge protectedData into orderParams
+    const orderParamsWithPD = {
+      ...orderResult.params,
+      protectedData: {
+        ...(orderResult.params?.protectedData || {}),
+        ...protectedDataFromForm,
+      },
+    };
+
+    // Capture PD keys for post-speculate logging
+    const pdKeys = Object.keys(orderParamsWithPD.protectedData || {});
+    lastPDKeysSentRef.current = pdKeys;
+
+    // Dev-only: log PD keys being sent
+    if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+      console.log('[PRE-SPECULATE] protectedData keys:', pdKeys);
+    }
+
     // Call the latest handler via ref (no identity in deps)
     const fn = initiateRef.current;
     if (typeof fn === 'function') {
-      fn(orderResult.params)
+      fn(orderParamsWithPD)
         .then(res => {
           console.debug('[INITIATE_TX] success', { 
             id: res?.id || res?.payload?.id 
@@ -945,7 +1000,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[INITIATE_TX] FAILED', err);
         });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized]); // Removed hasToken dep, added listingIdNormalized
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValues]); // Added formValues to deps
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
@@ -966,6 +1021,7 @@ const CheckoutPageWithPayment = props => {
         speculativeTransactionId: props?.speculativeTransactionId,
         clientSecretPresent: !!stripeClientSecret,
         clientSecretLength: stripeClientSecret?.length || 0,
+        protectedDataKeysSent: lastPDKeysSentRef.current,
       });
       
       // Add dev-only diagnostics (no secrets)
@@ -1016,10 +1072,36 @@ const CheckoutPageWithPayment = props => {
     initiatedSessionRef.current = false;
     lastSessionKeyRef.current = null;
     
-    // Call the speculation handler
+    // Call the speculation handler with PD from form values
     const fn = initiateRef.current;
     if (typeof fn === 'function' && orderResult?.ok) {
-      fn(orderResult.params)
+      // Build protectedData from form values (same as main speculation flow)
+      const profileFallback = {
+        customerPhone: currentUser?.attributes?.profile?.privateData?.phone
+          || currentUser?.attributes?.profile?.protectedData?.phone
+          || '',
+      };
+      
+      const protectedDataFromForm = buildProtectedData(formValues, profileFallback);
+      
+      // Merge protectedData into orderParams
+      const orderParamsWithPD = {
+        ...orderResult.params,
+        protectedData: {
+          ...(orderResult.params?.protectedData || {}),
+          ...protectedDataFromForm,
+        },
+      };
+
+      // Capture PD keys for logging
+      const pdKeys = Object.keys(orderParamsWithPD.protectedData || {});
+      lastPDKeysSentRef.current = pdKeys;
+
+      if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+        console.log('[RETRY-SPECULATE] protectedData keys:', pdKeys);
+      }
+
+      fn(orderParamsWithPD)
         .then(res => {
           console.log('[Checkout] Retry succeeded', { id: res?.id || res?.payload?.id });
         })
@@ -1027,7 +1109,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[Checkout] Retry failed', err);
         });
     }
-  }, [orderResult]);
+  }, [orderResult, formValues, currentUser]);
 
   // Comprehensive logging for submit gates (recomputes after each key state change)
   useEffect(() => {

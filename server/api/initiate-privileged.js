@@ -195,6 +195,19 @@ module.exports = (req, res) => {
       // 🔧 FIXED: Use fresh transaction data from the API response
       const tx = apiResponse?.data?.data;  // Flex SDK shape
       
+      // 🔐 PROD-SAFE: Log PI tails for request-payment speculative calls
+      if (isSpeculative && bodyParams?.transition === 'transition/request-payment') {
+        const pd = tx?.attributes?.protectedData?.stripePaymentIntents?.default || {};
+        const idTail = (pd.stripePaymentIntentId || '').slice(0,3) + '...' + (pd.stripePaymentIntentId || '').slice(-5);
+        const secretTail = (pd.stripePaymentIntentClientSecret || '').slice(0,3) + '...' + (pd.stripePaymentIntentClientSecret || '').slice(-5);
+        console.log('[PI_TAILS] idTail=%s secretTail=%s looksLikePI=%s looksLikeSecret=%s', 
+          idTail, 
+          secretTail, 
+          /^pi_/.test(pd.stripePaymentIntentId || ''), 
+          /_secret_/.test(pd.stripePaymentIntentClientSecret || '')
+        );
+      }
+      
       // 🔐 PROD HOTFIX: Diagnose PaymentIntent data from Flex
       if (process.env.NODE_ENV !== 'production') {
         const pd = tx?.attributes?.protectedData || {};

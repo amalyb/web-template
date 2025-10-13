@@ -22,6 +22,7 @@ const smsStatus = require('./api/twilio/sms-status');
 const createUserWithIdp = require('./api/auth/createUserWithIdp');
 const loginWithIdp = require('./api/auth/loginWithIdp');
 const ensurePhoneNumber = require('./api/ensurePhoneNumber');
+const diagVerifyFlexPi = require('./api/diag-verify-flex-pi');
 
 const { authenticateFacebook, authenticateFacebookCallback } = require('./api/auth/facebook');
 const { authenticateGoogle, authenticateGoogleCallback } = require('./api/auth/google');
@@ -77,6 +78,11 @@ router.post('/auth/create-user-with-idp', createUserWithIdp);
 
 // Ensure phone number is saved to protectedData
 router.post('/ensure-phone-number', ensurePhoneNumber);
+
+// Dev-only diagnostic endpoint for verifying Flex PaymentIntent creation
+if (process.env.ALLOW_PI_DIAG === 'true') {
+  router.use('/', diagVerifyFlexPi);
+}
 
 // Facebook authentication endpoints
 
