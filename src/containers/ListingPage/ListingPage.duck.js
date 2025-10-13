@@ -195,7 +195,14 @@ const listingPageReducer = (state = initialState, action = {}) => {
     case FETCH_LINE_ITEMS_REQUEST:
       return { ...state, fetchLineItemsInProgress: true, fetchLineItemsError: null };
     case FETCH_LINE_ITEMS_SUCCESS:
-      return { ...state, fetchLineItemsInProgress: false, lineItems: payload };
+      // ✅ FIX: Store breakdownData and bookingDates from payload for rendering
+      return { 
+        ...state, 
+        fetchLineItemsInProgress: false, 
+        lineItems: payload.lineItems || payload,
+        breakdownData: payload.breakdownData,
+        bookingDates: payload.bookingDates,
+      };
     case FETCH_LINE_ITEMS_ERROR:
       return { ...state, fetchLineItemsInProgress: false, fetchLineItemsError: payload };
 
@@ -640,8 +647,10 @@ export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }
   dispatch(fetchLineItemsRequest());
   transactionLineItems({ orderData, listingId, isOwnListing })
     .then(response => {
-      const lineItems = response.data;
-      dispatch(fetchLineItemsSuccess(lineItems));
+      // ✅ FIX: Handle both old format { data: [...] } and new format { lineItems: [...], breakdownData, bookingDates }
+      const data = response.data;
+      const payload = data.lineItems ? data : { lineItems: data };
+      dispatch(fetchLineItemsSuccess(payload));
     })
     .catch(e => {
       dispatch(fetchLineItemsError(storableError(e)));

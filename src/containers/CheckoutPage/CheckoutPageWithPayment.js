@@ -998,8 +998,14 @@ const CheckoutPageWithPayment = props => {
     if (typeof fn === 'function') {
       fn(orderParamsWithPD)
         .then(res => {
+          const tx = res?.payload?.data || res;
+          const lineItems = tx?.attributes?.lineItems;
           console.debug('[INITIATE_TX] success', { 
             id: res?.id || res?.payload?.id 
+          });
+          console.log('[SPECULATE_SUCCESS]', { 
+            txId: tx?.id?.uuid || tx?.id, 
+            lineItems: lineItems?.length || 0 
           });
         })
         .catch(err => {
@@ -1281,23 +1287,11 @@ const CheckoutPageWithPayment = props => {
     'stripe'
   );
 
-  // Don't render if orderParams are invalid (prevents Stripe mounting with bad data)
-  if (!orderResult.ok) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('[Checkout] Cannot render - invalid orderParams:', orderResult.reason);
-    }
-    return (
-      <Page title={title} scrollingDisabled={scrollingDisabled}>
-        <CustomTopbar intl={intl} linkToExternalSite={config?.topbar?.logoLink} />
-        <div className={css.contentContainer}>
-          <section className={css.incompatibleCurrency}>
-            <H4 as="h1" className={css.heading}>
-              <FormattedMessage id="CheckoutPage.incompleteBookingData" />
-            </H4>
-          </section>
-        </div>
-      </Page>
-    );
+  // ✅ FIX: Allow rendering even if orderParams are initially invalid
+  // The form can still collect address/contact data while dates are being loaded
+  // Early return removed - page will render and show appropriate loading/error states
+  if (process.env.NODE_ENV !== 'production' && !orderResult.ok) {
+    console.log('[Checkout] rendering regardless of orderResult.ok; collecting form values...', orderResult.reason);
   }
 
   // Render an error message if the listing is using a non Stripe supported currency

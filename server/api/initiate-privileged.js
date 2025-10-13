@@ -58,6 +58,14 @@ module.exports = (req, res) => {
     console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
     console.log('[initiate] customerStreet:', protectedData.customerStreet);
     console.log('[initiate] customerZip:', protectedData.customerZip);
+    // Presence check (no PII values)
+    console.log('[initiate] presence check', {
+      hasStreet: !!protectedData.customerStreet,
+      hasZip: !!protectedData.customerZip,
+      hasPhone: !!protectedData.customerPhone,
+      hasEmail: !!protectedData.customerEmail,
+      hasName: !!protectedData.customerName,
+    });
   } catch (_) {
     console.log('[initiate] forwarding PD keys: (unavailable)');
   }

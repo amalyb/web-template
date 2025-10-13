@@ -73,6 +73,7 @@ const mapToCustomerProtectedData = (values) => {
     const filled = Object.entries(pd).filter(([_, val]) => !!val).map(([k]) => k);
     // eslint-disable-next-line no-console
     console.log('[StripePaymentForm] mapped customer PD:', pd, 'filled:', filled.length, filled);
+    console.log('[StripePaymentForm] mapped ->', Object.keys(pd));
   }
   return pd;
 };

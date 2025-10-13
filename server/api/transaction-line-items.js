@@ -29,10 +29,23 @@ module.exports = (req, res) => {
       // to add some attributes like lineTotal and reversal that Marketplace API also adds to the response.
       const validLineItems = constructValidLineItems(lineItems);
 
+      // ✅ FIX: Include breakdownData and bookingDates in response for client-side rendering
+      const raw = orderData || {};
+      const breakdownData = raw.bookingDates || {
+        startDate: raw.bookingStart,
+        endDate: raw.bookingEnd,
+      };
+
+      const payload = {
+        lineItems: validLineItems,
+        breakdownData,
+        bookingDates: breakdownData,
+      };
+
       res
         .status(200)
         .set('Content-Type', 'application/transit+json')
-        .send(serialize({ data: validLineItems }))
+        .send(serialize(payload))
         .end();
     })
     .catch(e => {
