@@ -43,6 +43,8 @@ export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST = 'app/CheckoutPage/I
 export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS = 'app/CheckoutPage/INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS';
 export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR   = 'app/CheckoutPage/INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR';
 
+const HOTFIX_SET_CLIENT_SECRET = 'CHECKOUT/HOTFIX_SET_CLIENT_SECRET';
+
 // ================ Reducer ================ //
 
 const initialState = {
@@ -66,6 +68,7 @@ const initialState = {
   speculateStatus: 'idle', // 'idle' | 'pending' | 'succeeded' | 'failed'
   stripeClientSecret: null,
   lastSpeculateError: null,
+  clientSecretHotfix: null,
 };
 
 export default function checkoutPageReducer(state = initialState, action = {}) {
@@ -136,6 +139,19 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         console.warn('[STRIPE] Invalid client secret shape; expected pi_* with _secret_. Value:', maybeSecret);
       }
       
+      // --- HOTFIX: extract Stripe PaymentIntent client secret directly from RAW payload ---
+      const clientSecret = nested?.stripePaymentIntentClientSecret || null;
+      const secretLooksValid = typeof clientSecret === 'string' &&
+        (/_secret_/.test(clientSecret) || /^pi_/.test(clientSecret));
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[HOTFIX][STRIPE_PI] extracted from RAW:', {
+          pdKeys: pd ? Object.keys(pd) : null,
+          hasNested: !!nested,
+          clientSecretTail: (clientSecret || '').slice(-12),
+          secretLooksValid,
+        });
+      }
+      
       const next = {
         ...state,
         speculateTransactionInProgress: false,
@@ -144,6 +160,7 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         speculateStatus: 'succeeded',
         stripeClientSecret: validatedSecret,
         speculativeTransactionId: tx?.id?.uuid || tx?.id || null,
+        clientSecretHotfix: secretLooksValid ? clientSecret : null,
       };
       
       return next;
@@ -189,6 +206,10 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       return { ...state, initiateInquiryInProgress: false };
     case INITIATE_INQUIRY_ERROR:
       return { ...state, initiateInquiryInProgress: false, initiateInquiryError: payload };
+
+    case HOTFIX_SET_CLIENT_SECRET: {
+      return { ...state, clientSecretHotfix: action.payload || null };
+    }
 
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST:
       return { 
@@ -246,6 +267,19 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         console.warn('[STRIPE] Invalid client secret shape; expected pi_* with _secret_. Value:', maybeSecret);
       }
       
+      // --- HOTFIX: extract Stripe PaymentIntent client secret directly from RAW payload ---
+      const clientSecret = nested?.stripePaymentIntentClientSecret || null;
+      const secretLooksValid = typeof clientSecret === 'string' &&
+        (/_secret_/.test(clientSecret) || /^pi_/.test(clientSecret));
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[HOTFIX][STRIPE_PI] extracted from RAW:', {
+          pdKeys: pd ? Object.keys(pd) : null,
+          hasNested: !!nested,
+          clientSecretTail: (clientSecret || '').slice(-12),
+          secretLooksValid,
+        });
+      }
+      
       const newState = {
         ...state,
         speculativeTransactionId: tx.id,
@@ -253,6 +287,7 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         speculatedTransaction: tx,
         stripeClientSecret: validatedSecret,
         speculateStatus: 'succeeded',
+        clientSecretHotfix: secretLooksValid ? clientSecret : null,
       };
       
       return newState;

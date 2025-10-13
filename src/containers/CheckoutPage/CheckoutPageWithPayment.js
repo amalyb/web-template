@@ -682,8 +682,18 @@ const CheckoutPageWithPayment = props => {
     onInitiatePrivilegedSpeculativeTransaction, // Extract callback here to avoid TDZ
     // New props for enhanced speculation state
     speculateStatus,
-    stripeClientSecret,
+    stripeClientSecret: secretFromEntities,
+    clientSecretHotfix: secretFromHotfix,
   } = props;
+  
+  // --- HOTFIX: Prefer hotfix secret over entity-derived one ---
+  const stripeClientSecret = secretFromHotfix || secretFromEntities || null;
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[HOTFIX][STRIPE_PI] chosen secret tail:',
+      (stripeClientSecret || '').slice(-12),
+      { from: secretFromHotfix ? 'hotfix' : (secretFromEntities ? 'entities' : 'none') }
+    );
+  }
 
   // ✅ STEP 2: Initialize all state hooks
   const [submitting, setSubmitting] = useState(false);
