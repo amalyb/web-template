@@ -966,7 +966,21 @@ const CheckoutPageWithPayment = props => {
     if (!stripe || !stripeClientSecret) return;
     if (retrievedRef.current === stripeClientSecret) return;
 
-    console.log('[STRIPE] Retrieving PaymentIntent with clientSecret');
+    // 🔐 PROD HOTFIX: Double-check secret looks valid before calling Stripe
+    const looksStripey = typeof stripeClientSecret === 'string' && 
+                         (/_secret_/.test(stripeClientSecret) || /^pi_/.test(stripeClientSecret));
+    
+    if (!looksStripey) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[STRIPE] Invalid client secret shape; expected pi_* with _secret_. Not retrieving PI.');
+      }
+      return;
+    }
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[STRIPE] Retrieving PaymentIntent with clientSecret');
+    }
+    
     props.onRetrievePaymentIntent({
       stripe,
       stripePaymentIntentClientSecret: stripeClientSecret,
@@ -1224,6 +1238,25 @@ const CheckoutPageWithPayment = props => {
             {errorMessages.speculateErrorMessage}
             {errorMessages.retrievePaymentIntentErrorMessage}
             {errorMessages.paymentExpiredMessage}
+            
+            {/* 🔐 PROD HOTFIX: Safety valve - show banner if PI secret is invalid */}
+            {speculateStatus === 'succeeded' && props.speculativeTransactionId && !stripeClientSecret && (
+              <div style={{ 
+                padding: '16px', 
+                marginBottom: '16px', 
+                backgroundColor: '#FFF3CD', 
+                borderRadius: '4px',
+                border: '1px solid #FFEAA7',
+                textAlign: 'center'
+              }}>
+                <p style={{ margin: 0, color: '#856404', fontSize: '14px' }}>
+                  <FormattedMessage 
+                    id="CheckoutPage.paymentTemporarilyUnavailable" 
+                    defaultMessage="Payment is temporarily unavailable. Please try again shortly or contact support." 
+                  />
+                </p>
+              </div>
+            )}
             
             {/* Show loading indicator while speculation is in progress */}
             {speculativeInProgress && !props.speculativeTransactionId && (

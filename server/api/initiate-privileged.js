@@ -195,6 +195,32 @@ module.exports = (req, res) => {
       // 🔧 FIXED: Use fresh transaction data from the API response
       const tx = apiResponse?.data?.data;  // Flex SDK shape
       
+      // 🔐 PROD HOTFIX: Diagnose PaymentIntent data from Flex
+      if (process.env.NODE_ENV !== 'production') {
+        const pd = tx?.attributes?.protectedData || {};
+        const nested = pd?.stripePaymentIntents?.default || {};
+        const piId = nested?.stripePaymentIntentId || pd?.stripePaymentIntentId;
+        const piSecret = nested?.stripePaymentIntentClientSecret || pd?.stripePaymentIntentClientSecret;
+        
+        const looksLikePI = typeof piId === 'string' && /^pi_/.test(piId);
+        const secretLooksRight = typeof piSecret === 'string' && /_secret_/.test(piSecret);
+        
+        console.log('[SERVER_PROXY] PI data from Flex:', {
+          isSpeculative,
+          txId: tx?.id?.uuid || tx?.id,
+          piId: piId ? (looksLikePI ? piId.slice(0, 10) + '...' : piId) : null,
+          piSecret: piSecret ? (secretLooksRight ? '***' + piSecret.slice(-10) : piSecret) : null,
+          looksLikePI,
+          secretLooksRight,
+          hasNested: !!nested?.stripePaymentIntentClientSecret,
+          hasFlat: !!pd?.stripePaymentIntentClientSecret,
+        });
+        
+        if (!looksLikePI || !secretLooksRight) {
+          console.warn('[SERVER_PROXY] ⚠️ PaymentIntent data may be invalid! Expected pi_* id and secret with _secret_');
+        }
+      }
+      
       // STEP 4: Add a forced test log
       console.log('🧪 Inside initiate-privileged — beginning SMS evaluation');
       

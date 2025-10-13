@@ -98,11 +98,43 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       
       const tx = payload.transaction;
       
-      // Extract Stripe client secret from transaction attributes - try both possible paths
-      const clientSecret =
-        tx?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
-        tx?.attributes?.metadata?.stripePaymentIntentClientSecret ||
-        null;
+      // 🔐 PROD HOTFIX: Robustly extract Stripe client secret from all possible paths
+      const pd = tx?.attributes?.protectedData || {};
+      const md = tx?.attributes?.metadata || {};
+      const nested = pd?.stripePaymentIntents?.default || {};
+
+      // Try paths in priority order: flat legacy -> metadata -> nested default
+      const maybeSecret =
+        pd?.stripePaymentIntentClientSecret ||
+        md?.stripePaymentIntentClientSecret ||
+        nested?.stripePaymentIntentClientSecret;
+
+      // Validate: must be a string AND look like a real Stripe secret
+      const looksStripey = typeof maybeSecret === 'string' && (/_secret_/.test(maybeSecret) || /^pi_/.test(maybeSecret));
+      
+      // Determine which path was used (for diagnostics)
+      const pathUsed = pd?.stripePaymentIntentClientSecret ? 'protectedData.flat'
+                     : md?.stripePaymentIntentClientSecret ? 'metadata.flat'
+                     : nested?.stripePaymentIntentClientSecret ? 'protectedData.nested.default'
+                     : 'none';
+
+      // Dev-only diagnostics
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[POST-SPECULATE]', {
+          txId: tx?.id?.uuid || tx?.id,
+          clientSecretPresent: !!maybeSecret,
+          pathUsed,
+          looksStripey,
+          tail: typeof maybeSecret === 'string' ? maybeSecret.slice(-10) : typeof maybeSecret
+        });
+      }
+      
+      // Only store if it looks valid; otherwise null (will trigger safety valve in UI)
+      const validatedSecret = looksStripey ? maybeSecret : null;
+      
+      if (!looksStripey && maybeSecret && process.env.NODE_ENV !== 'production') {
+        console.warn('[STRIPE] Invalid client secret shape; expected pi_* with _secret_. Value:', maybeSecret);
+      }
       
       const next = {
         ...state,
@@ -110,16 +142,9 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         speculatedTransaction: tx,
         isClockInSync: Math.abs(lastTransitionedAt?.getTime() - localTime.getTime()) < minute,
         speculateStatus: 'succeeded',
-        stripeClientSecret: clientSecret,
+        stripeClientSecret: validatedSecret,
         speculativeTransactionId: tx?.id?.uuid || tx?.id || null,
       };
-      
-      // Log after state construction
-      console.log('[POST-SPECULATE]', {
-        txId: next.speculativeTransactionId,
-        clientSecretPresent: !!next.stripeClientSecret,
-        clientSecretLen: next.stripeClientSecret?.length || 0,
-      });
       
       return next;
     }
@@ -174,42 +199,61 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS: {
       const { tx, key } = payload;
       
-      // Log payload structure to help diagnose if clientSecret is missing
-      console.log('[SPECULATE_SUCCESS_PAYLOAD_KEYS]', {
-        attributeKeys: Object.keys(tx?.attributes || {}),
-        hasProtectedData: !!tx?.attributes?.protectedData,
-        protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
-        hasMetadata: !!tx?.attributes?.metadata,
-        metadataKeys: Object.keys(tx?.attributes?.metadata || {}),
-      });
+      // 🔐 PROD HOTFIX: Robustly extract Stripe client secret from all possible paths
+      const pd = tx?.attributes?.protectedData || {};
+      const md = tx?.attributes?.metadata || {};
+      const nested = pd?.stripePaymentIntents?.default || {};
+
+      // Try paths in priority order: flat legacy -> metadata -> nested default
+      const maybeSecret =
+        pd?.stripePaymentIntentClientSecret ||
+        md?.stripePaymentIntentClientSecret ||
+        nested?.stripePaymentIntentClientSecret;
+
+      // Validate: must be a string AND look like a real Stripe secret
+      const looksStripey = typeof maybeSecret === 'string' && (/_secret_/.test(maybeSecret) || /^pi_/.test(maybeSecret));
       
-      // Extract client secret from transaction - try both possible paths
-      const clientSecret =
-        tx?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
-        tx?.attributes?.metadata?.stripePaymentIntentClientSecret ||
-        null;
+      // Determine which path was used (for diagnostics)
+      const pathUsed = pd?.stripePaymentIntentClientSecret ? 'protectedData.flat'
+                     : md?.stripePaymentIntentClientSecret ? 'metadata.flat'
+                     : nested?.stripePaymentIntentClientSecret ? 'protectedData.nested.default'
+                     : 'none';
+
+      // Dev-only diagnostics
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[SPECULATE_SUCCESS_RAW]', {
+          attributeKeys: Object.keys(tx?.attributes || {}),
+          hasProtectedData: !!pd,
+          protectedDataKeys: Object.keys(pd || {}),
+          hasMetadata: !!md,
+          metadataKeys: Object.keys(md || {}),
+          hasNestedPI: !!nested?.stripePaymentIntentClientSecret,
+        });
+        
+        console.log('[POST-SPECULATE]', {
+          txId: tx?.id?.uuid || tx?.id,
+          clientSecretPresent: !!maybeSecret,
+          pathUsed,
+          looksStripey,
+          tail: typeof maybeSecret === 'string' ? maybeSecret.slice(-10) : typeof maybeSecret
+        });
+      }
       
-      console.log('[INITIATE_TX] success', {
-        txId: tx?.id?.uuid || tx?.id,
-        hasClientSecret: !!clientSecret,
-        clientSecretLength: clientSecret?.length || 0,
-      });
+      // Only store if it looks valid; otherwise null (will trigger safety valve in UI)
+      const validatedSecret = looksStripey ? maybeSecret : null;
+      
+      if (!looksStripey && maybeSecret && process.env.NODE_ENV !== 'production') {
+        console.warn('[STRIPE] Invalid client secret shape; expected pi_* with _secret_. Value:', maybeSecret);
+      }
       
       const newState = {
         ...state,
         speculativeTransactionId: tx.id,
         lastSpeculationKey: key,
         speculatedTransaction: tx,
-        stripeClientSecret: clientSecret,
+        stripeClientSecret: validatedSecret,
         speculateStatus: 'succeeded',
       };
-      
-      // Verification log immediately after state update
-      console.log('[POST-SPECULATE]', {
-        speculativeTransactionId: newState.speculativeTransactionId,
-        clientSecretPresent: !!newState.stripeClientSecret,
-        clientSecretLen: newState.stripeClientSecret?.length || 0,
-      });
       
       return newState;
     }
