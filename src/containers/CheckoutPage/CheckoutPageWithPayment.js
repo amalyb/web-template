@@ -739,6 +739,7 @@ const CheckoutPageWithPayment = props => {
   const lastSessionKeyRef = useRef(null);
   const retrievedRef = useRef(null);
   const lastPDKeysSentRef = useRef([]);
+  const customerFormRef = useRef({});
   
   // Keep a stable ref to the handler so effect doesn't depend on its identity
   const initiateRef = useRef(onInitiatePrivilegedSpeculativeTransaction);
@@ -747,7 +748,11 @@ const CheckoutPageWithPayment = props => {
   const handleFormValuesChange = useCallback((next) => {
     const prev = JSON.stringify(formValues || {});
     const json = JSON.stringify(next || {});
-    if (json !== prev) setFormValues(next || {});
+    if (json !== prev) {
+      setFormValues(next || {});
+      // Also update ref for synchronous access in effects
+      customerFormRef.current = next || {};
+    }
   }, [formValues]);
 
   // Normalize booking dates from pageData (handles multiple shapes)
@@ -960,16 +965,16 @@ const CheckoutPageWithPayment = props => {
     // [DEBUG] about to dispatch (one-shot)
     logOnce('[INITIATE_TX] about to dispatch', { sessionKey, orderParams: orderResult.params });
 
-    // Build protectedData from form values (if available)
+    // Build protectedData from form values (use ref for latest values)
     const profileFallback = {
       customerPhone: currentUser?.attributes?.profile?.privateData?.phone
         || currentUser?.attributes?.profile?.protectedData?.phone
         || '',
     };
     
-    const protectedDataFromForm = buildProtectedData(formValues, profileFallback);
+    const protectedDataFromForm = buildProtectedData(customerFormRef.current, profileFallback);
     
-    // Merge protectedData into orderParams
+    // Merge protectedData into orderParams (IMPORTANT: modify the params we actually dispatch)
     const orderParamsWithPD = {
       ...orderResult.params,
       protectedData: {
@@ -982,9 +987,10 @@ const CheckoutPageWithPayment = props => {
     const pdKeys = Object.keys(orderParamsWithPD.protectedData || {});
     lastPDKeysSentRef.current = pdKeys;
 
-    // Dev-only: log PD keys being sent
-    if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+    // Dev-only: log PD keys being sent (ALWAYS log, not inside typeof check)
+    if (process.env.NODE_ENV !== 'production') {
       console.log('[PRE-SPECULATE] protectedData keys:', pdKeys);
+      console.log('[PRE-SPECULATE] protectedData:', orderParamsWithPD.protectedData);
     }
 
     // Call the latest handler via ref (no identity in deps)
@@ -1000,7 +1006,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[INITIATE_TX] FAILED', err);
         });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValues]); // Added formValues to deps
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized]); // Removed formValues from deps
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
@@ -1082,7 +1088,7 @@ const CheckoutPageWithPayment = props => {
           || '',
       };
       
-      const protectedDataFromForm = buildProtectedData(formValues, profileFallback);
+      const protectedDataFromForm = buildProtectedData(customerFormRef.current, profileFallback);
       
       // Merge protectedData into orderParams
       const orderParamsWithPD = {
@@ -1097,7 +1103,7 @@ const CheckoutPageWithPayment = props => {
       const pdKeys = Object.keys(orderParamsWithPD.protectedData || {});
       lastPDKeysSentRef.current = pdKeys;
 
-      if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+      if (process.env.NODE_ENV !== 'production') {
         console.log('[RETRY-SPECULATE] protectedData keys:', pdKeys);
       }
 
@@ -1109,7 +1115,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[Checkout] Retry failed', err);
         });
     }
-  }, [orderResult, formValues, currentUser]);
+  }, [orderResult, currentUser]);
 
   // Comprehensive logging for submit gates (recomputes after each key state change)
   useEffect(() => {
