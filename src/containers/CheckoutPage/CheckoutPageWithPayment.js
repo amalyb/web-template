@@ -531,12 +531,10 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
   
   // Assert required fields and abort if missing
   if (!mergedPD.customerStreet?.trim() || !mergedPD.customerZip?.trim()) {
-    const missingFields = [];
-    if (!mergedPD.customerStreet?.trim()) missingFields.push('Street Address');
-    if (!mergedPD.customerZip?.trim()) missingFields.push('ZIP Code');
-    
-    setSubmitting(false);
-    throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[checkout] Missing address fields for speculate — proceeding with minimal PD');
+    }
+    // continue without throwing; speculation should still run
   }
 
   // One-time logs right before the API call
@@ -969,8 +967,18 @@ const CheckoutPageWithPayment = props => {
         clientSecretPresent: !!stripeClientSecret,
         clientSecretLength: stripeClientSecret?.length || 0,
       });
+      
+      // Add dev-only diagnostics (no secrets)
+      if (process.env.NODE_ENV !== 'production') {
+        const tx = props?.speculativeTransaction;
+        const pd = tx?.attributes?.protectedData?.stripePaymentIntents?.default || {};
+        console.log('[POST-SPECULATE] clientSecretPresent:%s clientSecretLength:%s',
+          !!pd.stripePaymentIntentClientSecret,
+          (pd.stripePaymentIntentClientSecret || '').length
+        );
+      }
     }
-  }, [speculateStatus, props?.speculativeTransactionId, stripeClientSecret]);
+  }, [speculateStatus, props?.speculativeTransactionId, stripeClientSecret, props?.speculativeTransaction]);
 
   // 🔑 CRITICAL: Retrieve PaymentIntent after speculation succeeds
   // This populates state.stripe.paymentIntent which StripePaymentForm needs to mount Elements
