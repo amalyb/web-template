@@ -1,133 +1,132 @@
-# Quick Test Guide - Checkout Speculation Fix
+# Quick Test Guide - Checkout Page Fix
 
-## Quick Verification Steps
+## 🚀 Quick Verification (5 minutes)
 
-### 1. Open Browser Console
-Before starting, open DevTools Console (F12) and filter for:
-- `[Checkout]`
-- `[INITIATE_TX]`
-- `[POST-SPECULATE]`
-- `[SUBMIT_GATES]`
-- `[Stripe]`
+### 1. Start the App
+```bash
+npm run dev
+```
 
 ### 2. Navigate to Checkout
-1. Go to any listing
-2. Select check-in and check-out dates
-3. Click "Request to book"
+1. Go to any listing page
+2. Select booking dates (start + end)
+3. Click **"Request to book"** button
 
-### 3. Watch Console Logs
+### 3. ✅ Expected Behavior
 
-**You should see this sequence:**
+#### Page Should Render Immediately
+- ❌ **OLD:** Shows "Cannot render - invalid orderParams"
+- ✅ **NEW:** Page renders with billing form visible
 
+#### Console Logs (Chrome DevTools)
+Open console (F12) and look for:
 ```
-✅ [Checkout] triggering speculate… { listingId: '...', orderData: {...} }
-✅ [INITIATE_TX] about to dispatch
-✅ [speculate] success { txId: '...', hasClientSecret: true }
-✅ [INITIATE_TX] success { txId: '...', hasClientSecret: true }
-✅ [POST-SPECULATE] { speculativeTransactionId: '...', clientSecretPresent: true, clientSecretLength: 67 }
-✅ [STRIPE] Retrieving PaymentIntent with clientSecret    ← NEW!
-✅ [STRIPE] PaymentIntent retrieved successfully          ← NEW!
-✅ [Stripe] element mounted: true
-✅ [SUBMIT_GATES] { hasSpeculativeTx: true, stripeReady: true, ... }
+[Checkout] rendering regardless of orderResult.ok; collecting form values...
+[INIT_GATES] { hasUser: true, orderOk: true, hasTxId: false, hasProcess: true }
+[SPECULATE_SUCCESS] { txId: '...', lineItems: 3 }
 ```
 
-### 4. Check Submit Button
-
-**Initial State (Before Form Fill):**
+#### Fill Out Form
+1. Enter billing address
+2. Watch console for:
 ```
-Button: Disabled
-Message: "Can't submit yet: paymentElementIncomplete / Complete required fields…"
-```
-
-**After Filling Card Details:**
-```
-Button: ENABLED ✅
-No disabled message shown
+[StripePaymentForm] mapped -> ['customerName', 'customerStreet', 'customerZip', ...]
+[Form] parent sees valid: true
 ```
 
-### 5. Submit Transaction
-- Click the enabled submit button
-- Should proceed to payment processing
-- Should redirect to order details page on success
+#### Submit Button
+- Should be **disabled** initially
+- Should **enable** once all fields filled
+- Shows reason when disabled: "Waiting for transaction initialization…" → "Enter payment details…" → "Complete required fields…"
 
-## What Changed?
+### 4. Server Logs (Terminal)
 
-### Before (Broken):
+#### During Page Load (Speculation)
+Look for:
 ```
-[SUBMIT_GATES] { hasSpeculativeTx: true, canSubmit: false, disabledReason: 'noSpeculativeTx' }
-                    ↑ TRUE                      ↑ FALSE      ↑ CONTRADICTORY!
+[initiate] presence check { hasStreet: true, hasZip: true, hasPhone: true, hasEmail: true, hasName: true }
 ```
+**Note:** Some fields may be `false` during speculation if user hasn't filled form yet. This is OK.
 
-### After (Fixed):
+#### During Final Submit (Real Booking)
+After clicking "Complete booking", look for:
 ```
-[SUBMIT_GATES] { hasSpeculativeTx: true, canSubmit: true, disabledReason: null }
-                    ↑ TRUE                     ↑ TRUE       ↑ CONSISTENT!
+[initiate] presence check { hasStreet: true, hasZip: true, hasPhone: true, hasEmail: true, hasName: true }
 ```
+**Important:** ALL fields MUST be `true` on final submit. If any are `false`, booking will fail.
 
-## Common Issues
+---
 
-### Issue: Still seeing "noSpeculativeTx"
-**Check:** Do you see `[INITIATE_TX] success` in console?
-- **If NO**: Speculation isn't succeeding. Check network tab for errors.
-- **If YES**: The gate logic is still incorrect. Double-check the file edits.
+## 🐛 If Something Goes Wrong
 
-### Issue: Button stays disabled even after filling form
-**Check:** Console logs for `[SUBMIT_GATES]`
-- Look for which gate is failing (e.g., `formValid: false`, `stripeReady: false`)
-- Most common: `paymentElementComplete: false` - Make sure you fill the card number completely
-
-### Issue: No `[POST-SPECULATE]` log
-**Check:** Look for `speculateStatus` in Redux DevTools
-- Should transition: `idle` → `pending` → `succeeded`
-- If stuck on `pending`, check network tab for API errors
-- If shows `failed`, check `lastSpeculateError` in Redux state
-
-## Redux State to Verify
-
-Open Redux DevTools and check `state.CheckoutPage`:
-
-```javascript
-{
-  speculateStatus: 'succeeded',           // ✅ Should be 'succeeded'
-  speculativeTransactionId: { uuid: '...' }, // ✅ Should have value
-  stripeClientSecret: 'pi_..._secret_...',   // ✅ Should have value (long string)
-  speculatedTransaction: { ... },         // ✅ Should have transaction object
-  lastSpeculateError: null,               // ✅ Should be null
-}
-```
-
-## Success Criteria
-
-✅ Console shows all expected logs in order  
-✅ `[POST-SPECULATE]` shows `clientSecretPresent: true`  
-✅ `[SUBMIT_GATES]` eventually shows `canSubmit: true`  
-✅ Submit button becomes enabled after form is valid  
-✅ Transaction submits successfully  
-
-If all criteria pass, the fix is working! 🎉
-
-## Rollback (If Needed)
-
-If something breaks:
+### Issue: Page still shows "Cannot render"
+**Check:** Did you restart the dev server after changes?
 ```bash
-git checkout src/containers/CheckoutPage/CheckoutPage.duck.js
-git checkout src/containers/CheckoutPage/CheckoutPage.js
-git checkout src/containers/CheckoutPage/CheckoutPageWithPayment.js
+# Kill the server (Ctrl+C) and restart
+npm run dev
 ```
 
-## Next Steps After Success
+### Issue: Form doesn't appear
+**Check console for:**
+- `orderResult.ok: false` - OK, page should still render
+- Look for `[Checkout] rendering regardless of orderResult.ok` log
 
-1. Test with different listings
-2. Test with different date ranges
-3. Test with saved payment methods (if applicable)
-4. Test the full flow including the final redirect
+### Issue: Submit button stays disabled
+**Check:**
+1. Are all 7 fields filled? (name, street, city, state, zip, email, phone)
+2. Console shows `[Form] invalid: true` → look at error keys
+3. Check for `[SUBMIT_GATES]` log showing which gate is failing
 
-## Need Help?
+### Issue: "Payment temporarily unavailable" banner
+**Check:**
+1. Did speculation succeed? Look for `[SPECULATE_SUCCESS]` log
+2. Is `stripeClientSecret` present? Check `[POST-SPECULATE]` log
+3. Server logs show PaymentIntent creation?
 
-Check these files for the changes:
-- `/src/containers/CheckoutPage/CheckoutPage.duck.js` - State management
-- `/src/containers/CheckoutPage/CheckoutPageWithPayment.js` - Gate logic
-- `/src/containers/CheckoutPage/CheckoutPage.js` - Props mapping
+---
 
-All changes preserve backward compatibility and add comprehensive logging.
+## 📋 Acceptance Criteria Checklist
 
+- [ ] **AC1:** Page renders without "Cannot render" error
+- [ ] **AC2:** Form shows `invalid: false` when all fields filled
+- [ ] **AC3:** Server logs show `{ hasStreet: true, hasZip: true, hasPhone: true }`
+- [ ] **AC4:** Console shows `[SPECULATE_SUCCESS]` with txId and lineItems
+- [ ] **AC5:** Breakdown shows correct pricing (no regression)
+
+---
+
+## 🎯 Success Indicators
+
+✅ **All Green** = Fix is working
+1. Page renders immediately
+2. Form is visible and accepts input
+3. Submit button enables when ready
+4. Logs show data flowing correctly
+5. Booking completes successfully
+
+---
+
+## 🔍 One-Liner Test
+
+```bash
+# Watch server logs while testing
+npm run dev 2>&1 | grep -E '\[initiate\]|\[SPECULATE|presence check'
+```
+
+Then navigate to checkout in browser and watch for logs.
+
+**Expected output:**
+1. On page load: `[initiate] presence check { ... }` (some fields may be false - OK for speculation)
+2. After submit: `[initiate] presence check { hasStreet: true, hasZip: true, ... }` (all must be true!)
+
+**Note:** You'll see source-map 404s and Mapbox token warnings - these are non-blocking, ignore them for this fix.
+
+---
+
+## 📞 Need Help?
+
+If the fix isn't working:
+1. Check `CHECKOUT_FIX_SUMMARY.md` for detailed changes
+2. Verify all 5 files were modified correctly
+3. Ensure no merge conflicts or stale builds
+4. Check browser console AND server terminal for errors

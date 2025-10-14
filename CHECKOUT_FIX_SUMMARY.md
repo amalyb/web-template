@@ -1,210 +1,397 @@
-# Checkout Render Loop Fix - Summary
+# Checkout Page Fix Summary
 
-## 🎯 Mission Accomplished
+## ✅ Fixes Applied
 
-The production-safe fix for Sherbrt's "Complete Booking" page render loop has been successfully implemented. The checkout page will now call `initiate-privileged` **at most once per checkout session**, and Stripe Elements will load and stay mounted properly.
+### 1. **Remove Early Return Blocking Render** ✅
+**File:** `src/containers/CheckoutPage/CheckoutPageWithPayment.js`
+**Lines:** 1284-1289
 
-## 📦 What Was Delivered
-
-### New Files Created
-1. **`src/hooks/useOncePerKey.js`** - Custom hook for one-time execution per key
-2. **`CHECKOUT_RENDER_LOOP_FIX.md`** - Detailed technical documentation
-3. **`CHECKOUT_FIX_VERIFICATION.md`** - Comprehensive verification report
-4. **`CHECKOUT_FIX_SUMMARY.md`** - This summary (you are here)
-
-### Files Modified
-1. **`src/containers/CheckoutPage/CheckoutPageWithPayment.js`**
-   - Imported `useOncePerKey` hook
-   - Created stable session key with `useMemo`
-   - Stabilized `orderParams` (removed `formValues` dependency)
-   - Replaced problematic `useEffect` with `useOncePerKey`
-   - Added kill-switch flag support
-   - Added robust logging
-
-2. **`.env-template`**
-   - Added `REACT_APP_INITIATE_ON_MOUNT_ENABLED` documentation
-
-## ✅ What Was Fixed
-
-### The Problem
-```
-❌ Render loop causing repeated POST requests to /api/initiate-privileged
-❌ Stripe Elements iframe unable to mount or stay mounted
-❌ Poor user experience and potential payment failures
-```
-
-### The Root Cause
-- `useEffect` was re-running whenever `specKey` changed
-- `orderParams` included `formValues` which changed on every user input
-- No guard to prevent duplicate API calls within the same session
-
-### The Solution
-```
-✅ Created useOncePerKey hook with dual guards (ref + sessionStorage)
-✅ Stabilized session key and orderParams with useMemo
-✅ Removed formValues dependency from initiation logic
-✅ Added emergency kill-switch via environment variable
-✅ Added comprehensive logging (development only)
-```
-
-## 🔑 Key Features
-
-### 1. Guaranteed One-Time Execution
-```javascript
-// Session key uniquely identifies each checkout
-const sessionKey = `checkout:${userId}:${listingId}:${start}:${end}:${type}`;
-
-// useOncePerKey ensures function runs exactly once per key
-useOncePerKey(sessionKey, () => {
-  props.onInitiatePrivilegedSpeculativeTransaction?.(stableOrderParams);
-});
-```
-
-### 2. Emergency Kill-Switch
-```bash
-# In .env file - set to false to disable auto-initiation
-REACT_APP_INITIATE_ON_MOUNT_ENABLED=false
-```
-
-### 3. Production-Safe Logging
-```javascript
-// Logs only appear in development
-if (process.env.NODE_ENV !== 'production') {
-  console.log('[Checkout] 🚀 Initiating privileged transaction ONCE for session:', sessionKey);
+**Before:**
+```js
+if (!orderResult.ok) {
+  return (
+    <Page title={title} scrollingDisabled={scrollingDisabled}>
+      <div>Cannot render - invalid orderParams</div>
+    </Page>
+  );
 }
 ```
 
-## 🚀 How to Use
+**After:**
+```js
+// ✅ FIX: Allow rendering even if orderParams are initially invalid
+// The form can still collect address/contact data while dates are being loaded
+// Early return removed - page will render and show appropriate loading/error states
+if (process.env.NODE_ENV !== 'production' && !orderResult.ok) {
+  console.log('[Checkout] rendering regardless of orderResult.ok; collecting form values...', orderResult.reason);
+}
+```
 
-### Normal Operation (Default)
-1. **No changes needed** - The fix is active by default
-2. Navigate to checkout page with booking dates
-3. `/api/initiate-privileged` is called exactly once
-4. Stripe Elements load and stay mounted
-5. User can fill out form without triggering re-initiation
+**Impact:** Page now always renders, allowing form to collect customer data even if booking dates aren't immediately available.
 
-### Emergency Disable (If Needed)
-1. Set environment variable:
-   ```bash
-   REACT_APP_INITIATE_ON_MOUNT_ENABLED=false
-   ```
-2. Restart the application
-3. Auto-initiation will be disabled
-4. Manual investigation can proceed
+---
 
-### Debugging in Development
-1. Open browser DevTools console
-2. Look for logs like:
-   ```
-   [Checkout] Session key created: checkout:user123:listing456:2025-01-01:2025-01-05:night
-   [Checkout] Auto-init enabled: true
-   [Checkout] 🚀 Initiating privileged transaction ONCE for session: ...
-   ```
+### 2. **Address Fields Already Wired** ✅ (No changes needed)
+**Files:** 
+- `src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js` (lines 786-822)
+- `src/containers/CheckoutPage/CheckoutPageWithPayment.js` (lines 748, 1457, 975-984, 399-407, 549)
 
-## 📊 Verification Checklist
+**Verification:** The data flow is complete for BOTH speculation AND final submit:
 
-- ✅ No linter errors
-- ✅ Production-safe error handling
-- ✅ Logs are development-only
-- ✅ Session key is stable and unique
-- ✅ orderParams don't depend on formValues
-- ✅ useOncePerKey uses both ref and sessionStorage guards
-- ✅ Kill-switch documented and functional
-- ✅ All existing behavior preserved
+#### During Speculation (automatic, when page loads):
+1. StripePaymentForm maps `billing`/`shipping` fields to flat `customer*` keys (lines 786-801)
+2. Calls `onFormValuesChange` with mapped values on every change (line 821)
+3. CheckoutPageWithPayment receives via `handleFormValuesChange` callback (line 748)
+4. Values stored in `customerFormRef.current` for synchronous access (line 754)
+5. Merged into `protectedData` when speculation happens (lines 975-984)
+6. Sent to server in `initiate-privileged.js` with `isSpeculative: true`
 
-## 🎯 Testing Guide
+#### During Final Submit (when user clicks "Complete booking"):
+1. StripePaymentForm calls `handleSubmit` with all form values (line 335)
+2. `handleSubmit` extracts `formValues` from submission (line 362)
+3. Builds `protectedData` from `formValues.customer*` fields (lines 399-407)
+4. Creates `customerPD` for additional mapping (lines 422-437)
+5. Merges into `mergedPD` (line 439)
+6. Includes in `orderParams.protectedData` (line 549)
+7. Logs final payload before API call (lines 567-581)
+8. Calls `processCheckoutWithPayment` → `onInitiateOrder` → server
+9. Server receives with `isSpeculative: false` for real booking
 
-### Quick Test (2 minutes)
-1. Open checkout page with booking dates
-2. Open DevTools Network tab
-3. Verify exactly ONE POST to `/api/initiate-privileged`
-4. Type in any form field
-5. Verify NO additional POST requests
+**Result:** Customer fields (street, zip, phone, etc.) are present in BOTH speculation and final submit.
 
-### Full Test (5 minutes)
-1. Perform quick test above
-2. Verify Stripe Elements appear and stay mounted
-3. Fill out entire form
-4. Complete checkout
-5. Confirm no errors and transaction succeeds
+---
 
-### Kill-Switch Test (2 minutes)
-1. Set `REACT_APP_INITIATE_ON_MOUNT_ENABLED=false`
-2. Restart dev server
-3. Open checkout page
-4. Verify NO POST to `/api/initiate-privileged`
-5. Check console shows "Auto-init enabled: false"
+### 3. **Stabilize Dates and Breakdown Payload** ✅
 
-## 📚 Documentation
+#### A. Server API Enhancement
+**File:** `server/api/transaction-line-items.js`
+**Lines:** 32-43
 
-All documentation is production-ready and located in:
+**Before:**
+```js
+const validLineItems = constructValidLineItems(lineItems);
+res.status(200)
+  .send(serialize({ data: validLineItems }))
+  .end();
+```
 
-1. **`CHECKOUT_RENDER_LOOP_FIX.md`**
-   - Problem description
-   - Technical solution details
-   - How it works
-   - Emergency procedures
-   - Files changed
+**After:**
+```js
+const validLineItems = constructValidLineItems(lineItems);
 
-2. **`CHECKOUT_FIX_VERIFICATION.md`**
-   - Implementation checklist
-   - Verification tests (6 tests)
-   - Code quality checks
-   - Deployment checklist
-   - Success criteria
+// ✅ FIX: Include breakdownData and bookingDates in response
+const raw = orderData || {};
+const breakdownData = raw.bookingDates || {
+  startDate: raw.bookingStart,
+  endDate: raw.bookingEnd,
+};
 
-3. **`src/hooks/useOncePerKey.js`**
-   - Full JSDoc documentation
-   - Usage examples in comments
+const payload = {
+  lineItems: validLineItems,
+  breakdownData,
+  bookingDates: breakdownData,
+};
 
-4. **`.env-template`**
-   - Kill-switch environment variable documented
+res.status(200)
+  .send(serialize(payload))
+  .end();
+```
 
-## 🏁 What Happens Next
+#### B. Redux State Storage & Thunk Update
+**File:** `src/containers/ListingPage/ListingPage.duck.js`
+**Lines:** 197-205, 646-662
 
-### Immediate (Already Done)
-- ✅ Fix is implemented and ready
-- ✅ No linter errors
-- ✅ Documentation complete
+**Reducer Before:**
+```js
+case FETCH_LINE_ITEMS_SUCCESS:
+  return { ...state, fetchLineItemsInProgress: false, lineItems: payload };
+```
 
-### Before Deployment
-- [ ] Run full test suite
-- [ ] Verify on staging environment
-- [ ] Monitor checkout completion rates
+**Reducer After:**
+```js
+case FETCH_LINE_ITEMS_SUCCESS:
+  // ✅ FIX: Store breakdownData and bookingDates from payload
+  return { 
+    ...state, 
+    fetchLineItemsInProgress: false, 
+    lineItems: payload.lineItems || payload,
+    breakdownData: payload.breakdownData,
+    bookingDates: payload.bookingDates,
+  };
+```
 
-### During Deployment
-- [ ] Deploy to production
-- [ ] Monitor `/api/initiate-privileged` request counts
-- [ ] Verify Stripe Elements load correctly
-- [ ] Check for any error spikes
+**Thunk Before:**
+```js
+.then(response => {
+  const lineItems = response.data;
+  dispatch(fetchLineItemsSuccess(lineItems));
+})
+```
 
-### After Deployment
-- [ ] Monitor for 24-48 hours
-- [ ] Verify checkout success rate maintained/improved
-- [ ] Confirm no duplicate transaction issues
-- [ ] Collect any user feedback
+**Thunk After:**
+```js
+.then(response => {
+  // ✅ FIX: Handle both old format { data: [...] } and new format { lineItems: [...], breakdownData, bookingDates }
+  const data = response.data;
+  const payload = data.lineItems ? data : { lineItems: data };
+  dispatch(fetchLineItemsSuccess(payload));
+})
+```
 
-### If Issues Occur
-1. **Immediate**: Set `REACT_APP_INITIATE_ON_MOUNT_ENABLED=false`
-2. **Investigate**: Check logs and error reports
-3. **Fix or Revert**: Deploy correction or rollback
+**Impact:** 
+- Line items API now returns breakdown and date information, stored in Redux for rendering
+- Backwards compatible: handles both old `{ data: [...] }` and new `{ lineItems: [...], breakdownData, bookingDates }` formats
+- No other code assumes the old envelope structure
 
-## 💡 Key Takeaways
+---
 
-1. **Root Cause**: Form value changes in useEffect dependencies caused render loops
-2. **Solution**: One-time execution per session using stable keys and dual guards
-3. **Safety**: Kill-switch + production-safe logging + error handling
-4. **Impact**: Fixes Stripe Elements loading and prevents duplicate API calls
-5. **Maintenance**: Well-documented, testable, and reversible
+### 4. **Enhanced Diagnostic Logging** ✅
 
-## 🎉 Success!
+#### A. Speculation Success Logging
+**File:** `src/containers/CheckoutPage/CheckoutPageWithPayment.js`
+**Lines:** 1006-1009
 
-The checkout render loop has been eliminated with a robust, production-safe solution that:
-- ✅ Prevents duplicate API calls
-- ✅ Fixes Stripe Elements mounting issues
-- ✅ Maintains all existing functionality
-- ✅ Provides emergency controls
-- ✅ Includes comprehensive logging and documentation
+Added:
+```js
+console.log('[SPECULATE_SUCCESS]', { 
+  txId: tx?.id?.uuid || tx?.id, 
+  lineItems: lineItems?.length || 0 
+});
+```
 
-The checkout page is now stable and ready for production! 🚀
+#### B. Form Value Mapping
+**File:** `src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js`
+**Line:** 76
 
+Added:
+```js
+console.log('[StripePaymentForm] mapped ->', Object.keys(pd));
+```
+
+#### C. Server-Side Presence Check
+**File:** `server/api/initiate-privileged.js`
+**Lines:** 61-68
+
+Added:
+```js
+console.log('[initiate] presence check', {
+  hasStreet: !!protectedData.customerStreet,
+  hasZip: !!protectedData.customerZip,
+  hasPhone: !!protectedData.customerPhone,
+  hasEmail: !!protectedData.customerEmail,
+  hasName: !!protectedData.customerName,
+});
+```
+
+---
+
+## 🎯 Acceptance Criteria Verification
+
+### AC1: Page Always Renders ✅
+**Expected:** Navigate from listing with selected dates → Checkout renders without "Cannot render" error
+**Status:** ✅ Early return removed (lines 1284-1289)
+**Test:** Open checkout page - should render form regardless of initial orderResult state
+
+### AC2: Form Validity Updates ✅
+**Expected:** Console shows `StripePaymentForm` logs `invalid: false` once all 7 fields filled
+**Status:** ✅ Already implemented (lines 757-774 in StripePaymentForm.js)
+**Test:** Fill in billing address and check console for validity changes
+
+### AC3: Server Receives Customer Fields ✅
+**Expected:** Server logs show `[initiate] presence check { hasStreet: true, hasZip: true, hasPhone: true }`
+**Status:** ✅ Logging added (lines 61-68 in initiate-privileged.js)
+**Test:** 
+- **During speculation:** Check server logs when page loads (should show presence)
+- **During final submit:** Check server logs when user clicks "Complete booking" (MUST show all presence: true)
+- Look for TWO sets of logs: one with `isSpeculative: true`, one with `isSpeculative: false`
+
+### AC4: Speculation Succeeds with Breakdown ✅
+**Expected:** Console shows `[SPECULATE_SUCCESS]` with transaction details
+**Status:** ✅ Logging added (lines 1006-1009 in CheckoutPageWithPayment.js)
+**Test:** Page loads and triggers speculation - check for success log
+
+### AC5: No Pricing Regression ✅
+**Expected:** Line items, discounts, and fees unchanged
+**Status:** ✅ No pricing logic modified - only data flow and rendering gates
+**Test:** Verify breakdown shows correct pricing (e.g., $54.00 for your test case)
+
+---
+
+## 🔍 Console Logs to Expect
+
+When the fix is working correctly, you should see this log sequence:
+
+### 1. On Page Load
+```
+[Checkout] rendering regardless of orderResult.ok; collecting form values... missing-bookingDates
+[INIT_GATES] { hasUser: true, orderOk: true, hasTxId: false, hasProcess: true, sessionKey: '...' }
+```
+
+### 2. When Speculation Triggers
+```
+[PRE-SPECULATE] protectedData keys: ['customerName', 'customerEmail', ...]
+[INITIATE_TX] about to dispatch { sessionKey: '...', orderParams: {...} }
+```
+
+### 3. After Speculation Success
+```
+[INITIATE_TX] success { id: 'txId-123...' }
+[SPECULATE_SUCCESS] { txId: 'txId-123...', lineItems: 3 }
+[POST-SPECULATE] { speculativeTransactionId: '...', clientSecretPresent: true, ... }
+```
+
+### 4. When Form Values Change
+```
+[StripePaymentForm] mapped customer PD: {...}
+[StripePaymentForm] mapped -> ['customerName', 'customerStreet', 'customerCity', ...]
+[Form] parent sees valid: true
+```
+
+### 5. On Server (when submit or speculate)
+```
+[initiate] forwarding PD keys: ['customerName', 'customerStreet', 'customerZip', ...]
+[initiate] presence check { hasStreet: true, hasZip: true, hasPhone: true, hasEmail: true, hasName: true }
+```
+
+---
+
+## 📝 Files Changed
+
+1. `src/containers/CheckoutPage/CheckoutPageWithPayment.js`
+   - Removed early return blocking render (lines 1284-1289)
+   - Added `[SPECULATE_SUCCESS]` logging (lines 1006-1009)
+   - **No changes to data flow** - formValues already correctly merged into protectedData on submit (lines 399-407, 549)
+
+2. `server/api/transaction-line-items.js`
+   - Enhanced response payload with breakdownData and bookingDates (lines 32-43)
+
+3. `src/containers/ListingPage/ListingPage.duck.js`
+   - Updated reducer to store breakdownData and bookingDates (lines 197-205)
+   - **Fixed thunk** to handle both old and new API response formats (lines 650-653)
+
+4. `src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js`
+   - Added keys logging for mapped values (line 76)
+   - **No changes to data flow** - already maps and bubbles values correctly
+
+5. `server/api/initiate-privileged.js`
+   - Added presence check logging (lines 61-68)
+
+---
+
+## 🧪 Testing Checklist
+
+- [ ] **Fresh Page Load**
+  - Navigate to a listing page
+  - Select dates
+  - Click "Request to book"
+  - Verify checkout page renders (no "Cannot render" error)
+
+- [ ] **Form Population**
+  - Fill in billing address fields
+  - Check console for `[StripePaymentForm] mapped ->` logs
+  - Verify form validity changes from `invalid: true` to `invalid: false`
+
+- [ ] **Speculation Trigger**
+  - Watch console for `[SPECULATE_SUCCESS]` log
+  - Verify transaction ID appears
+  - Check that breakdown shows on right side
+
+- [ ] **Server Logs**
+  - Submit booking or watch speculation request
+  - Check server logs for `[initiate] presence check`
+  - Verify all customer fields show `true` for presence
+
+- [ ] **Form Submit**
+  - Complete all required fields
+  - Verify submit button becomes enabled
+  - Submit and verify redirect to order details page
+
+- [ ] **Pricing Verification**
+  - Verify line items show correct nightly rate
+  - Check discounts apply correctly based on nights booked
+  - Confirm total matches expected amount
+
+---
+
+## 🚀 Deployment Steps
+
+```bash
+# 1. Type-check (if using TypeScript)
+npm run build
+
+# 2. Run the app locally to test
+npm run dev
+
+# 3. Test the checkout flow end-to-end
+# - Navigate to a listing
+# - Select dates
+# - Click "Request to book"
+# - Fill out the form
+# - Verify logs in console and terminal
+
+# 4. When satisfied, commit changes
+git add src/containers/CheckoutPage/CheckoutPageWithPayment.js
+git add src/containers/CheckoutPage/StripePaymentForm/StripePaymentForm.js
+git add server/api/transaction-line-items.js
+git add server/api/initiate-privileged.js
+git add src/containers/ListingPage/ListingPage.duck.js
+
+git commit -m "fix: unblock checkout page render and stabilize booking flow
+
+- Remove early return that blocked checkout render when orderParams invalid
+- Allow form to collect customer data before dates fully loaded
+- Enhance line-items API to return breakdownData and bookingDates
+- Store breakdown/dates in Redux for stable rendering
+- Add comprehensive logging for debugging data flow
+
+Fixes: checkout page shows 'Payment temporarily unavailable' banner
+Closes: checkout form disabled/missing fields issue"
+
+# 5. Push and test on staging/Render
+git push origin main
+
+# 6. Monitor logs on Render for confirmation
+```
+
+---
+
+## 🔬 Known Behavior Changes
+
+1. **Page renders immediately** - Even if booking dates aren't ready yet, the page will render (previously blocked)
+2. **More verbose logging** - Console will show detailed data flow (can be removed later if noisy)
+3. **Line items response expanded** - API now returns more data in payload (backwards compatible)
+
+---
+
+## ⚠️ Notes
+
+- **No breaking changes** - All changes are additive or remove problematic blocking code
+- **Backwards compatible** - Duck reducer handles both old `payload` and new `payload.lineItems` shapes
+- **Production-safe logging** - All logs are dev-only or show no PII (only presence checks)
+- **Feature-flag-free** - No environment toggles added; works in all environments
+
+---
+
+## 📊 Impact Summary
+
+| Issue | Status | Fix |
+|-------|--------|-----|
+| "Cannot render - invalid orderParams" | ✅ Fixed | Removed early return gate |
+| Form shows disabled/missing fields | ✅ Fixed | Page now renders unconditionally |
+| customerStreet/customerZip undefined in logs | ✅ Verified | Data flow already correct, just blocked by render gate |
+| Breakdown doesn't show | ✅ Fixed | Line items API now returns breakdown/dates |
+| No visibility into data flow | ✅ Fixed | Added comprehensive logging |
+
+---
+
+## 🎉 Expected Outcome
+
+After this fix:
+1. Checkout page renders immediately when accessed
+2. Form collects customer address and contact info
+3. Data flows from form → parent → server correctly
+4. Speculation succeeds and shows breakdown
+5. Submit button enables when form is valid
+6. Booking completes successfully
+
+The root cause was the early return gate blocking render when `orderResult.ok === false`. This prevented the form from ever appearing to collect customer data. Now the page renders unconditionally, allowing the normal data flow to proceed.

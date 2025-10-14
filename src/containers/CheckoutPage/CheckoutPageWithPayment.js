@@ -556,12 +556,14 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
     console.log('[checkout→request-payment] customerZip:', mergedPD.customerZip);
   }
   
-  // Assert required fields and abort if missing
+  // ✅ EDIT C: Assert required fields and abort if missing (hard validation)
   if (!mergedPD.customerStreet?.trim() || !mergedPD.customerZip?.trim()) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('[checkout] Missing address fields for speculate — proceeding with minimal PD');
-    }
-    // continue without throwing; speculation should still run
+    const missingFields = [];
+    if (!mergedPD.customerStreet?.trim()) missingFields.push('Street Address');
+    if (!mergedPD.customerZip?.trim()) missingFields.push('ZIP Code');
+    
+    setSubmitting(false);
+    throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
   }
 
   // One-time logs right before the API call
@@ -943,20 +945,27 @@ const CheckoutPageWithPayment = props => {
       return;
     }
 
-    // Reset the guard if sessionKey changed OR if we don't have a txId
-    // This allows retries after auth appears even if sessionKey was previously used
-    if (lastSessionKeyRef.current !== sessionKey || !hasTxId) {
-      initiatedSessionRef.current = false;
-      lastSessionKeyRef.current = sessionKey;
-    }
+    // ✅ EDIT D: Create form-state-aware guard key (allows re-speculation when form fills)
+    const hasFormData = formValues && Object.keys(formValues).length > 0 
+      && formValues.customerStreet?.trim() 
+      && formValues.customerZip?.trim();
 
-    // ✅ Hard-gate #6: 1-shot guard per listing/session (but allow retry if no txId)
-    if (initiatedSessionRef.current && hasTxId) {
+    const specParams = JSON.stringify({
+      listingId: orderResult.params?.listingId,
+      startDate: orderResult.params?.bookingDates?.start,
+      endDate: orderResult.params?.bookingDates?.end,
+      formFilled: hasFormData,  // Key addition: track form state
+    });
+
+    // Skip only if exact params match (including form state)
+    if (prevSpecKeyRef.current === specParams) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[Checkout] Skipping duplicate speculation:', specParams);
+      }
       return;
     }
 
-    // Mark as initiated before calling to prevent race conditions
-    initiatedSessionRef.current = true;
+    prevSpecKeyRef.current = specParams;
 
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
@@ -1012,7 +1021,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[INITIATE_TX] FAILED', err);
         });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized]); // Removed formValues from deps
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValues]); // ✅ EDIT B: Added formValues to re-speculate when user fills form
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
@@ -1224,9 +1233,9 @@ const CheckoutPageWithPayment = props => {
     !isPaymentExpired
   );
   
-  // Ensure Stripe form mounts once we have a speculative tx
+  // ✅ EDIT A: Form should mount immediately when txProcess exists (don't wait for speculation)
   const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
-  const showStripeForm = hasSpeculativeTx && !!txProcess;
+  // Removed showStripeForm gate - form mounts as soon as txProcess loads
 
   const firstImage = listing?.images?.length > 0 ? listing.images[0] : null;
 
@@ -1421,7 +1430,7 @@ const CheckoutPageWithPayment = props => {
                     </>
                   );
                 })()}
-                {showStripeForm ? (
+                {/* ✅ EDIT A: Form always renders (no showStripeForm gate) */}
                 <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
@@ -1477,11 +1486,6 @@ const CheckoutPageWithPayment = props => {
                   isBooking={isBookingProcessAlias(transactionProcessAlias)}
                   isFuzzyLocation={config.maps.fuzzy.enabled}
                 />
-                ) : (
-                  <div style={{ fontSize: 14, opacity: 0.7, marginTop: 16, padding: 16, background: '#f5f5f5', borderRadius: 4 }}>
-                    Waiting for transaction initialization...
-                  </div>
-                )}
               </>
             ) : null}
           </section>
