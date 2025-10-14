@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Form as FinalForm, FormSpy } from 'react-final-form';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -12,7 +13,8 @@ import { getProcess, isBookingProcessAlias } from '../../transactions/transactio
 import { normalizePhoneE164 } from '../../util/phone';
 
 // Import shared components
-import { H3, H4, NamedLink, OrderBreakdown, Page, FieldTextInput } from '../../components';
+import { H3, H4, NamedLink, OrderBreakdown, Page, FieldTextInput, FieldCheckbox } from '../../components';
+import AddressForm from '../../components/AddressForm/AddressForm';
 
 import {
   bookingDatesMaybe,
@@ -294,7 +296,10 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     getDiscountedPriceFromVariants,
   } = props;
 
-  const { card, message, paymentMethod: selectedPaymentMethod, formValues } = values;
+  // Values now come from the unified form
+  const { card, initialMessage, paymentMethod: selectedPaymentMethod, billing, shipping, shippingSameAsBilling } = values;
+  const message = initialMessage; // Map initialMessage to message
+  const formValues = values; // Use values directly as formValues
 
   // 🌐 DEBUG: Check if pageData and booking dates are coming through
   console.log("🧪 DEBUG pageData:", pageData);
@@ -326,57 +331,50 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
 
-  // Normalize phone to E.164 format
-  const normalizedPhone = normalizePhoneE164(contactPhone);
-  console.log('📞 Contact phone normalized:', contactPhone, '→', normalizedPhone);
+  // Normalize contact phone to E.164 format
+  const normalizedContactPhone = normalizePhoneE164(contactPhone);
+  console.log('📞 Contact phone normalized:', contactPhone, '→', normalizedContactPhone);
 
+  // Determine which address to use (shipping or billing)
+  const finalShipping = shippingSameAsBilling ? billing : shipping;
+  
+  // Determine which phone to use for this transaction
+  // Priority: shipping.phone (if useDifferentPhone) > contactPhone
+  const useShippingPhone = !shippingSameAsBilling && shipping?.useDifferentPhone;
+  const normalizedShippingPhone = useShippingPhone ? normalizePhoneE164(shipping.phone) : null;
+  const finalPhone = normalizedShippingPhone || normalizedContactPhone || '';
+  
+  console.log('📞 Phone decision:', {
+    shippingSameAsBilling,
+    useDifferentPhone: shipping?.useDifferentPhone,
+    shippingPhone: shipping?.phone,
+    normalizedShippingPhone,
+    normalizedContactPhone,
+    finalPhone
+  });
+  
   // Build customer protectedData for request-payment
-  // Filter out empty strings so you don't clobber later merges
-  const protectedData = {};
-  
-  // Contact info (collected at parent level)
-  if (contactEmail?.trim()) protectedData.customerEmail = contactEmail.trim();
-  if (normalizedPhone?.trim()) protectedData.customerPhone = normalizedPhone.trim();
-  
-  // Customer address fields from form - only include if non-empty
-  if (formValues.customerName?.trim()) protectedData.customerName = formValues.customerName.trim();
-  if (formValues.customerStreet?.trim()) protectedData.customerStreet = formValues.customerStreet.trim();
-  if (formValues.customerStreet2?.trim()) protectedData.customerStreet2 = formValues.customerStreet2.trim();
-  if (formValues.customerCity?.trim()) protectedData.customerCity = formValues.customerCity.trim();
-  if (formValues.customerState?.trim()) protectedData.customerState = formValues.customerState.trim();
-  if (formValues.customerZip?.trim()) protectedData.customerZip = formValues.customerZip.trim();
-  
-  // Provider fields - only include if non-empty
-  if (currentUser?.attributes?.profile?.displayName?.trim()) {
-    protectedData.providerName = currentUser.attributes.profile.displayName.trim();
-  }
-  if (currentUser?.attributes?.email?.trim()) {
-    protectedData.providerEmail = currentUser.attributes.email.trim();
-  }
-  const providerPhone = currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
-                       currentUser?.attributes?.profile?.publicData?.phoneNumber;
-  if (providerPhone?.trim()) {
-    protectedData.providerPhone = providerPhone.trim();
-  }
+  const protectedData = {
+    // Contact info
+    customerEmail: contactEmail?.trim() || '',
+    customerPhone: finalPhone?.trim() || '',
+    
+    // Address fields from final shipping address (map line1->customerStreet, postalCode->customerZip)
+    customerName: finalShipping?.name?.trim() || '',
+    customerStreet: finalShipping?.line1?.trim() || '',
+    customerStreet2: finalShipping?.line2?.trim() || '',
+    customerCity: finalShipping?.city?.trim() || '',
+    customerState: finalShipping?.state?.trim() || '',
+    customerZip: finalShipping?.postalCode?.trim() || '',
+    
+    // Provider fields
+    providerName: currentUser?.attributes?.profile?.displayName?.trim() || '',
+    providerEmail: currentUser?.attributes?.email?.trim() || '',
+    providerPhone: (currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
+                   currentUser?.attributes?.profile?.publicData?.phoneNumber || '').trim(),
+  };
 
-  // Add customer protected data from form values (inline mapping)
-  const customerPD = (function(v){
-    const s = v?.shipping || {};
-    const b = v?.billing || {};
-    const use = v?.shipping && !v?.shippingSameAsBilling ? s : (Object.keys(s||{}).length ? s : b);
-    return {
-      customerName:   use?.name        || '',
-      customerStreet: use?.line1       || '',
-      customerStreet2:use?.line2       || '',
-      customerCity:   use?.city        || '',
-      customerState:  use?.state       || '',
-      customerZip:    use?.postalCode  || '',
-      customerPhone:  use?.phone       || '',
-      customerEmail:  use?.email       || '',
-    };
-  })(formValues);
-
-  const mergedPD = { ...protectedData, ...customerPD };
+  const mergedPD = protectedData;
   if (__DEV__) {
     // eslint-disable-next-line no-console
     console.log('[checkout→request-payment] Customer PD about to send:', mergedPD);
@@ -526,13 +524,25 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   console.log('🔍 Line item codes being sent:', lineItems.map(item => item.code));
   console.log('🔍 Full lineItems:', JSON.stringify(lineItems, null, 2));
 
+  // Map form values to format expected by getBillingDetails
+  const billingForGetBillingDetails = {
+    name: billing?.name || '',
+    addressLine1: billing?.line1 || '',
+    addressLine2: billing?.line2 || '',
+    postal: billing?.postalCode || '',
+    city: billing?.city || '',
+    state: billing?.state || '',
+    country: billing?.country || 'US',
+    email: contactEmail || '',
+  };
+  
   // Construct requestPaymentParams before calling processCheckoutWithPayment
   const requestPaymentParams = {
     pageData,
     speculatedTransaction,
     stripe,
     card,
-    billingDetails: getBillingDetails(formValues, currentUser),
+    billingDetails: getBillingDetails(billingForGetBillingDetails, currentUser),
     message,
     paymentIntent,
     hasPaymentIntentUserActionsDone,
@@ -587,6 +597,65 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
 };
 
 /**
+ * Validate checkout form values
+ */
+const validateCheckout = values => {
+  const errors = {};
+  
+  // Validate contact info
+  if (!values.contactEmail?.trim()) {
+    errors.contactEmail = 'Email is required';
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.contactEmail.trim())) {
+    errors.contactEmail = 'Invalid email format';
+  }
+  
+  if (!values.contactPhone?.trim()) {
+    errors.contactPhone = 'Phone is required';
+  } else if (!/^(\+1\d{10}|\d{10})$/.test(values.contactPhone.trim().replace(/[^\d+]/g, ''))) {
+    errors.contactPhone = 'Phone must be 10 digits or +1 format';
+  }
+  
+  // Validate billing address
+  const b = values.billing || {};
+  if (!b.name?.trim()) errors['billing.name'] = 'Name is required';
+  if (!b.line1?.trim()) errors['billing.line1'] = 'Street is required';
+  if (!b.city?.trim()) errors['billing.city'] = 'City is required';
+  if (!b.state?.trim()) errors['billing.state'] = 'State is required';
+  if (!b.postalCode?.trim()) {
+    errors['billing.postalCode'] = 'ZIP is required';
+  } else if (!/^\d{5,}$/.test(b.postalCode.trim())) {
+    errors['billing.postalCode'] = 'ZIP must be at least 5 digits';
+  }
+  
+  // Validate shipping address if different from billing
+  const same = values.shippingSameAsBilling !== false; // default true
+  if (!same) {
+    const s = values.shipping || {};
+    if (!s.name?.trim()) errors['shipping.name'] = 'Name is required';
+    if (!s.line1?.trim()) errors['shipping.line1'] = 'Street is required';
+    if (!s.city?.trim()) errors['shipping.city'] = 'City is required';
+    if (!s.state?.trim()) errors['shipping.state'] = 'State is required';
+    if (!s.postalCode?.trim()) {
+      errors['shipping.postalCode'] = 'ZIP is required';
+    } else if (!/^\d{5,}$/.test(s.postalCode.trim())) {
+      errors['shipping.postalCode'] = 'ZIP must be at least 5 digits';
+    }
+    
+    // Validate shipping phone if "Use different phone for delivery" is checked
+    if (s.useDifferentPhone) {
+      const phoneDigits = (s.phone || '').trim().replace(/[^\d+]/g, '');
+      if (!phoneDigits) {
+        errors['shipping.phone'] = 'Delivery phone is required';
+      } else if (!/^(\+1\d{10}|\d{10})$/.test(phoneDigits)) {
+        errors['shipping.phone'] = 'Phone must be 10 digits or +1 format';
+      }
+    }
+  }
+  
+  return errors;
+};
+
+/**
  * A component that renders the checkout page with payment.
  *
  * @component
@@ -632,28 +701,8 @@ export const CheckoutPageWithPayment = props => {
   const [stripe, setStripe] = useState(null);
   // Payment element completion state
   const [paymentElementComplete, setPaymentElementComplete] = useState(false);
-  const [formValues, setFormValues] = useState({});
-  const [formValid, setFormValid] = useState(false);
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   const stripeReady = !!stripeElementMounted;
-  
-  // Contact info state (collected once, used everywhere)
-  const [contactEmail, setContactEmail] = useState('');
-  const [contactPhone, setContactPhone] = useState('');
-  const [contactInfoValid, setContactInfoValid] = useState(false);
-
-  // Validate contact info
-  useEffect(() => {
-    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail?.trim() || '');
-    const phoneValid = /^(\+1\d{10}|\d{10})$/.test(contactPhone?.trim().replace(/[^\d+]/g, '') || '');
-    setContactInfoValid(emailValid && phoneValid);
-  }, [contactEmail, contactPhone]);
-
-  const handleFormValuesChange = useCallback((next) => {
-    const prev = JSON.stringify(formValues || {});
-    const json = JSON.stringify(next || {});
-    if (json !== prev) setFormValues(next || {});
-  }, [formValues]);
   
   // Ref to prevent speculative transaction loops
   const prevSpecKeyRef = useRef(null);
@@ -689,7 +738,7 @@ export const CheckoutPageWithPayment = props => {
 
     // only when listing changes & we still don't have a speculative tx
     if (!speculativeTransaction?.id && !speculativeInProgress) {
-      const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
+      const orderParams = getOrderParams(pageData, {}, {}, config, {});
       fetchSpeculatedTransactionIfNeeded(
         orderParams,
         pageData,
@@ -698,7 +747,7 @@ export const CheckoutPageWithPayment = props => {
       );
     }
     // depend on listingId only, so it's a true one-shot per listing
-  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress, formValues]);
+  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
@@ -708,7 +757,6 @@ export const CheckoutPageWithPayment = props => {
       hasSpeculativeTx: hasTxId, 
       stripeReady, 
       paymentElementComplete, 
-      formValid, 
       notSubmitting: !submitting, 
       notSpeculating: !speculativeInProgress 
     };
@@ -717,7 +765,7 @@ export const CheckoutPageWithPayment = props => {
       lastReasonRef.current = disabledReason;
       console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
     }
-  }, [speculativeTransaction, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
+  }, [speculativeTransaction, stripeReady, paymentElementComplete, submitting, speculativeInProgress]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -890,142 +938,208 @@ export const CheckoutPageWithPayment = props => {
 
             {showPaymentForm ? (
               <>
-                {/* Contact Info Section - Collected once for all forms */}
-                <div className={css.contactInfoSection}>
-                  <H3 as="h3" className={css.sectionHeading}>
-                    <FormattedMessage id="CheckoutPage.contactInfoHeading" defaultMessage="Contact Information" />
-                  </H3>
-                  <div className={css.contactFields}>
-                    <FieldTextInput
-                      id="contactEmail"
-                      name="contactEmail"
-                      type="email"
-                      label={intl.formatMessage({ id: 'CheckoutPage.contactEmailLabel', defaultMessage: 'Email Address' })}
-                      placeholder={intl.formatMessage({ id: 'CheckoutPage.contactEmailPlaceholder', defaultMessage: 'your@email.com' })}
-                      value={contactEmail}
-                      onChange={(e) => setContactEmail(e.target.value)}
-                      autoComplete="email"
-                    />
-                    <FieldTextInput
-                      id="contactPhone"
-                      name="contactPhone"
-                      type="tel"
-                      label={intl.formatMessage({ id: 'CheckoutPage.contactPhoneLabel', defaultMessage: 'Phone Number' })}
-                      placeholder={intl.formatMessage({ id: 'CheckoutPage.contactPhonePlaceholder', defaultMessage: '(555) 123-4567' })}
-                      value={contactPhone}
-                      onChange={(e) => setContactPhone(e.target.value)}
-                      autoComplete="tel"
-                    />
-                  </div>
-                  {!contactInfoValid && (contactEmail || contactPhone) && (
-                    <p className={css.contactInfoHint}>
-                      <FormattedMessage 
-                        id="CheckoutPage.contactInfoHint" 
-                        defaultMessage="Please enter a valid email and phone number (10 digits or +1 format)" 
-                      />
-                    </p>
-                  )}
-                </div>
-              </>
-            ) : null}
-
-            {showPaymentForm ? (
-              <>
+                {/* Build initial values from existing protected data or defaults */}
                 {(() => {
-                  // Canonical gating (parent)
-                  const tx = speculativeTransaction; // ✅ use normalized name
-                  const hasTxId = !!(tx?.id?.uuid || tx?.id);
-
-                  // Compute stripe readiness (strict boolean)
-                  const stripeReady = !!stripeElementMounted;
-
-                  const gates = {
-                    hasSpeculativeTx: hasTxId,
-                    stripeReady: stripeReady,                 // 👈 simplified
-                    paymentElementComplete: !!paymentElementComplete,
-                    formValid: formValid,                   // ✅ bubbled up from child form
-                    contactInfoValid: contactInfoValid,     // ✅ contact email + phone valid
-                    notSubmitting: !submitting,      // local state (no duck submitInProgress available)
-                    notSpeculating: !speculativeInProgress  // ✅ use normalized name
+                  const existingPD = pageData?.transaction?.attributes?.protectedData || {};
+                  const prefillEmail = currentUser?.attributes?.email || '';
+                  const prefillPhone = currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
+                                      currentUser?.attributes?.profile?.publicData?.phoneNumber || '';
+                  
+                  const initialValues = {
+                    contactEmail: prefillEmail || '',
+                    contactPhone: prefillPhone || '',
+                    shippingSameAsBilling: true,
+                    billing: {
+                      name: existingPD?.customerName || '',
+                      line1: existingPD?.customerStreet || '',
+                      line2: existingPD?.customerStreet2 || '',
+                      city: existingPD?.customerCity || '',
+                      state: existingPD?.customerState || '',
+                      postalCode: existingPD?.customerZip || '',
+                      country: 'US',
+                    },
+                    shipping: {
+                      name: existingPD?.customerName || '',
+                      line1: existingPD?.customerStreet || '',
+                      line2: existingPD?.customerStreet2 || '',
+                      city: existingPD?.customerCity || '',
+                      state: existingPD?.customerState || '',
+                      postalCode: existingPD?.customerZip || '',
+                      country: 'US',
+                      useDifferentPhone: false,
+                      phone: '',
+                    },
                   };
 
-                  const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
-                  const submitDisabled = !!disabledReason;
-
                   return (
-                    <>
-                      {submitDisabled && (
-                        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
-                          Can't submit yet: <code>{disabledReason}</code>
-                        </div>
-                      )}
-                    </>
+                    <FinalForm
+                      initialValues={initialValues}
+                      onSubmit={(values) => {
+                        // This is the unified submit handler - extract contact and call Stripe payment
+                        const contactEmail = values.contactEmail;
+                        const contactPhone = values.contactPhone;
+                        
+                        // Call the existing handleSubmit with contact info
+                        return handleSubmit(
+                          values, 
+                          process, 
+                          props, 
+                          stripe, 
+                          submitting, 
+                          setSubmitting, 
+                          contactEmail, 
+                          contactPhone
+                        );
+                      }}
+                      validate={validateCheckout}
+                      subscription={{ submitting: true, pristine: true, valid: true, values: true }}
+                    >
+                      {({ handleSubmit, values, valid, submitting: formSubmitting }) => {
+                        const tx = speculativeTransaction;
+                        const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                        const stripeReady = !!stripeElementMounted;
+                        
+                        const submitDisabled = !hasTxId || !stripeReady || !paymentElementComplete || !valid || submitting || speculativeInProgress;
+
+                        return (
+                          <form onSubmit={handleSubmit}>
+                            {/* Contact Info Section */}
+                            <div className={css.contactInfoSection}>
+                              <H3 as="h3" className={css.sectionHeading}>
+                                <FormattedMessage id="CheckoutPage.contactInfoHeading" defaultMessage="Contact Information" />
+                              </H3>
+                              <div className={css.contactFields}>
+                                <FieldTextInput
+                                  id="contactEmail"
+                                  name="contactEmail"
+                                  type="email"
+                                  label={intl.formatMessage({ id: 'CheckoutPage.contactEmailLabel', defaultMessage: 'Email Address' })}
+                                  placeholder={intl.formatMessage({ id: 'CheckoutPage.contactEmailPlaceholder', defaultMessage: 'your@email.com' })}
+                                  autoComplete="email"
+                                />
+                                <FieldTextInput
+                                  id="contactPhone"
+                                  name="contactPhone"
+                                  type="tel"
+                                  label={intl.formatMessage({ id: 'CheckoutPage.contactPhoneLabel', defaultMessage: 'Phone Number' })}
+                                  placeholder={intl.formatMessage({ id: 'CheckoutPage.contactPhonePlaceholder', defaultMessage: '(555) 123-4567' })}
+                                  autoComplete="tel"
+                                />
+                              </div>
+                            </div>
+
+                            {/* Billing Address Section */}
+                            <div className={css.billingSection}>
+                              <H3 as="h3" className={css.sectionHeading}>
+                                <FormattedMessage id="CheckoutPage.billingAddressHeading" defaultMessage="Billing Address" />
+                              </H3>
+                              <AddressForm
+                                namespace="billing"
+                                requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true }}
+                                countryAfterZipForUSCA
+                                showEmail={false}
+                                showPhone={false}
+                              />
+                            </div>
+
+                            {/* Shipping Address Section */}
+                            <div className={css.shippingSection}>
+                              <H3 as="h3" className={css.sectionHeading}>
+                                <FormattedMessage id="CheckoutPage.shippingAddressHeading" defaultMessage="Shipping Address" />
+                              </H3>
+                              <FieldCheckbox
+                                id="shippingSameAsBilling"
+                                name="shippingSameAsBilling"
+                                label={intl.formatMessage({ id: 'CheckoutPage.shippingSameAsBilling', defaultMessage: 'Same as billing address' })}
+                                value="sameAsBilling"
+                              />
+                              {!values.shippingSameAsBilling && (
+                                <div className={css.shippingFields}>
+                                  <AddressForm
+                                    namespace="shipping"
+                                    requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true }}
+                                    countryAfterZipForUSCA
+                                    showEmail={false}
+                                    showPhone={false}
+                                  />
+                                  
+                                  {/* Phone toggle + field */}
+                                  <div className={css.deliveryPhoneSection}>
+                                    <FieldCheckbox
+                                      id="shipping.useDifferentPhone"
+                                      name="shipping.useDifferentPhone"
+                                      label={intl.formatMessage({ id: 'CheckoutPage.useDifferentPhoneForDelivery', defaultMessage: 'Use different phone for delivery' })}
+                                      value="useDifferentPhone"
+                                    />
+                                    {values.shipping?.useDifferentPhone && (
+                                      <FieldTextInput
+                                        id="shipping.phone"
+                                        name="shipping.phone"
+                                        type="tel"
+                                        label={intl.formatMessage({ id: 'CheckoutPage.deliveryPhoneLabel', defaultMessage: 'Delivery Phone' })}
+                                        placeholder={intl.formatMessage({ id: 'CheckoutPage.deliveryPhonePlaceholder', defaultMessage: '+14155550123' })}
+                                        autoComplete="tel"
+                                      />
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Stripe Payment Form - receives form state via FormSpy */}
+                            <FormSpy subscription={{ values: true, valid: true, submitting: true, errors: true, invalid: true }}>
+                              {({ values: ffValues, valid: ffValid, submitting: ffSubmitting, errors: ffErrors, invalid: ffInvalid }) => (
+                                <StripePaymentForm
+                                  className={css.paymentForm}
+                                  inProgress={submitting}
+                                  formId="CheckoutPagePaymentForm"
+                                  authorDisplayName={listing?.author?.attributes?.profile?.displayName}
+                                  showInitialMessageInput={showInitialMessageInput}
+                                  initialValues={initialValuesForStripePayment}
+                                  initiateOrderError={initiateOrderError}
+                                  confirmCardPaymentError={confirmCardPaymentError}
+                                  confirmPaymentError={confirmPaymentError}
+                                  hasHandledCardPayment={hasPaymentIntentUserActionsDone}
+                                  loadingData={!stripeCustomerFetched}
+                                  defaultPaymentMethod={
+                                    hasDefaultPaymentMethod(stripeCustomerFetched, currentUser)
+                                      ? currentUser.stripeCustomer.defaultPaymentMethod
+                                      : null
+                                  }
+                                  paymentIntent={paymentIntent}
+                                  onStripeInitialized={stripe => setStripe(stripe)}
+                                  onStripeElementMounted={(v) => { 
+                                    console.log('[Stripe] element mounted:', v);
+                                    setStripeElementMounted(!!v);
+                                  }}
+                                  onPaymentElementChange={setPaymentElementComplete}
+                                  submitInProgress={submitting}
+                                  submitDisabled={submitDisabled}
+                                  askShippingDetails={askShippingDetails}
+                                  showPickUplocation={orderData?.deliveryMethod === 'pickup'}
+                                  listingLocation={listing?.attributes?.publicData?.location}
+                                  totalPrice={totalPrice}
+                                  locale={config.localization.locale}
+                                  stripePublishableKey={config.stripe.publishableKey}
+                                  marketplaceName={config.marketplaceName}
+                                  isBooking={isBookingProcessAlias(transactionProcessAlias)}
+                                  isFuzzyLocation={config.maps.fuzzy.enabled}
+                                  contactEmail={ffValues?.contactEmail}
+                                  contactPhone={ffValues?.contactPhone}
+                                  values={ffValues}
+                                  parentValid={ffValid}
+                                  parentSubmitting={ffSubmitting}
+                                  parentErrors={ffErrors}
+                                  parentInvalid={ffInvalid}
+                                />
+                              )}
+                            </FormSpy>
+                          </form>
+                        );
+                      }}
+                    </FinalForm>
                   );
                 })()}
-                <StripePaymentForm
-                  className={css.paymentForm}
-                  onSubmit={values =>
-                    handleSubmit(values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone)
-                  }
-                  inProgress={submitting}
-                  formId="CheckoutPagePaymentForm"
-                  authorDisplayName={listing?.author?.attributes?.profile?.displayName}
-                  showInitialMessageInput={showInitialMessageInput}
-                  initialValues={initialValuesForStripePayment}
-                  initiateOrderError={initiateOrderError}
-                  confirmCardPaymentError={confirmCardPaymentError}
-                  confirmPaymentError={confirmPaymentError}
-                  hasHandledCardPayment={hasPaymentIntentUserActionsDone}
-                  loadingData={!stripeCustomerFetched}
-                  defaultPaymentMethod={
-                    hasDefaultPaymentMethod(stripeCustomerFetched, currentUser)
-                      ? currentUser.stripeCustomer.defaultPaymentMethod
-                      : null
-                  }
-                  paymentIntent={paymentIntent}
-                  onStripeInitialized={stripe => setStripe(stripe)}
-                  onStripeElementMounted={(v) => { 
-                    console.log('[Stripe] element mounted:', v);
-                    setStripeElementMounted(!!v);
-                  }}
-                  onFormValuesChange={handleFormValuesChange}
-                  onPaymentElementChange={setPaymentElementComplete}
-                  onFormValidityChange={(v) => { 
-                    console.log('[Form] parent sees valid:', v); 
-                    setFormValid(v); 
-                  }}
-                  requireInPaymentForm={false}  // billing/shipping collected outside this form
-                  submitInProgress={submitting}  // spinner only
-                  submitDisabled={(() => {
-                    const tx = speculativeTransaction; // ✅ use normalized name
-                    const hasTxId = !!(tx?.id?.uuid || tx?.id);
-                    
-                    // Compute stripe readiness (strict boolean)
-                    const stripeReady = !!stripeElementMounted;
-                    
-                    const gates = {
-                      hasSpeculativeTx: hasTxId,
-                      stripeReady: stripeReady,                 // 👈 simplified
-                      paymentElementComplete: !!paymentElementComplete,
-                      formValid: formValid,
-                      contactInfoValid: contactInfoValid,     // ✅ contact email + phone valid
-                      notSubmitting: !submitting,
-                      notSpeculating: !speculativeInProgress, // ✅ use normalized name
-                    };
-                    return !!Object.entries(gates).find(([, ok]) => !ok)?.[0];
-                  })()}
-                  askShippingDetails={askShippingDetails}
-                  showPickUplocation={orderData?.deliveryMethod === 'pickup'}
-                  listingLocation={listing?.attributes?.publicData?.location}
-                  totalPrice={totalPrice}
-                  locale={config.localization.locale}
-                  stripePublishableKey={config.stripe.publishableKey}
-                  marketplaceName={config.marketplaceName}
-                  isBooking={isBookingProcessAlias(transactionProcessAlias)}
-                  isFuzzyLocation={config.maps.fuzzy.enabled}
-                  contactEmail={contactEmail}
-                  contactPhone={contactPhone}
-                />
               </>
             ) : null}
           </section>
