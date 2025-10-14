@@ -1027,44 +1027,57 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     const updatedState = getState().CheckoutPage || {};
     const tx = updatedState.speculatedTransaction;
     
-    // Validate transaction before treating as success
+    // ✅ HARDENED: Require tx.id before dispatching success
     if (!tx?.id) {
-      console.error('[INITIATE_TX] invalid success: tx has no id', { tx });
-      throw new Error('Speculation success without transaction id');
+      console.error('[SPECULATE] Invalid response - no transaction id', { tx });
+      throw new Error('Speculation returned no transaction');
     }
     
     console.log('[speculate] success', tx.id.uuid || tx.id);
     dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
   } catch (e) {
+    // ✅ HARDENED: Extensive error introspection for debugging
     console.error('[speculate] failed', e);
+    console.error('[DEBUG] error keys:', Object.keys(e || {}));
+    console.error('[DEBUG] e.status:', e?.status);
+    console.error('[DEBUG] e.code:', e?.code);
+    console.error('[DEBUG] e.data:', e?.data);
+    console.error('[DEBUG] e.apiErrors:', e?.apiErrors);
+    console.error('[DEBUG] e.response:', e?.response);
     
-    // Debug error structure to understand what's coming from the API
-    console.debug('[DEBUG] error keys:', Object.keys(e || {}));
-    console.debug('[DEBUG] e.status:', e?.status);
-    console.debug('[DEBUG] e.code:', e?.code);
-    console.debug('[DEBUG] e.data:', e?.data);
-    console.debug('[DEBUG] e.apiErrors:', e?.apiErrors);
-    console.debug('[DEBUG] e.message:', e?.message);
-    
-    // Robust 503 detection: check multiple possible locations for the error code
-    const status = e?.status;
+    // ✅ HARDENED: Robust 503 detection across all possible error shapes
+    const status = e?.status ?? e?.response?.status;
     const code = 
+      e?.data?.code ||
       e?.code || 
-      e?.data?.code || 
-      (Array.isArray(e?.apiErrors) ? e.apiErrors[0]?.code : undefined);
-    const message = e?.message || '';
+      e?.apiErrors?.[0]?.code ||
+      e?.response?.data?.code;
+    const message = 
+      e?.message || 
+      e?.response?.data?.message ||
+      '';
     
-    // Comprehensive check for payments unavailable
-    const is503PaymentsError = 
-      status === 503 || 
-      code === 'payments-not-configured' ||
-      message.includes('Stripe is not configured');
+    // ✅ HARDENED: Comprehensive check for payments unavailable
+    // Guard: ensure 403 (forbidden) never sets paymentsUnavailable flag
+    const isPaymentsUnavailable = 
+      (status === 503 || 
+       code === 'payments-not-configured' ||
+       /Stripe is not configured/i.test(message)) &&
+      status !== 403; // 403 is permission denied, not payments unavailable
     
-    if (is503PaymentsError) {
+    if (isPaymentsUnavailable) {
       console.warn('[Checkout] Payments unavailable on server. Halting speculation.');
       dispatch(setPaymentsUnavailable());
       dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
-      return; // EARLY EXIT: do not fall back to non-privileged speculation
+      return; // ✅ EARLY EXIT: do not fallback to public speculation, nothing else runs
+    }
+    
+    // ✅ HARDENED: Block public fallback when protectedData is required
+    const hasProtectedData = Boolean(params?.protectedData) || Boolean(getState().CheckoutPage?.orderData?.protectedData);
+    if (hasProtectedData) {
+      console.warn('[INITIATE_TX] Protected data required; skipping public fallback.');
+      dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
+      return; // ✅ EARLY EXIT
     }
     
     // Enhanced error handling for 401 unauthorized
@@ -1079,8 +1092,8 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     
     console.error('[specTx] error', e);
     
-    // Only fallback to non-privileged speculation for non-503 errors
-    console.warn('[INITIATE_TX] privileged failed (non-503), falling back to public speculation', e);
+    // Only fallback to non-privileged speculation for non-503, non-protectedData errors
+    console.warn('[INITIATE_TX] privileged failed, falling back to public speculation', e);
     try {
       const orderParams = params;
       const processAlias = 'default-booking/release-1';
@@ -1094,7 +1107,7 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
       const updatedState = getState().CheckoutPage || {};
       const tx = updatedState.speculatedTransaction;
       
-      if (tx) {
+      if (tx?.id) {
         console.log('[INITIATE_TX] fallback succeeded, txId:', tx.id);
         dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
         return; // Exit successfully
