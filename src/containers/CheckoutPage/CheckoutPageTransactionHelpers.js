@@ -4,6 +4,7 @@ import { ensureStripeCustomer, ensureTransaction } from '../../util/data';
 import { minutesBetween } from '../../util/dates';
 import { formatMoney } from '../../util/currency';
 import { storeData } from './CheckoutPageSessionHelpers';
+import { USE_PAYMENT_ELEMENT } from '../../util/envFlags';
 
 /**
  * Extract relevant transaction type data from listing type
@@ -266,14 +267,8 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       returnUrl 
     } = extraPaymentParams;
     
-    // Derive feature flag robustly (safe for all environments)
-    const USE_PAYMENT_ELEMENT_FLAG = 
-      typeof process !== 'undefined' && 
-      process.env && 
-      String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
-    
     // If we're using PaymentElement, call the new confirmPayment API
-    if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement && elements) {
+    if (USE_PAYMENT_ELEMENT && usePaymentElement && elements) {
       console.log('[checkout] Payment flow: PaymentElement');
       console.log('[stripe] flow: PaymentElement/confirmPayment', {
         hasElements: !!elements,

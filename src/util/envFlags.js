@@ -14,6 +14,5 @@ export const __DEV__ = !IS_PROD;
  * Set REACT_APP_USE_STRIPE_PAYMENT_ELEMENT=true to enable PaymentElement
  */
 export const USE_PAYMENT_ELEMENT =
-  (typeof process !== 'undefined' &&
-   process.env &&
-   String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT).toLowerCase() === 'true');
+  String((typeof process !== 'undefined' && process.env && process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT) || '')
+    .toLowerCase() === 'true';
