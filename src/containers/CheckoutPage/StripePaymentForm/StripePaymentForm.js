@@ -442,6 +442,34 @@ class StripePaymentForm extends Component {
     this.loggedPaymentIntent = false;
   }
 
+  // ✅ 5) Stream form values to parent on every change
+  componentDidUpdate(prevProps, prevState) {
+    // Extract current form values from final-form
+    const values = this.finalFormAPI?.getState?.()?.values || {};
+    
+    // Map to customer fields
+    const mapped = {
+      customerName: values.name || '',
+      customerStreet: values.addressLine1 || values.billing?.addressLine1 || '',
+      customerStreet2: values.addressLine2 || values.billing?.addressLine2 || '',
+      customerCity: values.city || values.billing?.city || '',
+      customerState: values.state || values.billing?.state || '',
+      customerZip: values.postal || values.billing?.postal || '',
+      customerEmail: values.email || '',
+      customerPhone: values.phone || '',
+    };
+    
+    // Only call if values changed
+    const json = JSON.stringify(mapped);
+    if (json !== this.lastValuesJSON) {
+      this.lastValuesJSON = json;
+      const onValuesChange = this.props && this.props.onFormValuesChange;
+      if (typeof onValuesChange === 'function') {
+        onValuesChange(mapped);
+      }
+    }
+  }
+
   componentDidMount() {
     // SSR/boot safety: gate Stripe init
     if (typeof window !== 'undefined' && window.Stripe && this.props.stripePublishableKey) {

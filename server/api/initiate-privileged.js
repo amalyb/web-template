@@ -27,6 +27,11 @@ try {
 
 console.log('🚦 initiate-privileged endpoint is wired up');
 
+// ✅ 3) Log Stripe environment mode (do not print full key)
+const stripeKeyPrefix = process.env.STRIPE_SECRET_KEY?.substring(0, 8) || 'not-set';
+console.log('[ENV CHECK] Stripe mode:', stripeKeyPrefix.startsWith('sk_live') ? 'LIVE' : 'TEST', `(${stripeKeyPrefix}...)`);
+console.log('[ENV CHECK] Publishable key (first 12):', process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY?.substring(0, 12) || 'not-set');
+
 // Helper function to build carrier-friendly lender SMS message
 function buildLenderMsg(tx, listingTitle) {
   // Carrier-friendly: short, one link, no emojis
@@ -208,11 +213,13 @@ module.exports = (req, res) => {
         const pd = tx?.attributes?.protectedData?.stripePaymentIntents?.default || {};
         const idTail = (pd.stripePaymentIntentId || '').slice(0,3) + '...' + (pd.stripePaymentIntentId || '').slice(-5);
         const secretTail = (pd.stripePaymentIntentClientSecret || '').slice(0,3) + '...' + (pd.stripePaymentIntentClientSecret || '').slice(-5);
-        console.log('[PI_TAILS] idTail=%s secretTail=%s looksLikePI=%s looksLikeSecret=%s', 
+        const secretPrefix = (pd.stripePaymentIntentClientSecret || '').substring(0, 3);
+        console.log('[PI_TAILS] idTail=%s secretTail=%s looksLikePI=%s looksLikeSecret=%s secretPrefix=%s', 
           idTail, 
           secretTail, 
           /^pi_/.test(pd.stripePaymentIntentId || ''), 
-          /_secret_/.test(pd.stripePaymentIntentClientSecret || '')
+          /_secret_/.test(pd.stripePaymentIntentClientSecret || ''),
+          secretPrefix
         );
       }
       

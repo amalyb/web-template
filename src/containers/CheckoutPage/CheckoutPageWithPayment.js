@@ -9,6 +9,8 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
+import { selectStripeClientSecret } from './CheckoutPage.duck';
+import { Elements } from '@stripe/react-stripe-js';
 
 // Import shared components (direct imports to avoid circular deps via barrel)
 import { H3, H4 } from '../../components/Heading/Heading';
@@ -713,14 +715,23 @@ const CheckoutPageWithPayment = props => {
     speculateStatus,
     stripeClientSecret: secretFromEntities,
     clientSecretHotfix: secretFromHotfix,
+    // ✅ B) Extract clientSecret from speculate response
+    extractedClientSecret,
   } = props;
   
-  // --- HOTFIX: Prefer hotfix secret over entity-derived one ---
-  const stripeClientSecret = secretFromHotfix || secretFromEntities || null;
+  // ✅ B) Use extracted clientSecret from speculate response
+  const stripeClientSecret = extractedClientSecret || secretFromHotfix || secretFromEntities || null;
+  
+  // ✅ 3) Log Stripe environment sanity check
   if (process.env.NODE_ENV !== 'production') {
+    const pubKey = config?.stripe?.publishableKey || '';
+    const pubKeyMode = pubKey.startsWith('pk_live') ? 'LIVE' : pubKey.startsWith('pk_test') ? 'TEST' : 'UNKNOWN';
+    const secretPrefix = (stripeClientSecret || '').substring(0, 3);
+    console.log('[ENV CHECK] Browser Stripe key mode:', pubKeyMode, `(${pubKey.substring(0, 12)}...)`);
+    console.log('[ENV CHECK] ClientSecret prefix:', secretPrefix, '(should be "pi_")');
     console.log('[HOTFIX][STRIPE_PI] chosen secret tail:',
       (stripeClientSecret || '').slice(-12),
-      { from: secretFromHotfix ? 'hotfix' : (secretFromEntities ? 'entities' : 'none') }
+      { from: extractedClientSecret ? 'extracted' : (secretFromHotfix ? 'hotfix' : (secretFromEntities ? 'entities' : 'none')) }
     );
   }
 
@@ -733,6 +744,9 @@ const CheckoutPageWithPayment = props => {
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   const [tokenTick, setTokenTick] = useState(0); // Force re-render when token appears via storage event
   const stripeReady = !!stripeElementMounted;
+
+  // ✅ B) Create formValuesHash for speculation effect
+  const formValuesHash = useMemo(() => JSON.stringify(formValues || {}), [formValues]);
 
   // ✅ STEP 3: Initialize all refs
   const prevSpecKeyRef = useRef(null);
@@ -747,15 +761,13 @@ const CheckoutPageWithPayment = props => {
   const initiateRef = useRef(onInitiatePrivilegedSpeculativeTransaction);
 
   // ✅ STEP 4: Define callbacks
-  const handleFormValuesChange = useCallback((next) => {
-    const prev = JSON.stringify(formValues || {});
-    const json = JSON.stringify(next || {});
-    if (json !== prev) {
-      setFormValues(next || {});
-      // Also update ref for synchronous access in effects
-      customerFormRef.current = next || {};
-    }
-  }, [formValues]);
+  const handleFormValuesChange = useCallback((vals) => {
+    // ✅ 5) Log form values streaming from child
+    console.log('[FORM STREAM]', vals);
+    setFormValues(vals || {});
+    // Also update ref for synchronous access in effects
+    customerFormRef.current = vals || {};
+  }, []);
 
   // Normalize booking dates from pageData (handles multiple shapes)
   // Use object assignment first to avoid minifier reordering TDZ issues
@@ -945,27 +957,21 @@ const CheckoutPageWithPayment = props => {
       return;
     }
 
-    // ✅ EDIT D: Create form-state-aware guard key (allows re-speculation when form fills)
-    const hasFormData = formValues && Object.keys(formValues).length > 0 
-      && formValues.customerStreet?.trim() 
-      && formValues.customerZip?.trim();
+    // ✅ B) Create guard key with formValuesHash for speculation effect
+    const keys = Object.keys(formValues || {});
+    console.log('[PRE-SPECULATE] protectedData keys:', keys);
 
-    const specParams = JSON.stringify({
-      listingId: orderResult.params?.listingId,
-      startDate: orderResult.params?.bookingDates?.start,
-      endDate: orderResult.params?.bookingDates?.end,
-      formFilled: hasFormData,  // Key addition: track form state
-    });
-
+    const guardKey = `speculate:${listingIdNormalized}:${startISO}:${endISO}:${formValuesHash}`;
+    
     // Skip only if exact params match (including form state)
-    if (prevSpecKeyRef.current === specParams) {
+    if (prevSpecKeyRef.current === guardKey) {
       if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] Skipping duplicate speculation:', specParams);
+        console.debug('[Checkout] Skipping duplicate speculation:', guardKey);
       }
       return;
     }
 
-    prevSpecKeyRef.current = specParams;
+    prevSpecKeyRef.current = guardKey;
 
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[Checkout] 🚀 initiating once for', sessionKey);
@@ -974,20 +980,23 @@ const CheckoutPageWithPayment = props => {
     // [DEBUG] about to dispatch (one-shot)
     logOnce('[INITIATE_TX] about to dispatch', { sessionKey, orderParams: orderResult.params });
 
-    // Build protectedData from form values (use ref for latest values)
+    // ✅ B) Build protectedData from current formValues (not ref)
     const profileFallback = {
       customerPhone: currentUser?.attributes?.profile?.privateData?.phone
         || currentUser?.attributes?.profile?.protectedData?.phone
         || '',
     };
     
-    const protectedDataFromForm = buildProtectedData(customerFormRef.current, profileFallback);
+    const protectedDataFromForm = buildProtectedData(formValues, profileFallback);
     
-    // Merge protectedData into orderParams (IMPORTANT: modify the params we actually dispatch)
+    // Merge protectedData into orderParams with booking dates
     const orderParamsWithPD = {
       ...orderResult.params,
       protectedData: {
         ...(orderResult.params?.protectedData || {}),
+        ...formValues,        // address/contact fields travel here
+        bookingStartISO: startISO,      // keep booking dates
+        bookingEndISO: endISO,
         ...protectedDataFromForm,
       },
     };
@@ -1021,7 +1030,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[INITIATE_TX] FAILED', err);
         });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValues]); // ✅ EDIT B: Added formValues to re-speculate when user fills form
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValuesHash]); // ✅ B: Include formValuesHash to re-speculate when user fills form
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
@@ -1035,6 +1044,11 @@ const CheckoutPageWithPayment = props => {
     }
   }, [props?.speculativeTransactionId, speculativeInProgress, currentUser?.id]);
 
+  // ✅ B) Log clientSecret availability
+  useEffect(() => {
+    console.log('[Stripe] element mounted?', !!stripeClientSecret);
+  }, [stripeClientSecret]);
+
   // Log after speculation success with enhanced data
   useEffect(() => {
     if (speculateStatus === 'succeeded') {
@@ -1044,18 +1058,8 @@ const CheckoutPageWithPayment = props => {
         clientSecretLength: stripeClientSecret?.length || 0,
         protectedDataKeysSent: lastPDKeysSentRef.current,
       });
-      
-      // Add dev-only diagnostics (no secrets)
-      if (process.env.NODE_ENV !== 'production') {
-        const tx = props?.speculativeTransaction;
-        const pd = tx?.attributes?.protectedData?.stripePaymentIntents?.default || {};
-        console.log('[POST-SPECULATE] clientSecretPresent:%s clientSecretLength:%s',
-          !!pd.stripePaymentIntentClientSecret,
-          (pd.stripePaymentIntentClientSecret || '').length
-        );
-      }
     }
-  }, [speculateStatus, props?.speculativeTransactionId, stripeClientSecret, props?.speculativeTransaction]);
+  }, [speculateStatus, props?.speculativeTransactionId, stripeClientSecret]);
 
   // 🔑 CRITICAL: Retrieve PaymentIntent after speculation succeeds
   // This populates state.stripe.paymentIntent which StripePaymentForm needs to mount Elements
@@ -1430,8 +1434,20 @@ const CheckoutPageWithPayment = props => {
                     </>
                   );
                 })()}
-                {/* ✅ EDIT A: Form always renders (no showStripeForm gate) */}
-                <StripePaymentForm
+                {/* ✅ 1) Force Elements to remount when clientSecret changes with key prop */}
+                {(() => {
+                  // ✅ 2) Log & validate the exact clientSecret we're passing
+                  console.log('[Stripe] clientSecret:', stripeClientSecret);
+                  console.log(
+                    '[Stripe] clientSecret valid?',
+                    typeof stripeClientSecret === 'string' &&
+                      stripeClientSecret.startsWith('pi_') &&
+                      stripeClientSecret.includes('_secret_')
+                  );
+                  
+                  return stripeClientSecret ? (
+                    <Elements options={{ clientSecret: stripeClientSecret }} key={stripeClientSecret}>
+                      <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
                     handleSubmit(values, txProcess, props, stripe, submitting, setSubmitting)
@@ -1486,6 +1502,21 @@ const CheckoutPageWithPayment = props => {
                   isBooking={isBookingProcessAlias(transactionProcessAlias)}
                   isFuzzyLocation={config.maps.fuzzy.enabled}
                 />
+                    </Elements>
+                  ) : (
+                    <div style={{ 
+                      padding: '16px', 
+                      marginBottom: '16px', 
+                      backgroundColor: '#f0f4f8', 
+                      borderRadius: '4px',
+                      textAlign: 'center'
+                    }}>
+                      <p style={{ margin: 0, color: '#4A5568' }}>
+                        Setting up secure payment…
+                      </p>
+                    </div>
+                  );
+                })()}
               </>
             ) : null}
           </section>

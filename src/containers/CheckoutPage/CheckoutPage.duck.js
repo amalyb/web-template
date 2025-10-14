@@ -44,6 +44,7 @@ export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS = 'app/CheckoutPage/I
 export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR   = 'app/CheckoutPage/INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR';
 
 const HOTFIX_SET_CLIENT_SECRET = 'CHECKOUT/HOTFIX_SET_CLIENT_SECRET';
+export const SET_STRIPE_CLIENT_SECRET = 'app/CheckoutPage/SET_STRIPE_CLIENT_SECRET';
 
 // ================ Reducer ================ //
 
@@ -69,6 +70,8 @@ const initialState = {
   stripeClientSecret: null,
   lastSpeculateError: null,
   clientSecretHotfix: null,
+  // ✅ A) Store clientSecret from speculate response
+  extractedClientSecret: null,
 };
 
 export default function checkoutPageReducer(state = initialState, action = {}) {
@@ -211,6 +214,10 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       return { ...state, clientSecretHotfix: action.payload || null };
     }
 
+    case SET_STRIPE_CLIENT_SECRET: {
+      return { ...state, extractedClientSecret: action.payload || null };
+    }
+
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_REQUEST:
       return { 
         ...state, 
@@ -306,7 +313,14 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
 
 // ================ Selectors ================ //
 
+export const selectStripeClientSecret = state => state.CheckoutPage?.extractedClientSecret;
+
 // ================ Action creators ================ //
+
+export const setStripeClientSecret = clientSecret => ({
+  type: SET_STRIPE_CLIENT_SECRET,
+  payload: clientSecret,
+});
 
 export const setInitialValues = initialValues => ({
   type: SET_INITIAL_VALUES,
@@ -748,28 +762,27 @@ export const speculateTransaction = (
     }
     const tx = entities[0];
     
-    // Log raw response structure before processing
-    console.log('[SPECULATE_SUCCESS_RAW]', {
-      keys: Object.keys(response || {}),
-      txKeys: Object.keys(tx || {}),
-      attrKeys: Object.keys(tx?.attributes || {}),
-      protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
-      metadataKeys: Object.keys(tx?.attributes?.metadata || {}),
-    });
+    // ✅ A) Extract clientSecret from speculate response
+    const attrs = tx?.attributes || {};
     
-    // Extract client secret for logging - try both possible paths
+    // Be defensive: different FTW versions expose this differently
     const clientSecret =
-      tx?.attributes?.protectedData?.stripePaymentIntentClientSecret ||
-      tx?.attributes?.metadata?.stripePaymentIntentClientSecret ||
+      attrs?.paymentIntents?.[0]?.clientSecret ||
+      attrs?.stripePaymentIntentClientSecret ||
+      attrs?.protectedData?.stripePaymentIntents?.default?.stripePaymentIntentClientSecret ||
+      attrs?.protectedData?.stripePaymentIntentClientSecret ||
+      attrs?.metadata?.stripePaymentIntentClientSecret ||
+      response?.data?.paymentParams?.clientSecret ||
+      response?.paymentParams?.clientSecret ||
       null;
+
+    console.log('[SPECULATE_SUCCESS] clientSecret present?', !!clientSecret);
     
-    console.log('[speculate] success', {
-      txId: tx?.id?.uuid || tx?.id,
-      hasClientSecret: !!clientSecret,
-      clientSecretLength: clientSecret?.length || 0,
-      protectedDataKeys: Object.keys(tx?.attributes?.protectedData || {}),
-      metadataKeys: Object.keys(tx?.attributes?.metadata || {}),
-    });
+    // Store clientSecret in state
+    dispatch(setStripeClientSecret(clientSecret));
+    
+    // Log raw response for debugging
+    console.log('[RAW SPEC RESP]', JSON.stringify(response).slice(0, 400));
     
     dispatch(speculateTransactionSuccess(tx));
   };

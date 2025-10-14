@@ -258,6 +258,8 @@ const mapStateToProps = state => {
     stripeClientSecret,
     lastSpeculateError,
     clientSecretHotfix,
+    // ✅ B) Add extractedClientSecret from speculate response
+    extractedClientSecret,
   } = state.CheckoutPage;
   const { currentUser } = state.user;
   const { confirmCardPaymentError, paymentIntent, retrievePaymentIntentError } = state.stripe;
@@ -287,6 +289,8 @@ const mapStateToProps = state => {
     stripeClientSecret,
     lastSpeculateError,
     clientSecretHotfix,
+    // ✅ B) Pass extractedClientSecret to CheckoutPageWithPayment
+    extractedClientSecret,
   };
 };
 
