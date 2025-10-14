@@ -52,8 +52,9 @@ function getStripe() {
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
 
-// Helper to validate Stripe client_secret format
-const looksLikeStripeSecret = s => typeof s === 'string' && /^pi_.*_secret_.+/.test(s);
+// Helper to validate Stripe client_secret format (strict)
+const looksLikeStripeSecret = s =>
+  typeof s === 'string' && /^pi_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_secret_[A-Za-z0-9]+$/.test(s);
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -267,15 +268,23 @@ module.exports = (req, res) => {
           
           console.log('[PI] Calculated payment:', { amount: payinTotal, currency });
           
-          // Check if we already have a PaymentIntent ID in protectedData (for update vs create)
-          const existing = finalProtectedData?.stripePaymentIntents?.default || {};
-          const existingPiId = existing.id;
+          // 🔒 SECURITY: Strip any client-provided secret (never trust client data)
+          const incomingPD = finalProtectedData || {};
+          const pd = JSON.parse(JSON.stringify(incomingPD)); // deep clone
           
-          let pi;
-          if (existingPiId && /^pi_/.test(existingPiId)) {
-            // Update existing PaymentIntent to keep client_secret stable
-            console.log('[PI] Updating existing PaymentIntent:', existingPiId.slice(0, 10) + '...');
-            pi = await stripe.paymentIntents.update(existingPiId, { 
+          if (pd?.stripePaymentIntents?.default?.stripePaymentIntentClientSecret) {
+            console.log('[PI] Stripping client-provided secret (untrusted)');
+            delete pd.stripePaymentIntents.default.stripePaymentIntentClientSecret;
+          }
+          
+          // Get existing PI id (safe), but NEVER trust client-provided secret
+          const existingId = pd?.stripePaymentIntents?.default?.id || null;
+          
+          let pi, secretFromStripe;
+          if (existingId && /^pi_/.test(existingId)) {
+            // Update existing PaymentIntent
+            console.log('[PI] Updating existing PaymentIntent:', existingId.slice(0, 10) + '...');
+            pi = await stripe.paymentIntents.update(existingId, { 
               amount: payinTotal, 
               currency,
               automatic_payment_methods: { enabled: true },
@@ -283,6 +292,14 @@ module.exports = (req, res) => {
                 context: 'speculative',
               },
             });
+            secretFromStripe = pi.client_secret || null;
+            
+            // If Stripe didn't return secret on update, retrieve it
+            if (!secretFromStripe) {
+              console.log('[PI] Secret not returned on update, retrieving PI...');
+              const retrieved = await stripe.paymentIntents.retrieve(existingId);
+              secretFromStripe = retrieved.client_secret || null;
+            }
           } else {
             // Create fresh PaymentIntent
             console.log('[PI] Creating new PaymentIntent');
@@ -294,12 +311,11 @@ module.exports = (req, res) => {
                 context: 'speculative',
               },
             });
+            secretFromStripe = pi.client_secret || null;
           }
           
-          // IMPORTANT: client_secret is only returned on create and some updates requiring a new secret.
-          // If Stripe didn't return client_secret here and we have a previous valid one, reuse it.
-          const secretFromStripe = pi.client_secret || null;
-          const secret = secretFromStripe || (looksLikeStripeSecret(existing.stripePaymentIntentClientSecret) ? existing.stripePaymentIntentClientSecret : null);
+          // Only use server-obtained secret (never trust client)
+          const secret = secretFromStripe;
           
           // Safe diagnostic logging
           console.log('[PI]', { 
@@ -312,9 +328,8 @@ module.exports = (req, res) => {
           
           // CRITICAL GUARD: Do NOT proceed if we don't have a valid Stripe client secret
           if (!looksLikeStripeSecret(secret)) {
-            console.error('[PI] FATAL: Could not obtain valid Stripe client_secret. Aborting transaction.');
+            console.error('[PI] FATAL: missing/invalid client_secret for PI %s', pi?.id);
             console.error('[PI] secretFromStripe:', secretFromStripe ? secretFromStripe.slice(0, 10) + '...' : null);
-            console.error('[PI] existing.stripePaymentIntentClientSecret:', existing.stripePaymentIntentClientSecret ? existing.stripePaymentIntentClientSecret.slice(0, 10) + '...' : null);
             return res.status(500).json({
               type: 'error',
               code: 'stripe-client-secret-missing',
@@ -322,10 +337,9 @@ module.exports = (req, res) => {
             });
           }
           
-          // ✅ Persist real Stripe data to protectedData (never write UUID placeholders)
-          const pd = finalProtectedData;
+          // ✅ Overwrite protectedData with server values (never merge in client secret)
           pd.stripePaymentIntents = {
-            ...pd.stripePaymentIntents,
+            ...(pd.stripePaymentIntents || {}),
             default: {
               id: pi.id, // Stripe PI id ("pi_...")
               stripePaymentIntentClientSecret: secret, // must be "pi_..._secret_..."
@@ -338,7 +352,7 @@ module.exports = (req, res) => {
             secretLike: looksLikeStripeSecret(pd.stripePaymentIntents.default.stripePaymentIntentClientSecret) 
           });
           
-          // Update the protectedData that will be sent to Flex
+          // ✅ from now on, only use `pd` as the protectedData to persist/return
           updatedProtectedData = pd;
           
         } catch (stripeError) {
