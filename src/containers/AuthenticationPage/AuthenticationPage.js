@@ -685,8 +685,8 @@ export const AuthenticationPageComponent = props => {
               userType={userType}
               authInfo={authInfo}
               from={from}
-              showFacebookLogin={!!process.env.REACT_APP_FACEBOOK_APP_ID}
-              showGoogleLogin={!!process.env.REACT_APP_GOOGLE_CLIENT_ID}
+              showFacebookLogin={!!(typeof process !== 'undefined' && process?.env?.REACT_APP_FACEBOOK_APP_ID)}
+              showGoogleLogin={!!(typeof process !== 'undefined' && process?.env?.REACT_APP_GOOGLE_CLIENT_ID)}
               submitLogin={submitLogin}
               submitSignup={submitSignup}
               submitSingupWithIdp={submitSingupWithIdp}
