@@ -12,7 +12,7 @@ import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
 import { normalizePhoneE164 } from '../../util/phone';
-import { IS_DEV, __DEV__ } from '../../util/envFlags';
+import { IS_DEV, __DEV__, USE_PAYMENT_ELEMENT } from '../../util/envFlags';
 
 // Import shared components
 import { H3, H4, NamedLink, OrderBreakdown, Page, FieldTextInput, FieldCheckbox, InlineAlert } from '../../components';
@@ -547,12 +547,22 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     email: contactEmail || '',
   };
   
+  // Pre-submit logging for debugging
+  console.log('[checkout][pre-submit]', {
+    usePaymentElement,
+    hasClientSecret: !!stripePaymentIntentClientSecret,
+    hasElements: !!elements,
+    paymentElementComplete,
+  });
+
   // Construct requestPaymentParams before calling processCheckoutWithPayment
   const requestPaymentParams = {
     pageData,
     speculatedTransaction,
     stripe,
     card,
+    elements, // Add elements instance for PaymentElement
+    usePaymentElement, // Add flag for PaymentElement flow
     billingDetails: getBillingDetails(billingForGetBillingDetails, currentUser),
     message,
     paymentIntent,
@@ -569,6 +579,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     isPaymentFlowUseSavedCard: selectedPaymentFlow === USE_SAVED_CARD,
     isPaymentFlowPayAndSaveCard: selectedPaymentFlow === PAY_AND_SAVE_FOR_LATER_USE,
     setPageData,
+    returnUrl: `${window.location.origin}/order/${pageData?.transaction?.id?.uuid || 'pending'}/details`,
   };
 
   console.log('🚦 processCheckoutWithPayment called:', { orderParams, requestPaymentParams });
@@ -710,10 +721,17 @@ export const CheckoutPageWithPayment = props => {
   const [submitting, setSubmitting] = useState(false);
   // Initialized stripe library is saved to state - if it's needed at some point here too.
   const [stripe, setStripe] = useState(null);
+  // Elements instance (needed for PaymentElement)
+  const [elements, setElements] = useState(null);
+  // Flag to determine which Stripe flow to use (from env)
+  const usePaymentElement = USE_PAYMENT_ELEMENT;
   // Payment element completion state
   const [paymentElementComplete, setPaymentElementComplete] = useState(false);
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   const stripeReady = !!stripeElementMounted;
+  
+  // Log which payment flow is active
+  console.log('[checkout] Payment flow:', usePaymentElement ? 'PaymentElement' : 'CardElement');
   
   // Ref to prevent speculative transaction loops
   const prevSpecKeyRef = useRef(null);
@@ -889,6 +907,12 @@ export const CheckoutPageWithPayment = props => {
 
   const totalPrice =
     tx?.attributes?.lineItems?.length > 0 ? getFormattedTotalPrice(tx, intl) : null;
+
+  // Extract Stripe Payment Intent client secret for PaymentElement
+  const hasPaymentIntents = existingTransaction?.attributes?.protectedData?.stripePaymentIntents;
+  const stripePaymentIntentClientSecret = hasPaymentIntents
+    ? existingTransaction.attributes.protectedData.stripePaymentIntents.default?.stripePaymentIntentClientSecret
+    : null;
 
   const process = processName ? getProcess(processName) : null;
   const transitions = process.transitions;
@@ -1210,11 +1234,16 @@ export const CheckoutPageWithPayment = props => {
                                   }
                                   paymentIntent={paymentIntent}
                                   onStripeInitialized={stripe => setStripe(stripe)}
+                                  onElementsCreated={setElements}
                                   onStripeElementMounted={(v) => { 
                                     console.log('[Stripe] element mounted:', v);
                                     setStripeElementMounted(!!v);
                                   }}
                                   onPaymentElementChange={setPaymentElementComplete}
+                                  usePaymentElement={usePaymentElement}
+                                  elements={elements}
+                                  stripe={stripe}
+                                  clientSecret={stripePaymentIntentClientSecret}
                                   submitInProgress={submitting}
                                   submitDisabled={submitDisabled}
                                   askShippingDetails={askShippingDetails}

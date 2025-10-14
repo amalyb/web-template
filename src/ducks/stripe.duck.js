@@ -253,6 +253,11 @@ export const confirmCardPayment = params => dispatch => {
   const { stripe, paymentParams, stripePaymentIntentClientSecret } = params;
   const transactionId = params.orderId;
 
+  console.log('[stripe] confirmCardPayment called with CardElement', {
+    hasPaymentParams: !!paymentParams,
+    hasClientSecret: !!stripePaymentIntentClientSecret,
+    transactionId: transactionId?.uuid || transactionId
+  });
   dispatch(confirmCardPaymentRequest());
 
   // When using default payment method paymentParams.payment_method is
@@ -265,8 +270,12 @@ export const confirmCardPayment = params => dispatch => {
   const doConfirmCardPayment = () =>
     stripe.confirmCardPayment(...args).then(response => {
       if (response.error) {
+        // Log summarized error
+        const { message, code, type, decline_code } = response.error;
+        console.error('[stripe] confirmCardPayment error:', { message, code, type, decline_code });
         return Promise.reject(response);
       } else {
+        console.log('[stripe] confirmCardPayment success');
         dispatch(confirmCardPaymentSuccess(response));
         return { ...response, transactionId };
       }
@@ -293,20 +302,116 @@ export const confirmCardPayment = params => dispatch => {
       const e = err.error || storableError(err);
       dispatch(confirmCardPaymentError(e));
 
-      // Log error
+      // Log error summary (not full object to avoid circular refs)
       const containsPaymentIntent = err.error && err.error.payment_intent;
-      const { code, doc_url, message, payment_intent } = containsPaymentIntent ? err.error : {};
+      const { code, doc_url, message, payment_intent, decline_code, type } = containsPaymentIntent ? err.error : {};
       const loggableError = containsPaymentIntent
         ? {
             code,
+            type,
             message,
             doc_url,
+            decline_code,
             paymentIntentStatus: payment_intent.status,
+            paymentIntentId: payment_intent.id,
           }
-        : e;
+        : { code: e.code, type: e.type, message: e.message };
       log.error(loggableError, 'stripe-handle-card-payment-failed', {
         stripeMessage: loggableError.message,
       });
+      console.error('[stripe] confirmCardPayment failed:', loggableError);
+      throw e;
+    });
+};
+
+/**
+ * Confirm payment using Stripe PaymentElement (not CardElement).
+ * This is the modern approach for handling payments with Stripe.
+ * 
+ * @param {Object} params - Parameters for confirming payment
+ * @param {Object} params.stripe - Stripe instance
+ * @param {Object} params.elements - Stripe Elements instance (created with clientSecret)
+ * @param {string} params.stripePaymentIntentClientSecret - Client secret for the payment intent
+ * @param {string} params.orderId - Transaction/order ID
+ * @param {Object} params.billingDetails - Billing details for the payment
+ * @param {string} params.returnUrl - URL to return to after 3DS authentication
+ * @returns {Function} Redux thunk
+ */
+export const confirmPayment = params => dispatch => {
+  const { stripe, elements, stripePaymentIntentClientSecret, billingDetails, returnUrl } = params;
+  const transactionId = params.orderId;
+
+  console.log('[stripe] confirmPayment called with PaymentElement', {
+    hasElements: !!elements,
+    hasClientSecret: !!stripePaymentIntentClientSecret,
+    transactionId: transactionId?.uuid || transactionId
+  });
+  dispatch(confirmCardPaymentRequest());
+
+  const doConfirmPayment = () =>
+    stripe.confirmPayment({
+      elements,
+      confirmParams: {
+        payment_method_data: {
+          billing_details: billingDetails || {},
+        },
+        return_url: returnUrl || `${window.location.origin}/order/${transactionId?.uuid || transactionId}/details`,
+      },
+      redirect: 'if_required', // Only redirect if 3DS or other authentication is required
+    }).then(response => {
+      if (response.error) {
+        // Log summarized error
+        const { message, code, type, decline_code } = response.error;
+        console.error('[stripe] confirmPayment error:', { message, code, type, decline_code });
+        return Promise.reject(response);
+      } else {
+        console.log('[stripe] confirmPayment success');
+        dispatch(confirmCardPaymentSuccess(response));
+        return { ...response, transactionId };
+      }
+    });
+
+  // First, check if the payment intent has already been confirmed and it just requires capture.
+  return stripe
+    .retrievePaymentIntent(stripePaymentIntentClientSecret)
+    .then(response => {
+      // Handle response.error or response.paymentIntent
+      if (response.error) {
+        return Promise.reject(response);
+      } else if (STRIPE_PI_HAS_PASSED_CONFIRM.includes(response?.paymentIntent?.status)) {
+        // Payment Intent has been confirmed already, move forward.
+        console.log('[stripe] Payment Intent already confirmed, status:', response.paymentIntent.status);
+        dispatch(confirmCardPaymentSuccess(response));
+        return { ...response, transactionId };
+      } else {
+        // If payment intent has not been confirmed yet, confirm it.
+        console.log('[stripe] Confirming payment with PaymentElement, PI status:', response.paymentIntent?.status);
+        return doConfirmPayment();
+      }
+    })
+    .catch(err => {
+      // Unwrap Stripe error.
+      const e = err.error || storableError(err);
+      dispatch(confirmCardPaymentError(e));
+
+      // Log error summary (not full object to avoid circular refs)
+      const containsPaymentIntent = err.error && err.error.payment_intent;
+      const { code, doc_url, message, payment_intent, decline_code, type } = containsPaymentIntent ? err.error : {};
+      const loggableError = containsPaymentIntent
+        ? {
+            code,
+            type,
+            message,
+            doc_url,
+            decline_code,
+            paymentIntentStatus: payment_intent.status,
+            paymentIntentId: payment_intent.id,
+          }
+        : { code: e.code, type: e.type, message: e.message };
+      log.error(loggableError, 'stripe-confirm-payment-failed', {
+        stripeMessage: loggableError.message,
+      });
+      console.error('[stripe] confirmPayment failed:', loggableError);
       throw e;
     });
 };

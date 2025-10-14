@@ -256,7 +256,43 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       ? order.attributes.protectedData.stripePaymentIntents.default
       : null;
 
-    const { stripe, card, billingDetails, paymentIntent } = extraPaymentParams;
+    const { 
+      stripe, 
+      card, 
+      elements, 
+      usePaymentElement, 
+      billingDetails, 
+      paymentIntent,
+      returnUrl 
+    } = extraPaymentParams;
+    
+    // If we're using PaymentElement, call the new confirmPayment API
+    if (usePaymentElement && elements) {
+      console.log('[stripe] flow: PaymentElement/confirmPayment', {
+        hasElements: !!elements,
+        hasClientSecret: !!stripePaymentIntentClientSecret,
+        orderId: order?.id?.uuid
+      });
+      const params = {
+        stripe,
+        elements,
+        stripePaymentIntentClientSecret,
+        orderId: order?.id,
+        billingDetails,
+        returnUrl,
+      };
+
+      return hasPaymentIntentUserActionsDone
+        ? Promise.resolve({ transactionId: order?.id, paymentIntent })
+        : onConfirmPayment(params);
+    }
+    
+    // Otherwise, use the legacy CardElement flow
+    console.log('[stripe] flow: CardElement/confirmCardPayment', {
+      hasCard: !!card,
+      hasClientSecret: !!stripePaymentIntentClientSecret,
+      orderId: order?.id?.uuid
+    });
     const stripeElementMaybe = !isPaymentFlowUseSavedCard ? { card } : {};
 
     // Note: For basic USE_SAVED_CARD scenario, we have set it already on API side, when PaymentIntent was created.
