@@ -37,12 +37,12 @@ export const bookingDatesMaybe = bookingDates => {
 /**
  * Construct billing details (JSON-like object) for the Stripe API
  *
- * @param {Object} formValues object containing name, addressLine1, addressLine2, postal, city, state, country
+ * @param {Object} formValues object containing name, addressLine1, addressLine2, postal, city, state, country, email
  * @param {Object} currentUser
  * @returns Object that contains name, email and potentially address data for the Stripe API
  */
 export const getBillingDetails = (formValues, currentUser) => {
-  const { name, addressLine1, addressLine2, postal, city, state, country } = formValues;
+  const { name, addressLine1, addressLine2, postal, city, state, country, email } = formValues;
 
   // Billing address is recommended.
   // However, let's not assume that <StripePaymentAddress> data is among formValues.
@@ -61,9 +61,14 @@ export const getBillingDetails = (formValues, currentUser) => {
           },
         }
       : {};
+  
+  // POLICY: Prefer checkout-entered email (from formValues) over profile email
+  // This ensures Stripe billing_details uses the contact info entered at checkout
+  const emailForStripe = email || currentUser?.attributes?.email;
+  
   return {
     name,
-    email: currentUser?.attributes?.email,
+    email: emailForStripe,
     ...addressMaybe,
   };
 };

@@ -9,6 +9,8 @@ const {
 } = require('../api-util/sdk');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
+const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
+const { normalizePhoneE164 } = require('../util/phone');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -125,29 +127,26 @@ async function persistWithRetry(id, data, { retries = 3, delayMs = 250 } = {}) {
 console.log('🚦 transition-privileged endpoint is wired up');
 
 // Helper function to get borrower phone number with fallbacks
+// DEPRECATED: Use contactPhoneForTx from util/contact.js instead
 const getBorrowerPhone = (params, tx) => {
   const txPD = tx?.protectedData || tx?.attributes?.protectedData || {};
   const cust = tx?.relationships?.customer?.attributes;
-  return (
-    params?.protectedData?.customerPhone ??
-    txPD.customerPhone ??
-    cust?.profile?.protectedData?.phone ??
-    cust?.protectedData?.phone ??
-    null
-  );
+  const profilePhone = cust?.profile?.protectedData?.phone ?? cust?.protectedData?.phone;
+  
+  // Use PD-first helper
+  return contactPhoneForTx(tx, profilePhone);
 };
 
 // Helper function to get lender phone number with fallbacks
 const getLenderPhone = (params, tx) => {
   const txPD = tx?.protectedData || tx?.attributes?.protectedData || {};
   const prov = tx?.relationships?.provider?.attributes;
-  return (
-    params?.protectedData?.providerPhone ??
-    txPD.providerPhone ??
-    prov?.profile?.protectedData?.phone ??
-    prov?.protectedData?.phone ??
-    null
-  );
+  const profilePhone = prov?.profile?.protectedData?.phone ?? prov?.protectedData?.phone;
+  
+  // Provider phone uses similar PD-first logic
+  return txPD.providerPhone && String(txPD.providerPhone).trim()
+    ? String(txPD.providerPhone).trim()
+    : (profilePhone && String(profilePhone).trim() ? String(profilePhone).trim() : null);
 };
 
 // --- Shippo label creation logic extracted to a function ---
@@ -776,6 +775,19 @@ module.exports = async (req, res) => {
         const cleaned = Object.fromEntries(
           Object.entries(params.protectedData).filter(([, v]) => v != null && String(v).trim() !== '')
         );
+        
+        // Server-side phone normalization (safety net for E.164)
+        if (cleaned.customerPhone) {
+          cleaned.customerPhone = normalizePhoneE164(cleaned.customerPhone, 'US');
+          console.log('📞 [request-payment] Normalized customerPhone to E.164:', cleaned.customerPhone);
+        }
+        if (cleaned.providerPhone) {
+          cleaned.providerPhone = normalizePhoneE164(cleaned.providerPhone, 'US');
+        }
+        if (cleaned.customerPhoneShipping) {
+          cleaned.customerPhoneShipping = normalizePhoneE164(cleaned.customerPhoneShipping, 'US');
+        }
+        
         params.protectedData = cleaned;
         console.log('🧹 [request-payment] Sanitized protectedData keys:', Object.keys(cleaned));
       }
