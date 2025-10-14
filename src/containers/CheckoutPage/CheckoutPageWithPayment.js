@@ -336,7 +336,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   console.log('📞 Contact phone normalized:', contactPhone, '→', normalizedContactPhone);
 
   // Determine which address to use (shipping or billing)
-  const finalShipping = shippingSameAsBilling ? billing : shipping;
+  const finalShipping = !!shippingSameAsBilling ? billing : shipping;
   
   // Determine which phone to use for this transaction
   // Priority: shipping.phone (if useDifferentPhone) > contactPhone
@@ -628,7 +628,7 @@ const validateCheckout = values => {
   }
   
   // Validate shipping address if different from billing
-  const same = values.shippingSameAsBilling !== false; // default true
+  const same = !!values.shippingSameAsBilling; // true when checked
   if (!same) {
     const s = values.shipping || {};
     if (!s.name?.trim()) errors['shipping.name'] = 'Name is required';
@@ -948,7 +948,7 @@ export const CheckoutPageWithPayment = props => {
                   const initialValues = {
                     contactEmail: prefillEmail || '',
                     contactPhone: prefillPhone || '',
-                    shippingSameAsBilling: true,
+                    shippingSameAsBilling: false,
                     billing: {
                       name: existingPD?.customerName || '',
                       line1: existingPD?.customerStreet || '',
@@ -1051,9 +1051,8 @@ export const CheckoutPageWithPayment = props => {
                                 id="shippingSameAsBilling"
                                 name="shippingSameAsBilling"
                                 label={intl.formatMessage({ id: 'CheckoutPage.shippingSameAsBilling', defaultMessage: 'Same as billing address' })}
-                                value="sameAsBilling"
                               />
-                              {!values.shippingSameAsBilling && (
+                              {!Boolean(values.shippingSameAsBilling) && (
                                 <div className={css.shippingFields}>
                                   <AddressForm
                                     namespace="shipping"
@@ -1069,7 +1068,6 @@ export const CheckoutPageWithPayment = props => {
                                       id="shipping.useDifferentPhone"
                                       name="shipping.useDifferentPhone"
                                       label={intl.formatMessage({ id: 'CheckoutPage.useDifferentPhoneForDelivery', defaultMessage: 'Use different phone for delivery' })}
-                                      value="useDifferentPhone"
                                     />
                                     {values.shipping?.useDifferentPhone && (
                                       <FieldTextInput
