@@ -602,6 +602,9 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
 
     setOrderPageInitialValues(initialValues, routeConfiguration, dispatch);
     onSubmitCallback();
+    
+    // Log redirect for debugging
+    console.log('[checkout] Redirecting to order page:', orderId.uuid, orderDetailsPath);
     history.push(orderDetailsPath);
   } catch (err) {
     console.error('[Checkout] processCheckoutWithPayment failed:', err);

@@ -267,21 +267,35 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       returnUrl 
     } = extraPaymentParams;
     
-    // If we're using PaymentElement, call the new confirmPayment API
-    if (USE_PAYMENT_ELEMENT && usePaymentElement && elements) {
+    // Guard: Determine which payment flow to use
+    // If USE_PAYMENT_ELEMENT is true, we MUST use PaymentElement path
+    if (USE_PAYMENT_ELEMENT === true) {
       console.log('[checkout] Payment flow: PaymentElement');
+      
+      // Validate PaymentElement requirements
+      if (!elements) {
+        console.error('[stripe] PaymentElement flow selected but elements instance is missing');
+        return Promise.reject(new Error('Payment setup incomplete. Please refresh and try again.'));
+      }
+      
+      if (!stripePaymentIntentClientSecret) {
+        console.error('[stripe] PaymentElement flow selected but clientSecret is missing');
+        return Promise.reject(new Error('Payment initialization failed. Please try again.'));
+      }
+      
       console.log('[stripe] flow: PaymentElement/confirmPayment', {
         hasElements: !!elements,
         hasClientSecret: !!stripePaymentIntentClientSecret,
         orderId: order?.id?.uuid
       });
+      
       const params = {
         stripe,
         elements,
         stripePaymentIntentClientSecret,
         orderId: order?.id,
         billingDetails,
-        returnUrl,
+        returnUrl: returnUrl || undefined, // Use undefined to handle in-page
       };
 
       return hasPaymentIntentUserActionsDone
@@ -297,9 +311,10 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       orderId: order?.id?.uuid
     });
     
-    // Ensure card element exists for CardElement flow
+    // Guard: CardElement requires card instance (unless using saved card)
     if (!card && !isPaymentFlowUseSavedCard) {
-      throw new Error('Card element is required for CardElement payment flow');
+      console.error('[stripe] CardElement missing - cannot process payment');
+      return Promise.reject(new Error('Card information is required. Please refresh and try again.'));
     }
     
     const stripeElementMaybe = !isPaymentFlowUseSavedCard ? { card } : {};
