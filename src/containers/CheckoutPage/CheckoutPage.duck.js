@@ -762,24 +762,50 @@ export const speculateTransaction = (
     }
     const tx = entities[0];
     
-    // ✅ A) Extract clientSecret from speculate response
+    // ✅ A) Extract clientSecret from speculate response - FIXED to get actual secret, not UUID
     const attrs = tx?.attributes || {};
+    const pd = attrs?.protectedData || {};
+    const metadata = attrs?.metadata || {};
     
-    // Be defensive: different FTW versions expose this differently
+    // Priority order: protectedData nested > protectedData flat > metadata > response level
     const clientSecret =
-      attrs?.paymentIntents?.[0]?.clientSecret ||
-      attrs?.stripePaymentIntentClientSecret ||
-      attrs?.protectedData?.stripePaymentIntents?.default?.stripePaymentIntentClientSecret ||
-      attrs?.protectedData?.stripePaymentIntentClientSecret ||
-      attrs?.metadata?.stripePaymentIntentClientSecret ||
-      response?.data?.paymentParams?.clientSecret ||
-      response?.paymentParams?.clientSecret ||
+      pd?.stripePaymentIntents?.default?.stripePaymentIntentClientSecret ??
+      pd?.stripePaymentIntentClientSecret ??                        // legacy flat
+      metadata?.stripe?.clientSecret ??                             // metadata path
+      metadata?.stripePaymentIntentClientSecret ??
+      attrs?.paymentIntents?.[0]?.clientSecret ??
+      response?.data?.paymentParams?.clientSecret ??
+      response?.paymentParams?.clientSecret ??
       null;
 
-    console.log('[SPECULATE_SUCCESS] clientSecret present?', !!clientSecret);
+    // Validate it's actually a Stripe client secret, not a UUID or ID
+    const isValidSecret = clientSecret && typeof clientSecret === 'string' && 
+                          clientSecret.startsWith('pi_') && 
+                          clientSecret.includes('_secret_');
     
-    // Store clientSecret in state
-    dispatch(setStripeClientSecret(clientSecret));
+    if (!isValidSecret) {
+      console.warn('[SPECULATE_SUCCESS] Invalid or missing clientSecret!');
+      console.warn('[SPECULATE_SUCCESS] Got:', clientSecret?.substring(0, 50));
+      console.warn('[SPECULATE_SUCCESS] Expected format: pi_..._secret_...');
+      console.warn('[SPECULATE_SUCCESS] Checking all possible paths:');
+      console.warn('  - pd.stripePaymentIntents?.default?.stripePaymentIntentClientSecret:', pd?.stripePaymentIntents?.default?.stripePaymentIntentClientSecret?.substring(0, 20));
+      console.warn('  - pd.stripePaymentIntentClientSecret:', pd?.stripePaymentIntentClientSecret?.substring(0, 20));
+      console.warn('  - metadata.stripe?.clientSecret:', metadata?.stripe?.clientSecret?.substring(0, 20));
+      console.warn('  - metadata.stripePaymentIntentClientSecret:', metadata?.stripePaymentIntentClientSecret?.substring(0, 20));
+      console.warn('[SPECULATE_SUCCESS] Full protectedData keys:', Object.keys(pd));
+      console.warn('[SPECULATE_SUCCESS] Full metadata keys:', Object.keys(metadata));
+      if (pd?.stripePaymentIntents) {
+        console.warn('[SPECULATE_SUCCESS] stripePaymentIntents keys:', Object.keys(pd.stripePaymentIntents));
+        if (pd.stripePaymentIntents.default) {
+          console.warn('[SPECULATE_SUCCESS] stripePaymentIntents.default keys:', Object.keys(pd.stripePaymentIntents.default));
+        }
+      }
+    }
+    
+    console.log('[SPECULATE_SUCCESS] clientSecret present?', !!clientSecret, 'valid?', isValidSecret);
+    
+    // Store clientSecret in state (only if valid)
+    dispatch(setStripeClientSecret(isValidSecret ? clientSecret : null));
     
     // Log raw response for debugging
     console.log('[RAW SPEC RESP]', JSON.stringify(response).slice(0, 400));

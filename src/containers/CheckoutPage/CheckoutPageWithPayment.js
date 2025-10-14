@@ -11,6 +11,7 @@ import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
 import { selectStripeClientSecret } from './CheckoutPage.duck';
 import { Elements } from '@stripe/react-stripe-js';
+import { stripePromise } from '../../util/stripe';
 
 // Import shared components (direct imports to avoid circular deps via barrel)
 import { H3, H4 } from '../../components/Heading/Heading';
@@ -1434,19 +1435,21 @@ const CheckoutPageWithPayment = props => {
                     </>
                   );
                 })()}
-                {/* ✅ 1) Force Elements to remount when clientSecret changes with key prop */}
+                {/* ✅ 1) Use singleton stripePromise + clientSecret in options */}
                 {(() => {
-                  // ✅ 2) Log & validate the exact clientSecret we're passing
-                  console.log('[Stripe] clientSecret:', stripeClientSecret);
-                  console.log(
-                    '[Stripe] clientSecret valid?',
-                    typeof stripeClientSecret === 'string' &&
-                      stripeClientSecret.startsWith('pi_') &&
-                      stripeClientSecret.includes('_secret_')
-                  );
+                  const cs = extractedClientSecret;
                   
-                  return stripeClientSecret ? (
-                    <Elements options={{ clientSecret: stripeClientSecret }} key={stripeClientSecret}>
+                  // ✅ 2) Log & validate the exact clientSecret we're passing
+                  console.log('[Stripe] clientSecret:', cs);
+                  const hasValidSecret = typeof cs === 'string' && cs.startsWith('pi_') && cs.includes('_secret_');
+                  console.log('[Stripe] clientSecret valid?', hasValidSecret);
+                  
+                  return hasValidSecret ? (
+                    <Elements 
+                      stripe={stripePromise}
+                      options={{ clientSecret: cs }}
+                      key={cs}
+                    >
                       <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
