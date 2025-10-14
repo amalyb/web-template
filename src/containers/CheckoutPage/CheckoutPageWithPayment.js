@@ -280,11 +280,17 @@ export const loadInitialDataForStripePayments = ({
   fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 };
 
-const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone) => {
+const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone, elements, paymentElementComplete, stripePaymentIntentClientSecret) => {
   if (submitting) {
     return;
   }
   setSubmitting(true);
+
+  // Derive feature flag (robust, safe for all environments)
+  const USE_PAYMENT_ELEMENT_FLAG = String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
+  
+  // Log which payment flow is active
+  console.log('[checkout] Payment flow:', USE_PAYMENT_ELEMENT_FLAG ? 'PaymentElement' : 'CardElement');
 
   const {
     history,
@@ -549,7 +555,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   
   // Pre-submit logging for debugging
   console.log('[checkout][pre-submit]', {
-    usePaymentElement,
+    usePaymentElement: USE_PAYMENT_ELEMENT_FLAG,
     hasClientSecret: !!stripePaymentIntentClientSecret,
     hasElements: !!elements,
     paymentElementComplete,
@@ -561,8 +567,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     speculatedTransaction,
     stripe,
     card,
-    elements, // Add elements instance for PaymentElement
-    usePaymentElement, // Add flag for PaymentElement flow
+    ...(USE_PAYMENT_ELEMENT_FLAG ? { elements, usePaymentElement: true } : { usePaymentElement: false }),
     billingDetails: getBillingDetails(billingForGetBillingDetails, currentUser),
     message,
     paymentIntent,
@@ -613,8 +618,8 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
       });
     }
     
-    // Re-throw to ensure form submission state is properly reset
-    throw err;
+    // Don't re-throw - let Final Form complete the submit cycle
+    // Re-throwing would prevent the form from clearing the submitting state
   }
 };
 
@@ -1070,7 +1075,7 @@ export const CheckoutPageWithPayment = props => {
                         const contactEmail = values.contactEmail;
                         const contactPhone = values.contactPhone;
                         
-                        // Call the existing handleSubmit with contact info
+                        // Call the existing handleSubmit with contact info and Stripe state
                         return handleSubmit(
                           values, 
                           process, 
@@ -1079,7 +1084,10 @@ export const CheckoutPageWithPayment = props => {
                           submitting, 
                           setSubmitting, 
                           contactEmail, 
-                          contactPhone
+                          contactPhone,
+                          elements,
+                          paymentElementComplete,
+                          stripePaymentIntentClientSecret
                         );
                       }}
                       validate={validateCheckout}
@@ -1194,23 +1202,25 @@ export const CheckoutPageWithPayment = props => {
                               )}
                             </div>
 
-                            {/* QA FormSpy - Monitor for unexpected value changes */}
-                            <FormSpy subscription={{ values: true }}>
-                              {({ values }) => {
-                                // Log field counts to detect clears
-                                if (__DEV__) {
-                                  const billingKeys = Object.keys(values?.billing || {}).filter(k => values.billing[k]);
-                                  const shippingKeys = Object.keys(values?.shipping || {}).filter(k => values.shipping[k]);
-                                  if (paymentElementComplete && (billingKeys.length < 3 || shippingKeys.length < 3)) {
-                                    console.debug('[QA] Warning: Form values appear incomplete after PaymentElement complete:', {
-                                      billing_filled: billingKeys,
-                                      shipping_filled: shippingKeys,
-                                    });
+                            {/* QA FormSpy - Monitor for unexpected value changes (only for PaymentElement) */}
+                            {usePaymentElement && (
+                              <FormSpy subscription={{ values: true }}>
+                                {({ values }) => {
+                                  // Log field counts to detect clears
+                                  if (__DEV__) {
+                                    const billingKeys = Object.keys(values?.billing || {}).filter(k => values.billing[k]);
+                                    const shippingKeys = Object.keys(values?.shipping || {}).filter(k => values.shipping[k]);
+                                    if (paymentElementComplete && (billingKeys.length < 3 || shippingKeys.length < 3)) {
+                                      console.debug('[QA] Warning: Form values appear incomplete after PaymentElement complete:', {
+                                        billing_filled: billingKeys,
+                                        shipping_filled: shippingKeys,
+                                      });
+                                    }
                                   }
-                                }
-                                return null;
-                              }}
-                            </FormSpy>
+                                  return null;
+                                }}
+                              </FormSpy>
+                            )}
 
                             {/* Stripe Payment Form - receives form state via FormSpy */}
                             <FormSpy subscription={{ values: true, valid: true, submitting: true, errors: true, invalid: true }}>

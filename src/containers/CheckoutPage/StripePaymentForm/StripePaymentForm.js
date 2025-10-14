@@ -347,6 +347,10 @@ class StripePaymentForm extends Component {
         usePaymentElement,
         clientSecret,
       } = this.props;
+      
+      // Derive feature flag robustly
+      const USE_PAYMENT_ELEMENT_FLAG = String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
+      
       this.stripe = window.Stripe(publishableKey);
       onStripeInitialized(this.stripe);
 
@@ -361,7 +365,7 @@ class StripePaymentForm extends Component {
       }
 
       // If using PaymentElement and we have a clientSecret, create Elements with it
-      if (usePaymentElement) {
+      if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement) {
         if (!clientSecret) {
           console.warn('[Stripe] PaymentElement enabled but no clientSecret provided');
           return;
@@ -497,7 +501,9 @@ class StripePaymentForm extends Component {
     this.cardContainer = el;
     if (this.stripe && el) {
       const { usePaymentElement, clientSecret } = this.props;
-      if (usePaymentElement && clientSecret && this.elements) {
+      const USE_PAYMENT_ELEMENT_FLAG = String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
+      
+      if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement && clientSecret && this.elements) {
         this.initializePaymentElement(el);
       } else {
         this.initializeStripeElement(el);
