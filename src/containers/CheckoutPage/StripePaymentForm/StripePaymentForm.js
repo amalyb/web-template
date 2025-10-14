@@ -3,8 +3,8 @@
  * Card is not a Final Form field so it's not available trough Final Form.
  * It's also handled separately in handleSubmit function.
  */
-import React, { Component, useEffect } from 'react';
-import { Form as FinalForm, Field, useForm, useFormState } from 'react-final-form';
+import React, { Component } from 'react';
+import { Field } from 'react-final-form';
 import classNames from 'classnames';
 
 import { FormattedMessage, injectIntl } from '../../../util/reactIntl';
@@ -14,17 +14,14 @@ import { mapToStripeBilling, mapToShippo, normalizeAddress, normalizePhone, vali
 
 import {
   Heading,
-  Form,
   PrimaryButton,
   FieldCheckbox,
   FieldTextInput,
   IconSpinner,
   SavedCardDetails,
-  StripePaymentAddress,
 } from '../../../components';
-import AddressForm from '../../../components/AddressForm/AddressForm';
 
-import ShippingDetails from '../ShippingDetails/ShippingDetails';
+// NOTE: AddressForm and ShippingDetails no longer used - billing/shipping handled in parent
 
 import css from './StripePaymentForm.module.css';
 import { __DEV__ } from '../../../util/envFlags';
@@ -252,152 +249,8 @@ const checkOnetimePaymentFields = (
   };
 };
 
-const LocationOrShippingDetails = props => {
-  const {
-    askShippingDetails,
-    showPickUplocation,
-    listingLocation,
-    formApi,
-    locale,
-    isBooking,
-    isFuzzyLocation,
-    intl,
-  } = props;
-
-  const locationDetails = listingLocation?.building
-    ? `${listingLocation.building}, ${listingLocation.address}`
-    : listingLocation?.address
-    ? listingLocation.address
-    : intl.formatMessage({ id: 'StripePaymentForm.locationUnknown' });
-
-  return askShippingDetails ? (
-    <ShippingDetails intl={intl} formApi={formApi} locale={locale} />
-  ) : !isBooking && showPickUplocation ? (
-    <div className={css.locationWrapper}>
-      <Heading as="h3" rootClassName={css.heading}>
-        <FormattedMessage id="StripePaymentForm.pickupDetailsTitle" />
-      </Heading>
-      <p className={css.locationDetails}>{locationDetails}</p>
-    </div>
-  ) : isBooking && !isFuzzyLocation ? (
-    <div className={css.locationWrapper}>
-      <Heading as="h3" rootClassName={css.heading}>
-        <FormattedMessage id="StripePaymentForm.locationDetailsTitle" />
-      </Heading>
-      <p className={css.locationDetails}>{locationDetails}</p>
-    </div>
-  ) : null;
-};
-
-// Utility to copy billing fields to shipping fields
-const copyBillingToShipping = (form) => {
-  const values = form.getState().values || {};
-  const b = values.billing || {};
-  const mapping = {
-    'shipping.name': b.name || '',
-    'shipping.line1': b.line1 || '',
-    'shipping.line2': b.line2 || '',
-    'shipping.city': b.city || '',
-    'shipping.state': b.state || '',
-    'shipping.postalCode': b.postalCode || '',
-    'shipping.country': b.country || '',
-    'shipping.email': b.email || '',
-    'shipping.phone': b.phone || '',
-  };
-  Object.entries(mapping).forEach(([k, v]) => form.change(k, v));
-};
-
-// Shipping section component with checkbox at top
-const ShippingSection = ({ intl, css, contactPhone }) => {
-  const form = useForm();
-  const { values } = useFormState({ subscription: { values: true } });
-  const [useDifferentPhone, setUseDifferentPhone] = React.useState(false);
-
-  const onSameAsBillingChange = (e) => {
-    const checked = !!e.target.checked;
-    form.change('shippingSameAsBilling', checked);
-    if (checked) copyBillingToShipping(form);
-  };
-
-  // Keep shipping in sync when billing changes while checkbox is checked
-  React.useEffect(() => {
-    if (values.shippingSameAsBilling) copyBillingToShipping(form);
-  }, [
-    values.shippingSameAsBilling,
-    values.billing?.name,
-    values.billing?.line1,
-    values.billing?.line2,
-    values.billing?.city,
-    values.billing?.state,
-    values.billing?.postalCode,
-    values.billing?.country,
-  ]);
-
-  // Auto-populate shipping phone with contact phone when not using different phone
-  React.useEffect(() => {
-    if (!useDifferentPhone && contactPhone) {
-      form.change('shipping.phone', contactPhone);
-    }
-  }, [useDifferentPhone, contactPhone]);
-
-  return (
-    <section aria-labelledby="shippingTitle">
-      <h2 id="shippingTitle" className={css.heading}>
-        <FormattedMessage id="StripePaymentForm.shippingDetails.title" />
-      </h2>
-
-      <div className={css.sameAsBillingRow}>
-        <label className={css.inlineCheckbox} htmlFor="shippingSameAsBilling">
-          <Field
-            id="shippingSameAsBilling"
-            name="shippingSameAsBilling"
-            component="input"
-            type="checkbox"
-            onChange={onSameAsBillingChange}
-          />
-          <span>{intl.formatMessage({ id: 'StripePaymentForm.shippingSameAsBilling' })}</span>
-        </label>
-      </div>
-
-      {!values.shippingSameAsBilling && (
-        <div className={css.fieldStack}>
-          <AddressForm
-            namespace="shipping"
-            requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true }}
-            countryAfterZipForUSCA
-            showEmail={false}
-            showPhone={false}
-          />
-          
-          {/* Phone toggle - use contact phone or provide different */}
-          <div className={css.phoneToggleRow}>
-            <label className={css.inlineCheckbox} htmlFor="useDifferentPhone">
-              <input
-                id="useDifferentPhone"
-                type="checkbox"
-                checked={useDifferentPhone}
-                onChange={(e) => setUseDifferentPhone(e.target.checked)}
-              />
-              <span>{intl.formatMessage({ id: 'StripePaymentForm.useDifferentPhone', defaultMessage: 'Use different phone for shipping' })}</span>
-            </label>
-          </div>
-          
-          {useDifferentPhone && (
-            <FieldTextInput
-              className={css.field}
-              id="shipping-phone"
-              name="shipping.phone"
-              label={intl.formatMessage({ id: 'StripePaymentForm.shippingPhoneLabel', defaultMessage: 'Shipping Phone Number' })}
-              type="tel"
-              required={true}
-              autoComplete="tel"
-            />
-          )}
-        </div>
-      )}
-    </section>
-  );
-};
+// NOTE: LocationOrShippingDetails, ShippingSection, and address form components 
+// are no longer used here - all billing/shipping fields are rendered in parent CheckoutPageWithPayment
 
 const initialState = {
   error: null,
@@ -458,12 +311,7 @@ class StripePaymentForm extends Component {
     this.initializeStripeElement = this.initializeStripeElement.bind(this);
     this.handleStripeElementRef = this.handleStripeElementRef.bind(this);
     this.changePaymentMethod = this.changePaymentMethod.bind(this);
-    this.finalFormAPI = null;
     this.cardContainer = null;
-    
-    // Change guards to prevent unnecessary callbacks
-    this.lastValuesJSON = '';
-    this.lastEffectiveInvalid = undefined;
     this.reportedMounted = false;
   }
 
@@ -536,17 +384,8 @@ class StripePaymentForm extends Component {
   }
 
   updateBillingDetailsToMatchShippingAddress(shouldFill) {
-    const formApi = this.finalFormAPI;
-    const values = formApi.getState()?.values || {};
-    formApi.batch(() => {
-      formApi.change('name', shouldFill ? values.recipientName : '');
-      formApi.change('addressLine1', shouldFill ? values.recipientAddressLine1 : '');
-      formApi.change('addressLine2', shouldFill ? values.recipientAddressLine2 : '');
-      formApi.change('postal', shouldFill ? values.recipientPostal : '');
-      formApi.change('city', shouldFill ? values.recipientCity : '');
-      formApi.change('state', shouldFill ? values.recipientState : '');
-      formApi.change('country', shouldFill ? values.recipientCountry : '');
-    });
+    // Note: This method is deprecated in the new implementation
+    // Billing/shipping synchronization is handled in the parent form
   }
 
   changePaymentMethod(changedTo) {
@@ -557,12 +396,7 @@ class StripePaymentForm extends Component {
       this.setState({ cardValueValid: false });
     }
     this.setState({ paymentMethod: changedTo });
-    if (changedTo === 'defaultCard' && this.finalFormAPI) {
-      this.finalFormAPI.change('sameAddressCheckbox', undefined);
-    } else if (changedTo === 'replaceCard' && this.finalFormAPI) {
-      this.finalFormAPI.change('sameAddressCheckbox', ['sameAddress']);
-      this.updateBillingDetailsToMatchShippingAddress(true);
-    }
+    // Note: Form updates removed - handled by parent form
   }
 
   handleStripeElementRef(el) {
@@ -576,10 +410,7 @@ class StripePaymentForm extends Component {
     const { intl, onPaymentElementChange } = this.props;
     const { error, complete } = event;
 
-    const postalCode = event.value.postalCode;
-    if (this.finalFormAPI) {
-      this.finalFormAPI.change('postal', postalCode);
-    }
+    // Note: postal code update removed - handled by parent form if needed
 
     // Call payment element change callback
     if (onPaymentElementChange) {
@@ -723,7 +554,7 @@ class StripePaymentForm extends Component {
     onSubmit(params);
   }
 
-  paymentForm(formRenderProps) {
+  paymentForm(props) {
     const {
       className,
       rootClassName,
@@ -736,9 +567,6 @@ class StripePaymentForm extends Component {
       initiateOrderError,
       confirmCardPaymentError,
       confirmPaymentError,
-      invalid,
-      handleSubmit,
-      form: formApi,
       hasHandledCardPayment,
       defaultPaymentMethod,
       listingLocation,
@@ -750,69 +578,21 @@ class StripePaymentForm extends Component {
       marketplaceName,
       isBooking,
       isFuzzyLocation,
-      values,
-      errors,
-      submitFailed,
-      hasValidationErrors,
-      dirtySinceLastSubmit,
-    } = formRenderProps;
+      values = {},
+      parentValid = false,
+      parentInvalid = false,
+      parentErrors = {},
+    } = props;
+
+    // Use values from props (passed down via FormSpy)
+    const errors = parentErrors || {};
+    const invalid = parentInvalid;
 
     // Detailed form validation logging (avoid printing huge objects)
-    console.log('[Form] invalid:', invalid, 'hasValidationErrors:', hasValidationErrors, 'errors keys:', Object.keys(errors||{}));
+    console.log('[Form] invalid:', invalid, 'errors keys:', Object.keys(errors||{}));
 
-    this.finalFormAPI = formApi;
-
-    // Compute effective validity (ignore address errors if external form handles them)
-    const requireInPaymentForm = this.props.requireInPaymentForm ?? true;
-    const hasAddressErrors = !!(errors?.billing || errors?.shipping);
-    const effectiveInvalid = requireInPaymentForm ? invalid : (invalid && !hasAddressErrors);
-
-    // 🔒 bubble validity only when it changes
-    if (effectiveInvalid !== this.lastEffectiveInvalid) {
-      this.lastEffectiveInvalid = effectiveInvalid;
-      this.props.onFormValidityChange?.(!effectiveInvalid);
-    }
-
-    // 🔒 bubble values only when they change
-    const nextJSON = JSON.stringify(values || {});
-    if (nextJSON !== this.lastValuesJSON) {
-      this.lastValuesJSON = nextJSON;
-      
-      // Map nested form values to flat structure expected by CheckoutPageWithPayment
-      const mappedValues = {
-        // Customer fields from shipping (primary) or billing (fallback)
-        customerName: values.shipping?.name || values.billing?.name || '',
-        customerStreet: values.shipping?.line1 || values.billing?.line1 || '',
-        customerStreet2: values.shipping?.line2 || values.billing?.line2 || '',
-        customerCity: values.shipping?.city || values.billing?.city || '',
-        customerState: values.shipping?.state || values.billing?.state || '',
-        customerZip: values.shipping?.postalCode || values.billing?.postalCode || '',
-        customerEmail: values.shipping?.email || values.billing?.email || '',
-        customerPhone: values.shipping?.phone || values.billing?.phone || '',
-        
-        // Include original nested structure for backward compatibility
-        billing: values.billing || {},
-        shipping: values.shipping || {},
-        shippingSameAsBilling: values.shippingSameAsBilling || false,
-      };
-      
-      // Debug logging for form values
-      if (__DEV__) {
-        console.log('[StripePaymentForm] Raw form values:', {
-          billing: values.billing,
-          shipping: values.shipping,
-          shippingSameAsBilling: values.shippingSameAsBilling
-        });
-        console.log('[StripePaymentForm] Mapped customer values:', {
-          customerName: mappedValues.customerName,
-          customerStreet: mappedValues.customerStreet,
-          customerZip: mappedValues.customerZip,
-          customerPhone: mappedValues.customerPhone
-        });
-      }
-      
-      this.props.onFormValuesChange?.(mappedValues);
-    }
+    // Note: formApi access removed - we don't need to update parent form from here
+    // Card and paymentMethod are handled in handleSubmit
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);
     const billingDetailsNeeded = !(hasHandledCardPayment || confirmPaymentError);
@@ -875,28 +655,14 @@ class StripePaymentForm extends Component {
       { messageOptionalText: messageOptionalText }
     );
 
-    // Asking billing address is recommended in PaymentIntent flow.
-    // In CheckoutPage, we send name and email as billing details, but address only if it exists.
-    const billingAddress = (
-      <StripePaymentAddress
-        intl={intl}
-        form={formApi}
-        fieldId={formId}
-        card={this.card}
-        locale={locale}
-      />
-    );
+    // NOTE: Billing/shipping address fields are now rendered in parent CheckoutPageWithPayment.
+    // StripePaymentForm no longer consumes Final Form context directly.
 
     const hasStripeKey = stripePublishableKey;
-
-    const handleSameAddressCheckbox = event => {
-      const checked = event.target.checked;
-      this.updateBillingDetailsToMatchShippingAddress(checked);
-    };
     const isBookingYesNo = isBooking ? 'yes' : 'no';
 
     return hasStripeKey ? (
-      <Form className={classes} onSubmit={handleSubmit} enforcePagePreloadFor="OrderDetailsPage">
+      <div className={classes}>
         {billingDetailsNeeded && !loadingData ? (
           <React.Fragment>
             {hasDefaultPaymentMethod ? (
@@ -929,22 +695,7 @@ class StripePaymentForm extends Component {
               </React.Fragment>
             )}
 
-            {showOnetimePaymentFields ? (
-              <div className={css.billingDetails}>
-                {/* Billing Address - no email (using parent's contactEmail) */}
-                <AddressForm
-                  namespace="billing"
-                  title="Billing details"
-                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true }}
-                  countryAfterZipForUSCA
-                  showEmail={false}
-                  showPhone={false}
-                />
-
-                {/* Shipping Address - no email, conditional phone */}
-                <ShippingSection intl={intl} css={css} contactPhone={this.props.contactPhone} />
-              </div>
-            ) : null}
+            {/* Note: Billing and shipping address forms moved to parent CheckoutPageWithPayment */}
           </React.Fragment>
         ) : loadingData ? (
           <p className={css.spinner}>
@@ -1021,7 +772,7 @@ class StripePaymentForm extends Component {
             />
           </p>
         </div>
-      </Form>
+      </div>
     ) : (
       <div className={css.missingStripeKey}>
         <FormattedMessage id="StripePaymentForm.missingStripeKey" />
@@ -1030,103 +781,8 @@ class StripePaymentForm extends Component {
   }
 
   render() {
-    const { onSubmit, ...rest } = this.props;
-    
-    // Deep merge initial values to avoid nuking nested fields from previous drafts
-    const defaultInitialValues = {
-      sameAsBilling: false,
-      shippingSameAsBilling: false,
-      billing: {
-        country: 'US',
-        state: '',
-        postalCode: '',
-        name: '',
-        line1: '',
-        line2: '',
-        city: '',
-        email: '',
-        phone: ''
-      },
-      shipping: {
-        country: 'US',
-        state: '',
-        postalCode: '',
-        name: '',
-        line1: '',
-        line2: '',
-        city: '',
-        email: '',
-        phone: ''
-      },
-      // Legacy fields for backward compatibility
-      customerName: '',
-      customerStreet: '',
-      customerStreet2: '',
-      customerCity: '',
-      customerState: '',
-      customerZip: '',
-      customerEmail: '',
-      customerPhone: '',
-    };
-    
-    // Deep merge with any existing initial values
-    const initialValues = {
-      ...defaultInitialValues,
-      ...(rest.initialValues || {}),
-      billing: {
-        ...defaultInitialValues.billing,
-        ...(rest.initialValues?.billing || {})
-      },
-      shipping: {
-        ...defaultInitialValues.shipping,
-        ...(rest.initialValues?.shipping || {})
-      }
-    };
-    
-    const validate = values => {
-      const errors = {};
-      
-      // Only validate billing/shipping if they're collected within this form
-      if (this.props.requireInPaymentForm) {
-        const billErr = validateAddress(values.billing || {}, { requirePhone: false, requireEmail: false });
-        if (Object.keys(billErr).length) errors.billing = billErr;
-        if (!values.shippingSameAsBilling) {
-          const shipErr = validateAddress(values.shipping || {}, { requirePhone: false, requireEmail: false });
-          if (Object.keys(shipErr).length) errors.shipping = shipErr;
-        }
-      }
-      
-      // Validate required customer fields for protectedData (address only, email/phone from parent)
-      const shipping = values.shipping || {};
-      const billing = values.billing || {};
-      const effectiveShipping = values.shippingSameAsBilling ? billing : shipping;
-      
-      // Required address fields validation (email/phone validated at parent level)
-      if (!effectiveShipping.name?.trim()) {
-        errors.customerName = 'Name is required';
-      }
-      if (!effectiveShipping.line1?.trim()) {
-        errors.customerStreet = 'Street address is required';
-      }
-      if (!effectiveShipping.city?.trim()) {
-        errors.customerCity = 'City is required';
-      }
-      if (!effectiveShipping.state?.trim()) {
-        errors.customerState = 'State is required';
-      }
-      if (!effectiveShipping.postalCode?.trim()) {
-        errors.customerZip = 'ZIP code is required';
-      } else if (!/^\d{5,}$/.test(effectiveShipping.postalCode.trim())) {
-        errors.customerZip = 'ZIP code must be at least 5 digits';
-      }
-      
-      // Note: email and phone are validated at parent (CheckoutPageWithPayment) level
-      // and passed as props, so we don't validate them here
-      
-      return errors;
-    };
-
-    return <FinalForm onSubmit={this.handleSubmit} validate={validate} initialValues={initialValues} {...rest} render={this.paymentForm} />;
+    // No longer wrapping in FinalForm - consuming parent context instead
+    return this.paymentForm(this.props);
   }
 }
 
