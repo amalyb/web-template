@@ -53,9 +53,7 @@ const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
 
 // Helper to validate Stripe client_secret format
-function looksLikeStripeSecret(s) {
-  return typeof s === 'string' && s.startsWith('pi_') && s.includes('_secret_');
-}
+const looksLikeStripeSecret = s => typeof s === 'string' && /^pi_.*_secret_.+/.test(s);
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -270,15 +268,14 @@ module.exports = (req, res) => {
           console.log('[PI] Calculated payment:', { amount: payinTotal, currency });
           
           // Check if we already have a PaymentIntent ID in protectedData (for update vs create)
-          const piNode = finalProtectedData?.stripePaymentIntents?.default || {};
-          const existingPiId = piNode.id;
-          const existingClientSecret = piNode.stripePaymentIntentClientSecret;
+          const existing = finalProtectedData?.stripePaymentIntents?.default || {};
+          const existingPiId = existing.id;
           
-          let paymentIntent;
+          let pi;
           if (existingPiId && /^pi_/.test(existingPiId)) {
             // Update existing PaymentIntent to keep client_secret stable
             console.log('[PI] Updating existing PaymentIntent:', existingPiId.slice(0, 10) + '...');
-            paymentIntent = await stripe.paymentIntents.update(existingPiId, { 
+            pi = await stripe.paymentIntents.update(existingPiId, { 
               amount: payinTotal, 
               currency,
               automatic_payment_methods: { enabled: true },
@@ -289,7 +286,7 @@ module.exports = (req, res) => {
           } else {
             // Create fresh PaymentIntent
             console.log('[PI] Creating new PaymentIntent');
-            paymentIntent = await stripe.paymentIntents.create({
+            pi = await stripe.paymentIntents.create({
               amount: payinTotal,
               currency,
               automatic_payment_methods: { enabled: true },
@@ -301,37 +298,48 @@ module.exports = (req, res) => {
           
           // IMPORTANT: client_secret is only returned on create and some updates requiring a new secret.
           // If Stripe didn't return client_secret here and we have a previous valid one, reuse it.
-          const clientSecretFromStripe = paymentIntent.client_secret;
-          const clientSecret =
-            looksLikeStripeSecret(clientSecretFromStripe)
-              ? clientSecretFromStripe
-              : (looksLikeStripeSecret(existingClientSecret) ? existingClientSecret : null);
+          const secretFromStripe = pi.client_secret || null;
+          const secret = secretFromStripe || (looksLikeStripeSecret(existing.stripePaymentIntentClientSecret) ? existing.stripePaymentIntentClientSecret : null);
           
-          // Defensive logging (safe; does not print full secret)
-          const tail = clientSecret ? clientSecret.slice(0, 4) : 'null';
-          console.log('[PI] id=%s status=%s hasSecret=%s secretHead=%s',
-            paymentIntent.id, paymentIntent.status, !!clientSecret, tail);
+          // Safe diagnostic logging
+          console.log('[PI]', { 
+            id: pi.id, 
+            status: pi.status, 
+            hasSecretFromStripe: !!secretFromStripe, 
+            willPersistSecret: looksLikeStripeSecret(secret), 
+            secretHead: secret ? secret.slice(0, 5) : null 
+          });
           
-          // ✅ MERGE into protectedData — DO NOT overwrite other keys
-          updatedProtectedData = {
-            ...finalProtectedData,
-            stripePaymentIntents: {
-              ...(finalProtectedData.stripePaymentIntents || {}),
-              default: {
-                ...(finalProtectedData.stripePaymentIntents?.default || {}),
-                id: paymentIntent.id, // persist id to allow update on next speculate
-                stripePaymentIntentClientSecret: clientSecret, // THIS MUST BE pi_..._secret_...
-              },
+          // CRITICAL GUARD: Do NOT proceed if we don't have a valid Stripe client secret
+          if (!looksLikeStripeSecret(secret)) {
+            console.error('[PI] FATAL: Could not obtain valid Stripe client_secret. Aborting transaction.');
+            console.error('[PI] secretFromStripe:', secretFromStripe ? secretFromStripe.slice(0, 10) + '...' : null);
+            console.error('[PI] existing.stripePaymentIntentClientSecret:', existing.stripePaymentIntentClientSecret ? existing.stripePaymentIntentClientSecret.slice(0, 10) + '...' : null);
+            return res.status(500).json({
+              type: 'error',
+              code: 'stripe-client-secret-missing',
+              message: 'Could not obtain a valid Stripe client secret.',
+            });
+          }
+          
+          // ✅ Persist real Stripe data to protectedData (never write UUID placeholders)
+          const pd = finalProtectedData;
+          pd.stripePaymentIntents = {
+            ...pd.stripePaymentIntents,
+            default: {
+              id: pi.id, // Stripe PI id ("pi_...")
+              stripePaymentIntentClientSecret: secret, // must be "pi_..._secret_..."
             },
           };
           
-          // Final sanity log of what we're writing (safe, partial only)
-          console.log('[SPEC_OUT] pd.stripePaymentIntents.default = { id:%s, secretLike:%s }',
-            updatedProtectedData.stripePaymentIntents.default.id,
-            looksLikeStripeSecret(updatedProtectedData.stripePaymentIntents.default.stripePaymentIntentClientSecret)
-          );
+          // Final sanity log of what we're persisting
+          console.log('[SPEC_OUT] pd.stripePaymentIntents.default', { 
+            id: pd.stripePaymentIntents.default.id, 
+            secretLike: looksLikeStripeSecret(pd.stripePaymentIntents.default.stripePaymentIntentClientSecret) 
+          });
           
-          console.log('[PI] Successfully created/updated PaymentIntent and merged into protectedData');
+          // Update the protectedData that will be sent to Flex
+          updatedProtectedData = pd;
           
         } catch (stripeError) {
           console.error('[PI] Stripe PaymentIntent creation/update failed:', stripeError.message);
