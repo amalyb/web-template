@@ -919,6 +919,14 @@ export const BookingDatesForm = props => {
                   <FormattedMessage id="BookingDatesForm.priceBreakdownTitle" />
                 </H6>
                 <hr className={css.totalDivider} />
+                {console.log('[orderpanel] render breakdown')}
+                {console.log('[PASSING PROPS]', {
+                  lineItemsType: typeof lineItems,            // should be 'object'
+                  breakdownDataType: typeof breakdownData,    // should be 'object'
+                  isArray: Array.isArray(lineItems),         // should be true
+                  lineItemsLength: lineItems?.length,
+                  breakdownDataKeys: breakdownData ? Object.keys(breakdownData) : 'null'
+                })}
                 <EstimatedCustomerBreakdownMaybe
                   breakdownData={breakdownData}
                   lineItems={lineItems}

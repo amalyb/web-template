@@ -27,7 +27,7 @@ import AddressForm from '../../../components/AddressForm/AddressForm';
 import ShippingDetails from '../ShippingDetails/ShippingDetails';
 
 import css from './StripePaymentForm.module.css';
-import { __DEV__, ADDR_ENABLED } from '../../../util/envFlags';
+import { __DEV__ } from '../../../util/envFlags';
 
 // Extract a single string from either shipping.* or billing.* based on shippingSameAsBilling
 const pickFromShippingOrBilling = (values, field) => {
@@ -43,20 +43,14 @@ const pickFromShippingOrBilling = (values, field) => {
 const mapToCustomerProtectedData = (values) => {
   // AddressForm typical keys: name, line1, line2, city, state, postalCode, phone, email
   const v = values || {};
-  // Ensure nested objects default to {} to prevent undefined errors
-  const safeValues = {
-    ...v,
-    shipping: v.shipping || {},
-    billing: v.billing || {},
-  };
-  const customerName   = pickFromShippingOrBilling(safeValues, 'name');
-  const customerStreet = pickFromShippingOrBilling(safeValues, 'line1');
-  const customerStreet2= pickFromShippingOrBilling(safeValues, 'line2');
-  const customerCity   = pickFromShippingOrBilling(safeValues, 'city');
-  const customerState  = pickFromShippingOrBilling(safeValues, 'state');
-  const customerZip    = pickFromShippingOrBilling(safeValues, 'postalCode');
-  const customerPhone  = pickFromShippingOrBilling(safeValues, 'phone');
-  const customerEmail  = pickFromShippingOrBilling(safeValues, 'email');
+  const customerName   = pickFromShippingOrBilling(v, 'name');
+  const customerStreet = pickFromShippingOrBilling(v, 'line1');
+  const customerStreet2= pickFromShippingOrBilling(v, 'line2');
+  const customerCity   = pickFromShippingOrBilling(v, 'city');
+  const customerState  = pickFromShippingOrBilling(v, 'state');
+  const customerZip    = pickFromShippingOrBilling(v, 'postalCode');
+  const customerPhone  = pickFromShippingOrBilling(v, 'phone');
+  const customerEmail  = pickFromShippingOrBilling(v, 'email');
 
   const pd = {
     customerName,
@@ -73,7 +67,6 @@ const mapToCustomerProtectedData = (values) => {
     const filled = Object.entries(pd).filter(([_, val]) => !!val).map(([k]) => k);
     // eslint-disable-next-line no-console
     console.log('[StripePaymentForm] mapped customer PD:', pd, 'filled:', filled.length, filled);
-    console.log('[StripePaymentForm] mapped ->', Object.keys(pd));
   }
   return pd;
 };
@@ -439,35 +432,6 @@ class StripePaymentForm extends Component {
     this.lastValuesJSON = '';
     this.lastEffectiveInvalid = undefined;
     this.reportedMounted = false;
-    this.loggedPaymentIntent = false;
-  }
-
-  // ✅ 5) Stream form values to parent on every change
-  componentDidUpdate(prevProps, prevState) {
-    // Extract current form values from final-form
-    const values = this.finalFormAPI?.getState?.()?.values || {};
-    
-    // Map to customer fields
-    const mapped = {
-      customerName: values.name || '',
-      customerStreet: values.addressLine1 || values.billing?.addressLine1 || '',
-      customerStreet2: values.addressLine2 || values.billing?.addressLine2 || '',
-      customerCity: values.city || values.billing?.city || '',
-      customerState: values.state || values.billing?.state || '',
-      customerZip: values.postal || values.billing?.postal || '',
-      customerEmail: values.email || '',
-      customerPhone: values.phone || '',
-    };
-    
-    // Only call if values changed
-    const json = JSON.stringify(mapped);
-    if (json !== this.lastValuesJSON) {
-      this.lastValuesJSON = json;
-      const onValuesChange = this.props && this.props.onFormValuesChange;
-      if (typeof onValuesChange === 'function') {
-        onValuesChange(mapped);
-      }
-    }
   }
 
   componentDidMount() {
@@ -522,19 +486,7 @@ class StripePaymentForm extends Component {
       // Notify parent that Stripe element is mounted (only once)
       if (!this.reportedMounted) {
         this.reportedMounted = true;
-        // TDZ-safe: extract function before calling
-        const onMounted = this.props && this.props.onStripeElementMounted;
-        if (typeof onMounted === 'function') {
-          onMounted(true);
-        }
-        
-        // Log Stripe Elements mount (dev only)
-        if (process.env.NODE_ENV !== 'production') {
-          const pi = this.props.paymentIntent;
-          const clientSecretTail = pi?.client_secret ? `...${pi.client_secret.slice(-10)}` : 'none';
-          // eslint-disable-next-line no-console
-          console.debug('[Stripe] 🎯 Elements mounted with clientSecret:', clientSecretTail);
-        }
+        this.props.onStripeElementMounted?.(true);
       }
       
       // EventListener is the only way to simulate breakpoints with Stripe.
@@ -717,18 +669,6 @@ class StripePaymentForm extends Component {
       throw new Error(`Please fill in the required address fields: ${missingFields.join(', ')}`);
     }
 
-    // Debug logging for form submission (production-safe, browser-safe)
-    if (__DEV__) {
-      try {
-        console.log('[StripePaymentForm] Submit - Form values with PD:', formValuesWithPD);
-        if (ADDR_ENABLED) {
-          console.log('[StripePaymentForm] Submit - Mapped customer PD:', customerPD);
-        }
-      } catch (_) {
-        // never block submission on logging
-      }
-    }
-
     const params = {
       message: initialMessage ? initialMessage.trim() : null,
       card: this.card,
@@ -795,11 +735,7 @@ class StripePaymentForm extends Component {
     // 🔒 bubble validity only when it changes
     if (effectiveInvalid !== this.lastEffectiveInvalid) {
       this.lastEffectiveInvalid = effectiveInvalid;
-      // TDZ-safe: extract function before calling
-      const onValidityChange = this.props && this.props.onFormValidityChange;
-      if (typeof onValidityChange === 'function') {
-        onValidityChange(!effectiveInvalid);
-      }
+      this.props.onFormValidityChange?.(!effectiveInvalid);
     }
 
     // 🔒 bubble values only when they change
@@ -807,25 +743,21 @@ class StripePaymentForm extends Component {
     if (nextJSON !== this.lastValuesJSON) {
       this.lastValuesJSON = nextJSON;
       
-      // Guard against undefined nested objects
-      const safeShipping = values.shipping || {};
-      const safeBilling = values.billing || {};
-      
       // Map nested form values to flat structure expected by CheckoutPageWithPayment
       const mappedValues = {
         // Customer fields from shipping (primary) or billing (fallback)
-        customerName: safeShipping.name || safeBilling.name || '',
-        customerStreet: safeShipping.line1 || safeBilling.line1 || '',
-        customerStreet2: safeShipping.line2 || safeBilling.line2 || '',
-        customerCity: safeShipping.city || safeBilling.city || '',
-        customerState: safeShipping.state || safeBilling.state || '',
-        customerZip: safeShipping.postalCode || safeBilling.postalCode || '',
-        customerEmail: safeShipping.email || safeBilling.email || '',
-        customerPhone: safeShipping.phone || safeBilling.phone || '',
+        customerName: values.shipping?.name || values.billing?.name || '',
+        customerStreet: values.shipping?.line1 || values.billing?.line1 || '',
+        customerStreet2: values.shipping?.line2 || values.billing?.line2 || '',
+        customerCity: values.shipping?.city || values.billing?.city || '',
+        customerState: values.shipping?.state || values.billing?.state || '',
+        customerZip: values.shipping?.postalCode || values.billing?.postalCode || '',
+        customerEmail: values.shipping?.email || values.billing?.email || '',
+        customerPhone: values.shipping?.phone || values.billing?.phone || '',
         
         // Include original nested structure for backward compatibility
-        billing: safeBilling,
-        shipping: safeShipping,
+        billing: values.billing || {},
+        shipping: values.shipping || {},
         shippingSameAsBilling: values.shippingSameAsBilling || false,
       };
       
@@ -844,11 +776,7 @@ class StripePaymentForm extends Component {
         });
       }
       
-      // TDZ-safe: extract function before calling
-      const onValuesChange = this.props && this.props.onFormValuesChange;
-      if (typeof onValuesChange === 'function') {
-        onValuesChange(mappedValues);
-      }
+      this.props.onFormValuesChange?.(mappedValues);
     }
 
     const ensuredDefaultPaymentMethod = ensurePaymentMethodCard(defaultPaymentMethod);
@@ -1065,13 +993,7 @@ class StripePaymentForm extends Component {
   }
 
   render() {
-    const { onSubmit, paymentIntent, ...rest } = this.props;
-    
-    // Log paymentIntent presence once
-    if (!this.loggedPaymentIntent && paymentIntent) {
-      console.log('[STRIPE_FORM] paymentIntent present:', !!paymentIntent);
-      this.loggedPaymentIntent = true;
-    }
+    const { onSubmit, ...rest } = this.props;
     
     // Deep merge initial values to avoid nuking nested fields from previous drafts
     const defaultInitialValues = {

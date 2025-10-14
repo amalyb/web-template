@@ -1,30 +1,7 @@
 #!/usr/bin/env node
 
 const express = require('express');
-const crypto = require('crypto');
 const { getTrustedSdk } = require('../api-util/sdk');
-
-// Webhook signature enforcement
-const REQUIRE_WEBHOOK_SECRET =
-  process.env.NODE_ENV === 'production' ? true : false;
-const SHIPPO_WEBHOOK_SECRET = process.env.SHIPPO_WEBHOOK_SECRET || '';
-
-function verifySignature(req) {
-  // Shippo sends raw body + signature header (example header name; keep your existing if different)
-  const sig = req.get('X-Shippo-Signature') || '';
-  if (!sig) return false;
-  // IMPORTANT: ensure req.rawBody is available (use bodyParser.raw({ type: '*/*' }) for this route or capture before json())
-  const payload = req.rawBody || Buffer.from(JSON.stringify(req.body));
-  const hmac = crypto.createHmac('sha256', SHIPPO_WEBHOOK_SECRET)
-                     .update(payload)
-                     .digest();
-  const given = Buffer.from(sig, 'hex');
-  try {
-    return crypto.timingSafeEqual(hmac, given);
-  } catch {
-    return false;
-  }
-}
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -34,6 +11,43 @@ try {
 } catch (error) {
   console.warn('⚠️ SMS module not available — SMS functionality disabled');
   sendSMS = () => Promise.resolve(); // No-op function
+}
+
+// Shippo signature verification
+function verifyShippoSignature(req, webhookSecret) {
+  const shippoSignature = req.headers['x-shippo-signature'];
+  if (!shippoSignature) {
+    console.log('⚠️ No X-Shippo-Signature header found');
+    return false;
+  }
+  
+  if (!webhookSecret) {
+    console.log('⚠️ No SHIPPO_WEBHOOK_SECRET configured');
+    return false;
+  }
+  
+  // Use the raw body for signature verification
+  const rawBody = req.rawBody;
+  
+  // Shippo uses HMAC SHA256
+  const crypto = require('crypto');
+  const signature = crypto
+    .createHmac('sha256', webhookSecret)
+    .update(rawBody)
+    .digest('hex');
+  
+  const isValid = crypto.timingSafeEqual(
+    Buffer.from(shippoSignature),
+    Buffer.from(signature)
+  );
+  
+  if (process.env.VERBOSE === '1') {
+    console.log(`🔐 Shippo signature verification: ${isValid ? 'VALID' : 'INVALID'}`);
+    console.log(`🔐 Expected: ${signature}`);
+    console.log(`🔐 Received: ${shippoSignature}`);
+  }
+  
+  return isValid;
 }
 
 const router = express.Router();
@@ -193,17 +207,11 @@ function getLenderPhone(transaction) {
     console.log('🚀 Shippo webhook received!');
     console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
     
-    if (REQUIRE_WEBHOOK_SECRET) {
-      if (!SHIPPO_WEBHOOK_SECRET) {
-        console.error('[shippo:webhook] Missing SHIPPO_WEBHOOK_SECRET in production');
-        return res.status(500).send('Secret not configured');
-      }
-      if (!verifySignature(req)) {
-        console.warn('[shippo:webhook] signature verification failed');
-        return res.status(401).send('Invalid signature');
-      }
-    } else {
-      console.log('[shippo:webhook] dev/test mode, signature verification not enforced');
+    // Verify Shippo signature
+    const webhookSecret = process.env.SHIPPO_WEBHOOK_SECRET;
+    if (webhookSecret && !verifyShippoSignature(req, webhookSecret)) {
+      console.log('🚫 Invalid Shippo signature - rejecting request');
+      return res.status(403).json({ error: 'Invalid signature' });
     }
     
     try {

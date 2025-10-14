@@ -41,11 +41,6 @@ const defaultDirectives = {
     baseUrl,
     assetCdnBaseUrl,
     '*.st-api.com',
-    'wss:',
-    'https://api.stripe.com',
-    'https://js.stripe.com',
-    'https://m.stripe.network',
-    '*.stripe.com',
     'maps.googleapis.com',
     'places.googleapis.com',
     '*.tiles.mapbox.com',
@@ -67,14 +62,14 @@ const defaultDirectives = {
 
     'sentry.io',
     '*.sentry.io',
+    'https://api.stripe.com',
+    '*.stripe.com',
   ],
-  fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'https://fonts.gstatic.com'],
-  formAction: [self, 'https://api.stripe.com'],
+  fontSrc: [self, data, 'assets-sharetribecom.sharetribe.com', 'fonts.gstatic.com'],
+  formAction: [self],
   frameSrc: [
     self,
     'https://js.stripe.com',
-    'https://m.stripe.network',
-    'https://hooks.stripe.com',
     '*.stripe.com',
     '*.youtube-nocookie.com',
     'https://bid.g.doubleclick.net',
@@ -119,14 +114,7 @@ const defaultDirectives = {
   ],
   scriptSrc: [
     self,
-    blob,
     (req, res) => `'nonce-${res.locals.cspNonce}'`,
-    // Removed 'strict-dynamic' to prevent CSP issues
-    // "'strict-dynamic'",
-    'https://js.stripe.com',
-    'https://m.stripe.network',
-    'https://api.mapbox.com',
-    'https://*.mapbox.com',
     unsafeEval,
     'maps.googleapis.com',
     'api.mapbox.com',
@@ -134,36 +122,13 @@ const defaultDirectives = {
     '*.google-analytics.com',
     'www.googleadservices.com',
     '*.g.doubleclick.net',
+    'js.stripe.com',
     'plausible.io',
   ],
-  "script-src-elem": [
-    self, 
-    blob, 
-    (req, res) => `'nonce-${res.locals.cspNonce}'`,
-    // Removed 'strict-dynamic' to prevent CSP issues
-    // "'strict-dynamic'",
-    "https://js.stripe.com",
-    "https://m.stripe.network",
-    "https://api.mapbox.com", 
-    "https://*.mapbox.com"
-  ],
+  "script-src-elem": [self, blob, "https://js.stripe.com", "https://api.mapbox.com", "https://*.mapbox.com"],
   "manifest-src": [self],
   "worker-src": [self, blob],
-  styleSrc: [
-    self, 
-    (req, res) => `'nonce-${res.locals.cspNonce}'`,
-    unsafeInline, 
-    'https://fonts.googleapis.com', 
-    'api.mapbox.com'
-  ],
-  "style-src-elem": [
-    self,
-    (req, res) => `'nonce-${res.locals.cspNonce}'`,
-    unsafeInline,
-    'https://fonts.googleapis.com',
-    'api.mapbox.com'
-  ],
-  objectSrc: ["'none'"],
+  styleSrc: [self, unsafeInline, 'fonts.googleapis.com', 'api.mapbox.com'],
 };
 
 /**
@@ -252,24 +217,6 @@ exports.csp = ({ mode = 'report', reportUri }) => {
   // Add report URI to both policies
   enforceDirectives.reportUri = [reportUri];
   reportOnlyDirectives.reportUri = [reportUri];
-
-  // Log effective CSP directives (sample with placeholder nonce)
-  const logDirectives = (directives, label) => {
-    console.log(`\n📋 ${label} CSP Directives:`);
-    Object.entries(directives).forEach(([key, value]) => {
-      if (Array.isArray(value)) {
-        const formatted = value.map(v => {
-          if (typeof v === 'function') return '<nonce-function>';
-          return v;
-        }).join(' ');
-        console.log(`  ${key}: ${formatted}`);
-      }
-    });
-  };
-
-  if (process.env.CSP_LOG_DIRECTIVES !== 'false') {
-    logDirectives(enforceDirectives, mode === 'block' ? 'ENFORCE' : 'REPORT-ONLY');
-  }
 
   return {
     enforce: helmet.contentSecurityPolicy({

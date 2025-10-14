@@ -1,0 +1,39 @@
+# Key suspect commits (newest to oldest):
+
+## Oct 13, 2025 - Multiple hotfix attempts
+b9695f294 payments/stripe: never echo client-sent PI secret
+e41a020ea fix(stripe): persist real PaymentIntent client_secret
+cebadd20b checkout/stripe: create/update real PaymentIntent
+32f480094 checkout/stripe: clear stale speculative state when tx.id missing
+2a72227d6 checkout/stripe: robust 503 handling
+22c6cf4d5 checkout: treat 503 as hard error
+591931fdd checkout/stripe: fail-soft when payments unavailable (503)
+
+## Oct 10-11, 2025 - Speculation and clientSecret issues
+d59f66808 feat(checkout): wire speculate → clientSecret → PaymentIntent
+ff91900f5 checkout: wire speculate→PaymentIntent bridge
+58f00ae5c fix(checkout): initiate speculative tx on mount
+bb91f0ad1 fix(checkout): persist orderData and create speculative tx
+65148b067 checkout: fix prod TDZ by renaming local process->txProcess
+3ee057af3 checkout: eliminate prod-only TDZ
+
+## Oct 9, 2025 - Loop fixes (SUSPECT: introduced loops?)
+45db40d21 fix(checkout): prevent repeated initiate-privileged calls
+9543c0b29 fix(checkout): guard initiate-privileged to stop render loop
+
+## Oct 8, 2025 - WAVE CHANGES (LIKELY ROOT CAUSE)
+6d34865c5 Wave-2: checkout scaffolding & address validation (flagged OFF)
+063d7925b Wave-1: Server-core fixes (env/process guards, bookingStartISO)
+
+## Sept 18-19, 2025 - AddressForm & protectedData changes
+d0d1fd1fe checkout(addr): minimal PD mapping + required address validation
+6f1062bf6 feat(checkout): show AddressForm (billing+shipping)
+b982a1676 feat(ui): conditionally render AddressForm
+
+## Sept 8, 2025 - Stripe refactoring
+a523a1d3e fix(stripe): correct Elements prop to use loadStripe promise
+96e5b8c55 fix(stripe): replace manual mount with React CardElement
+
+## Sept 5, 2025 - CSP changes
+9e2d073b3 Fix LIVE checkout Stripe load (CSP + timeout/retry)
+faf67f648 Add crash-proof Stripe integration with CSP allowlist

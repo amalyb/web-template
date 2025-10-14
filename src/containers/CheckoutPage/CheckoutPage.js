@@ -1,15 +1,12 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { compose } from 'redux';
 import { connect } from 'react-redux';
 import { useHistory } from 'react-router-dom';
 import { useIntl } from 'react-intl';
-import { useSelector } from 'react-redux';
-import Decimal from 'decimal.js';
 
 import { useConfiguration } from '../../context/configurationContext';
 import { useRouteConfiguration } from '../../context/routeConfigurationContext';
 import { userDisplayNameAsString } from '../../util/data';
-import { types as sdkTypes } from '../../util/sdkLoader';
 import {
   NO_ACCESS_PAGE_INITIATE_TRANSACTIONS,
   NO_ACCESS_PAGE_USER_PENDING_APPROVAL,
@@ -21,12 +18,8 @@ import { INQUIRY_PROCESS_NAME, resolveLatestProcessName } from '../../transactio
 import { isScrollingDisabled } from '../../ducks/ui.duck';
 import { confirmCardPayment, retrievePaymentIntent } from '../../ducks/stripe.duck';
 import { savePaymentMethod } from '../../ducks/paymentMethods.duck';
-// Import from shared to break circular dependency
-import { selectHasFetchedCurrentUser } from './shared/selectors';
 
-// Direct imports to avoid circular deps via barrel
-import NamedRedirect from '../../components/NamedRedirect/NamedRedirect';
-import Page from '../../components/Page/Page';
+import { NamedRedirect, Page } from '../../components';
 import { storeData, clearData, handlePageData } from './CheckoutPageSessionHelpers';
 
 import {
@@ -37,7 +30,6 @@ import {
   confirmPayment,
   sendMessage,
   initiateInquiryWithoutPayment,
-  initiatePrivilegedSpeculativeTransactionIfNeeded,
 } from './CheckoutPage.duck';
 
 import CustomTopbar from './CustomTopbar';
@@ -77,9 +69,6 @@ const EnhancedCheckoutPage = props => {
   const intl = useIntl();
   const history = useHistory();
 
-  // Use selector to check if current user with Stripe customer has been fetched
-  const hasFetchedStripeCustomer = useSelector(selectHasFetchedCurrentUser);
-  
   useEffect(() => {
     const {
       currentUser,
@@ -89,67 +78,23 @@ const EnhancedCheckoutPage = props => {
       fetchSpeculatedTransaction,
       fetchStripeCustomer,
     } = props;
-    
-    // ✅ HYDRATE orderData from sessionStorage if missing from location.state
-    const ORDER_KEY = 'sherbrt.checkout.orderData.v1';
-    let hydratedOrderData = orderData;
-    let hydratedListing = listing;
-    let hydratedTransaction = transaction;
-    
-    if (!orderData || !listing) {
-      try {
-        const storedData = sessionStorage.getItem(ORDER_KEY);
-        if (storedData) {
-          // Use proper SDK deserialization to handle UUID, Money, and Decimal types
-          const reviver = (k, v) => {
-            if (v && typeof v === 'object' && v._serializedType === 'SerializableDate') {
-              return new Date(v.date);
-            } else if (v && typeof v === 'object' && v._serializedType === 'SerializableDecimal') {
-              return new Decimal(v.decimal);
-            }
-            return sdkTypes.reviver(k, v);
-          };
-          const parsed = JSON.parse(storedData, reviver);
-          hydratedOrderData = hydratedOrderData || parsed.orderData;
-          hydratedListing = hydratedListing || parsed.listing;
-          hydratedTransaction = hydratedTransaction || parsed.transaction;
-          console.log('✅ Hydrated orderData from sessionStorage:', ORDER_KEY);
-        }
-      } catch (e) {
-        console.warn('⚠️ Failed to hydrate orderData from sessionStorage:', e);
-      }
-    }
-    
-    const initialData = { 
-      orderData: hydratedOrderData, 
-      listing: hydratedListing, 
-      transaction: hydratedTransaction 
-    };
-    console.log('🚨 orderData in CheckoutPage.js:', hydratedOrderData);
+    const initialData = { orderData, listing, transaction };
+    console.log('🚨 orderData in CheckoutPage.js:', orderData);
     const data = handlePageData(initialData, STORAGE_KEY, history);
     setPageData(data || {});
     setIsDataLoaded(true);
 
-    // ⚠️ DISABLED: Moved to CheckoutPageWithPayment to prevent duplicate initiation
-    // The child component now handles all initiation via onInitiatePrivilegedSpeculativeTransaction
-    // This prevents the render loop caused by multiple initiation paths
-    // if (isUserAuthorized(currentUser)) {
-    //   if (getProcessName(data) !== INQUIRY_PROCESS_NAME) {
-    //     loadInitialDataForStripePayments({
-    //       pageData: data || {},
-    //       fetchSpeculatedTransaction,
-    //       fetchStripeCustomer,
-    //       config,
-    //     });
-    //   }
-    // }
-
-    // Still need to fetch Stripe customer for saved payment methods
-    // Guard: only fetch if we haven't already fetched the current user with stripe customer
-    if (isUserAuthorized(currentUser) && !hasFetchedStripeCustomer) {
-      fetchStripeCustomer();
+    if (isUserAuthorized(currentUser)) {
+      if (getProcessName(data) !== INQUIRY_PROCESS_NAME) {
+        loadInitialDataForStripePayments({
+          pageData: data || {},
+          fetchSpeculatedTransaction,
+          fetchStripeCustomer,
+          config,
+        });
+      }
     }
-  }, [hasFetchedStripeCustomer]);
+  }, []);
 
   const {
     currentUser,
@@ -252,16 +197,6 @@ const mapStateToProps = state => {
     initiateInquiryError,
     initiateOrderError,
     confirmPaymentError,
-    lastSpeculationKey,
-    speculativeTransactionId,
-    speculateStatus,
-    stripeClientSecret,
-    lastSpeculateError,
-    clientSecretHotfix,
-    // ✅ B) Add extractedClientSecret from speculate response
-    extractedClientSecret,
-    // ✅ Add paymentsUnavailable flag
-    paymentsUnavailable,
   } = state.CheckoutPage;
   const { currentUser } = state.user;
   const { confirmCardPaymentError, paymentIntent, retrievePaymentIntentError } = state.stripe;
@@ -270,12 +205,10 @@ const mapStateToProps = state => {
     currentUser,
     stripeCustomerFetched,
     orderData,
-    speculateTransactionInProgress,
+    speculateTransactionInProgress: speculateTransactionInProgress,
     speculateTransactionError,
-    speculatedTransaction,
-    // Normalize names for CheckoutPageWithPayment
-    speculativeTransaction: speculatedTransaction,
-    speculativeInProgress: speculateTransactionInProgress,
+    speculativeTransaction: speculatedTransaction, // normalize name
+    speculativeInProgress: speculateTransactionInProgress, // normalize name
     isClockInSync,
     transaction,
     listing,
@@ -285,31 +218,26 @@ const mapStateToProps = state => {
     confirmPaymentError,
     paymentIntent,
     retrievePaymentIntentError,
-    lastSpeculationKey,
-    speculativeTransactionId,
-    speculateStatus,
-    stripeClientSecret,
-    lastSpeculateError,
-    clientSecretHotfix,
-    // ✅ B) Pass extractedClientSecret to CheckoutPageWithPayment
-    extractedClientSecret,
-    // ✅ Pass paymentsUnavailable flag to CheckoutPageWithPayment
-    paymentsUnavailable,
   };
 };
 
-const mapDispatchToProps = {
-  fetchSpeculatedTransaction: speculateTransaction,
-  fetchStripeCustomer: stripeCustomer,
-  onInquiryWithoutPayment: initiateInquiryWithoutPayment,
-  onInitiateOrder: initiateOrder,
-  onRetrievePaymentIntent: retrievePaymentIntent,
-  onConfirmCardPayment: confirmCardPayment,
-  onConfirmPayment: confirmPayment,
-  onSendMessage: sendMessage,
-  onSavePaymentMethod: savePaymentMethod,
-  onInitiatePrivilegedSpeculativeTransaction: initiatePrivilegedSpeculativeTransactionIfNeeded,
-};
+const mapDispatchToProps = dispatch => ({
+  dispatch,
+  fetchSpeculatedTransaction: (params, processAlias, txId, transitionName, isPrivileged) =>
+    dispatch(speculateTransaction(params, processAlias, txId, transitionName, isPrivileged)),
+  fetchStripeCustomer: () => dispatch(stripeCustomer()),
+  onInquiryWithoutPayment: (params, processAlias, transitionName) =>
+    dispatch(initiateInquiryWithoutPayment(params, processAlias, transitionName)),
+  onInitiateOrder: (params, processAlias, transactionId, transitionName, isPrivileged) =>
+    dispatch(initiateOrder(params, processAlias, transactionId, transitionName, isPrivileged)),
+  onRetrievePaymentIntent: params => dispatch(retrievePaymentIntent(params)),
+  onConfirmCardPayment: params => dispatch(confirmCardPayment(params)),
+  onConfirmPayment: (transactionId, transitionName, transitionParams) =>
+    dispatch(confirmPayment(transactionId, transitionName, transitionParams)),
+  onSendMessage: params => dispatch(sendMessage(params)),
+  onSavePaymentMethod: (stripeCustomer, stripePaymentMethodId) =>
+    dispatch(savePaymentMethod(stripeCustomer, stripePaymentMethodId)),
+});
 
 const CheckoutPage = compose(
   connect(

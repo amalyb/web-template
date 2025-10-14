@@ -70,9 +70,7 @@ const redirectSSL =
 const REDIRECT_SSL = redirectSSL === 'true';
 const TRUST_PROXY = process.env.SERVER_SHARETRIBE_TRUST_PROXY || null;
 const CSP = process.env.REACT_APP_CSP;
-// Safety toggle: CSP_REPORT_ONLY=true forces report-only mode (non-blocking)
-const CSP_REPORT_ONLY = process.env.CSP_REPORT_ONLY === 'true';
-const CSP_MODE = CSP_REPORT_ONLY ? 'report' : (process.env.CSP_MODE || 'block');
+const CSP_MODE = process.env.CSP_MODE || 'report'; // 'block' for prod, 'report' for test
 const cspReportUrl = '/csp-report';
 const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
@@ -80,10 +78,6 @@ const app = express();
 // Health check - must return 200 for Render
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.head('/healthz', (_req, res) => res.status(200).send('ok'));
-
-// Additional health check with underscore prefix (for consistency with k8s conventions)
-app.get('/_healthz', (_req, res) => res.status(200).send('ok'));
-app.head('/_healthz', (_req, res) => res.status(200).send('ok'));
 
 // SSR info endpoint - reads build/asset-manifest.json and lists /static/js bundles
 app.get('/__ssr-info', (_req, res) => {
@@ -110,39 +104,6 @@ console.log(
     ? '✅ Integration API credentials detected.'
     : '⚠️ Missing Integration API credentials (lender SMS may fail to read protected phone).'
 );
-
-// Boot-time environment validator (warn-only)
-const envWarnings = [];
-const requiredEnvs = {
-  'TWILIO_ACCOUNT_SID': 'Twilio SMS functionality',
-  'TWILIO_AUTH_TOKEN': 'Twilio SMS functionality', 
-  'TWILIO_MESSAGING_SERVICE_SID': 'Twilio SMS functionality',
-  'SHIPPO_API_TOKEN': 'Shippo shipping labels',
-  'ROOT_URL': 'Server configuration'
-};
-
-Object.entries(requiredEnvs).forEach(([key, purpose]) => {
-  if (!process.env[key]) {
-    envWarnings.push(`⚠️ Missing ${key} - ${purpose} may not work properly`);
-  }
-});
-
-// Log SMS_DRY_RUN status
-const smsDryRun = process.env.SMS_DRY_RUN;
-if (smsDryRun === 'true') {
-  console.log('📱 SMS_DRY_RUN=true - SMS messages will be logged but not sent');
-} else if (smsDryRun === 'false') {
-  console.log('📱 SMS_DRY_RUN=false - SMS messages will be sent to real numbers');
-} else {
-  envWarnings.push('⚠️ SMS_DRY_RUN not set - defaulting to dry run mode');
-}
-
-// Log all warnings at once
-if (envWarnings.length > 0) {
-  console.log('\n🔧 Environment Configuration Warnings:');
-  envWarnings.forEach(warning => console.log(warning));
-  console.log(''); // Empty line for readability
-}
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'http://localhost:3000',
@@ -227,8 +188,7 @@ if (cspEnabled) {
   const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
   
   // Log CSP mode at startup
-  const modeLabel = CSP_REPORT_ONLY ? `${CSP_MODE} (CSP_REPORT_ONLY=true, non-blocking)` : CSP_MODE;
-  console.log(`🔐 CSP mode: ${modeLabel}`);
+  console.log(`🔐 CSP mode: ${CSP_MODE}`);
 
   if (CSP_MODE === 'block') {
     // Apply both enforce and reportOnly middlewares (enforce first)
@@ -278,40 +238,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.use(compression());
-
-// ============================================================================
-// CRITICAL: Serve /static/** assets BEFORE general static middleware
-// This ensures code-split chunks are NEVER rewritten to index.html
-// ============================================================================
-app.use('/static', express.static(path.join(buildDir, 'static'), {
-  immutable: true,
-  maxAge: '1y',
-  fallthrough: false, // Return 404 instead of falling through to SSR
-  setHeaders: (res, filePath) => {
-    // Enforce correct MIME types to prevent text/html from being served
-    if (filePath.endsWith('.js')) {
-      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-    } else if (filePath.endsWith('.css')) {
-      res.setHeader('Content-Type', 'text/css; charset=utf-8');
-    } else if (filePath.endsWith('.json')) {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    }
-  },
-}));
-
-// Serve critical top-level assets with proper cache headers
-app.get(['/asset-manifest.json', '/manifest.json', '/loadable-stats.json'], (req, res, next) => {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  const filePath = path.join(buildDir, req.path);
-  if (fs.existsSync(filePath)) {
-    res.sendFile(filePath);
-  } else {
-    next();
-  }
-});
-
-// Serve other static assets from build directory (favicon, etc.)
+// Serve static assets from build directory
 app.use(express.static(buildDir, { index: false }));
 app.use(cookieParser());
 

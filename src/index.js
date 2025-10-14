@@ -34,46 +34,6 @@ import { matchPathname } from './util/routes';
 import * as apiUtils from './util/api';
 import * as log from './util/log';
 
-// --- Money hydration utilities ---
-const { Money } = sdkTypes || {};
-
-export function reviveSdkMoney(node) {
-  // Recreate Money when it looks like a plain object from JSON
-  if (
-    node &&
-    typeof node === 'object' &&
-    node._sdkType === 'Money' &&
-    typeof node.amount === 'number' &&
-    typeof node.currency === 'string' &&
-    typeof Money === 'function' &&
-    !(node instanceof Money)
-  ) {
-    return new Money(node.amount, node.currency);
-  }
-  return node;
-}
-
-export function deepReviveMoney(input, seen = new WeakSet()) {
-  const v = reviveSdkMoney(input);
-  if (v !== input) return v;
-
-  if (!input || typeof input !== 'object') return input;
-  if (seen.has(input)) return input;
-  seen.add(input);
-
-  if (Array.isArray(input)) {
-    for (let i = 0; i < input.length; i++) {
-      input[i] = deepReviveMoney(input[i], seen);
-    }
-    return input;
-  }
-
-  for (const k of Object.keys(input)) {
-    input[k] = deepReviveMoney(input[k], seen);
-  }
-  return input;
-}
-
 // Import relevant global duck files
 import { authInfo } from './ducks/auth.duck';
 import { fetchAppAssets } from './ducks/hostedAssets.duck';
@@ -87,6 +47,7 @@ import { ClientApp, renderApp } from './app';
 // Environment variable debugging
 console.log("🔐 Stripe Key in use:", process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY);
 console.log("🏪 Marketplace ID in use:", process.env.REACT_APP_SHARETRIBE_MARKETPLACE_ID);
+console.log("🚚 Shippo Token (first 6 chars):", (process.env.SHIPPO_API_TOKEN || "").slice(0, 6));
 
 const render = (store, shouldHydrate) => {
   // If the server already loaded the auth information, render the app
@@ -164,6 +125,36 @@ const setupAnalyticsHandlers = googleAnalyticsId => {
 
 // If we're in a browser already, render the client application.
 if (typeof window !== 'undefined') {
+  // DEBUG: cannot be stripped by Terser
+  debugger;                                  // DevTools will pause here if the file runs
+  window.__BOOT_PROBE__ = 'client-entry';    // Check this in console later
+  document.body.setAttribute('data-boot', '1'); // Visible in Elements
+  // Optional: very loud (remove after one deploy)
+  // alert('BOOT: client entry executing');
+
+  // At the VERY top: boot logging and error handling
+  window.onerror = (m, s, l, c, e) => {
+    console.error('[BOOT] window.onerror:', m, s, l, c, e);
+  };
+  console.log('[BOOT] client bundle executing');
+
+  // 1) Instrument unhandled errors (keeps working in prod)
+  window.addEventListener('error', e => {
+    console.error('[BOOT] window error:', e.message, e.error);
+  });
+  window.addEventListener('unhandledrejection', e => {
+    console.error('[BOOT] unhandledrejection:', e.reason);
+  });
+
+  // 2) Validate hydrate target + initial state
+  const rootEl = document.getElementById('root'); // or whatever your SSR root id is
+  console.log('[BOOT] rootEl exists?', !!rootEl, rootEl?.outerHTML?.slice(0, 120));
+  console.log('[BOOT] window state keys:', Object.keys(window || {}));
+
+  // If you expect a specific inline state/config, log it:
+  console.log('[BOOT] __INITIAL_STATE__:', window.__INITIAL_STATE__);
+  console.log('[BOOT] __APP_CONFIG__:', window.__APP_CONFIG__);
+
   // set up logger with Sentry DSN client key and environment
   log.setup();
 
@@ -172,40 +163,15 @@ if (typeof window !== 'undefined') {
     ? { assetCdnBaseUrl: appSettings.sdk.assetCdnBaseUrl }
     : {};
 
-  // --- Replace your existing preloaded state bootstrap with this ---
-  let initialState;
-  // eslint-disable-next-line no-underscore-dangle
-  if (window.__PRELOADED_STATE__) {
-    try {
-      // Some FTW templates inline an object, others inline a JSON string.
-      // eslint-disable-next-line no-underscore-dangle
-      const raw = window.__PRELOADED_STATE__;
-      const parsed = typeof raw === 'string' ? JSON.parse(raw, sdkTypes.reviver) : raw;
-
-      // IMPORTANT: revive Money instances lost during SSR
-      initialState = deepReviveMoney(
-        typeof structuredClone !== 'undefined'
-          ? structuredClone(parsed)
-          : JSON.parse(JSON.stringify(parsed))
-      );
-
-      // Clean up the global to avoid re-use
-      try {
-        // eslint-disable-next-line no-underscore-dangle
-        delete window.__PRELOADED_STATE__;
-      } catch (_) {
-        // eslint-disable-next-line no-underscore-dangle
-        window.__PRELOADED_STATE__ = undefined;
-      }
-    } catch (e) {
-      // Fallback: proceed without preloaded state if something unexpected happens
-      log.error(e, 'preloaded-state-parse-failed');
-      initialState = {};
-    }
-  } else {
-    initialState = {};
+  // Verify environment variables are loaded
+  console.log('🌐 Flex Client ID in use:', process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID);
+  if (!process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID) {
+    throw new Error('clientId must be provided');
   }
 
+  // eslint-disable-next-line no-underscore-dangle
+  const preloadedState = window.__PRELOADED_STATE__ || '{}';
+  const initialState = JSON.parse(preloadedState, sdkTypes.reviver);
   const sdk = createInstance({
     transitVerbose: appSettings.sdk.transitVerbose,
     clientId: appSettings.sdk.clientId,
@@ -222,7 +188,15 @@ if (typeof window !== 'undefined') {
   const store = configureStore(initialState, sdk, analyticsHandlers);
 
   require('./util/polyfills');
-  render(store, !!window.__PRELOADED_STATE__);
+  
+  // Wrap render in try/catch so nothing gets swallowed
+  try {
+    console.log('[BOOT] about to hydrate');
+    render(store, !!window.__PRELOADED_STATE__);
+    console.log('[BOOT] hydration done');
+  } catch (err) {
+    console.error('[BOOT] hydrate failed:', err);
+  }
 
   if (appSettings.dev) {
     // Expose stuff for the browser REPL

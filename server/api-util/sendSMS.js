@@ -64,7 +64,7 @@ function isDuplicateSend(transactionId, transition, role) {
 const stopList = new Set();
 
 // DRY_RUN and ONLY_PHONE guards
-const DRY_RUN = process.env.SMS_DRY_RUN === '1' || process.env.SMS_DRY_RUN === 'true';
+const DRY_RUN = process.env.SMS_DRY_RUN === '1';
 const ONLY_PHONE = process.env.ONLY_PHONE || null;
 
 /**

@@ -986,3 +986,49 @@ export const getEndOfWeek = (date, timeZone, firstDayOfWeek) => {
   const m = timeZone ? moment(date).tz(timeZone) : moment(date);
   return getEndOfWeekAsMoment(m, timeZone, firstDayOfWeek).toDate();
 };
+
+// --- TZ Helper Functions for Flex Timeslots ---
+
+/** Returns a Date for "midnight in timeZone" expressed in UTC. */
+export const localMidnightToUTC = (anyDate, timeZone) => {
+  const d = anyDate instanceof Date ? anyDate : new Date(anyDate);
+
+  // Get Y/M/D in the target TZ
+  const ymdParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const partsYMD = Object.fromEntries(ymdParts.map(p => [p.type, p.value]));
+
+  // Build a local midnight (in that TZ) and then get its wall-clock time as UTC
+  const withTime = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(`${partsYMD.year}-${partsYMD.month}-${partsYMD.day}T00:00:00`));
+
+  const p = Object.fromEntries(withTime.map(x => [x.type, x.value]));
+  return new Date(`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}Z`);
+};
+
+/**
+ * Month bounds [start, end) in the given TZ, returned as UTC Date objects.
+ * start = 00:00 at 1st of the month in timeZone
+ * end   = 00:00 at 1st of next month in timeZone
+ */
+export const monthBoundsUTCInTZ = (anyDate, timeZone) => {
+  const base = anyDate instanceof Date ? anyDate : new Date(anyDate);
+  const firstOfMonth     = new Date(base.getFullYear(), base.getMonth(), 1);
+  const firstOfNextMonth = new Date(base.getFullYear(), base.getMonth() + 1, 1);
+  return {
+    start: localMidnightToUTC(firstOfMonth, timeZone),
+    end:   localMidnightToUTC(firstOfNextMonth, timeZone),
+  };
+};

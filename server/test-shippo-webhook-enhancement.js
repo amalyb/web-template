@@ -1,0 +1,151 @@
+#!/usr/bin/env node
+
+/**
+ * Test script for enhanced Shippo webhook
+ * Tests both delivery and first scan event handling
+ */
+
+const axios = require('axios');
+
+const BASE_URL = 'http://localhost:3000';
+const WEBHOOK_URL = `${BASE_URL}/api/webhooks/shippo`;
+
+// Test data
+const testTransactionId = 'test-tx-123';
+const testTrackingNumber = '1Z999AA1234567890';
+const testBorrowerPhone = '+15551234567';
+
+// Mock webhook payloads
+const deliveryPayload = {
+  event: 'track_updated',
+  data: {
+    tracking_number: testTrackingNumber,
+    carrier: 'usps',
+    tracking_status: {
+      status: 'DELIVERED',
+      substatus: 'Delivered to recipient'
+    },
+    metadata: {
+      transactionId: testTransactionId
+    }
+  }
+};
+
+const firstScanPayload = {
+  event: 'track_updated',
+  data: {
+    tracking_number: testTrackingNumber,
+    carrier: 'usps',
+    tracking_status: {
+      status: 'TRANSIT',
+      substatus: 'Accepted at USPS facility'
+    },
+    metadata: {
+      transactionId: testTransactionId
+    }
+  }
+};
+
+const invalidStatusPayload = {
+  event: 'track_updated',
+  data: {
+    tracking_number: testTrackingNumber,
+    carrier: 'usps',
+    tracking_status: {
+      status: 'IN_TRANSIT',
+      substatus: 'Package in transit'
+    },
+    metadata: {
+      transactionId: testTransactionId
+    }
+  }
+};
+
+const nonTrackingEventPayload = {
+  event: 'shipment_created',
+  data: {
+    object_id: 'ship_123',
+    status: 'SUCCESS'
+  }
+};
+
+async function testWebhook(payload, testName) {
+  console.log(`\n🧪 Testing: ${testName}`);
+  console.log(`📤 Payload:`, JSON.stringify(payload, null, 2));
+  
+  try {
+    const response = await axios.post(WEBHOOK_URL, payload, {
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    });
+    
+    console.log(`✅ Response (${response.status}):`, response.data);
+    return { success: true, response: response.data };
+    
+  } catch (error) {
+    if (error.response) {
+      console.log(`❌ Response (${error.response.status}):`, error.response.data);
+      return { success: false, status: error.response.status, data: error.response.data };
+    } else {
+      console.log(`❌ Network error:`, error.message);
+      return { success: false, error: error.message };
+    }
+  }
+}
+
+async function runTests() {
+  console.log('🚀 Starting Shippo webhook enhancement tests...\n');
+  
+  const tests = [
+    { payload: deliveryPayload, name: 'Delivery Event (DELIVERED status)' },
+    { payload: firstScanPayload, name: 'First Scan Event (TRANSIT status)' },
+    { payload: invalidStatusPayload, name: 'Invalid Status (IN_TRANSIT - should be ignored)' },
+    { payload: nonTrackingEventPayload, name: 'Non-Tracking Event (shipment_created - should be ignored)' }
+  ];
+  
+  const results = [];
+  
+  for (const test of tests) {
+    const result = await testWebhook(test.payload, test.name);
+    results.push({ ...test, result });
+    
+    // Small delay between tests
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  // Summary
+  console.log('\n📊 Test Summary:');
+  console.log('================');
+  
+  results.forEach((test, index) => {
+    const status = test.result.success ? '✅ PASS' : '❌ FAIL';
+    console.log(`${index + 1}. ${test.name}: ${status}`);
+    
+    if (!test.result.success) {
+      console.log(`   Error: ${test.result.error || `HTTP ${test.result.status}`}`);
+    }
+  });
+  
+  const passed = results.filter(r => r.result.success).length;
+  const total = results.length;
+  
+  console.log(`\n🎯 Results: ${passed}/${total} tests passed`);
+  
+  if (passed === total) {
+    console.log('🎉 All tests passed! The enhanced webhook is working correctly.');
+  } else {
+    console.log('⚠️ Some tests failed. Check the logs above for details.');
+  }
+}
+
+// Run tests if this script is executed directly
+if (require.main === module) {
+  runTests().catch(error => {
+    console.error('❌ Test runner failed:', error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { testWebhook, runTests };

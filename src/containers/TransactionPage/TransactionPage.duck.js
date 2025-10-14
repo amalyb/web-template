@@ -718,17 +718,6 @@ export const makeTransition = (txId, transitionName, params) => (dispatch, getSt
     const providerEmail = provider?.attributes?.email || '';
     const providerPhone = providerProtected.phoneNumber || providerPublic.providerPhone || '';
 
-    // Customer (borrower)
-    const customer = transaction.customer;
-    const shippingDetails = transaction?.attributes?.protectedData?.shippingDetails || {};
-    const customerName = shippingDetails.name || '';
-    const customerStreet = shippingDetails.street || '';
-    const customerCity = shippingDetails.city || '';
-    const customerState = shippingDetails.state || '';
-    const customerZip = shippingDetails.zip || '';
-    const customerEmail = customer?.attributes?.email || '';
-    const customerPhone = shippingDetails.phoneNumber || '';
-
     // Add listingId and transactionId to params
     const listingId = transaction?.listing?.id;
     const transactionId = transaction?.id;
@@ -741,28 +730,40 @@ export const makeTransition = (txId, transitionName, params) => (dispatch, getSt
       transaction: transaction?.id
     });
 
-    // Helper function to prefer non-empty values from params over transaction data
-    const preferNonEmpty = (paramValue, transactionValue) => {
-      return (paramValue && paramValue.trim() !== '') ? paramValue : transactionValue;
+    // Start from the transaction's existing protectedData
+    const txPD = transaction?.attributes?.protectedData || {};
+
+    // Build provider-side updates from the ProviderAddressForm
+    const providerPD = {
+      providerName: params.providerName,
+      providerStreet: params.providerStreet,
+      providerStreet2: params.providerStreet2,
+      providerCity: params.providerCity,
+      providerState: params.providerState,
+      providerZip: params.providerZip,
+      providerPhone: params.providerPhone,
+      providerEmail: params.providerEmail,
+    };
+
+    // Clean provider fields - don't send empty strings that could overwrite existing data
+    const cleanedProviderPD = Object.fromEntries(
+      Object.entries(providerPD).filter(([, v]) => v != null && String(v).trim() !== '')
+    );
+
+    // Merge customer fields from transaction with cleaned provider fields
+    const outgoingPD = { ...txPD, ...cleanedProviderPD };
+    console.log('[accept] outgoing protectedData keys:', Object.keys(outgoingPD));
+
+    const request = {
+      transition: 'transition/accept',
+      params: { transactionId },
+      bodyParams: { protectedData: outgoingPD },
+      queryParams: { expand: true },
     };
 
     updatedParams = {
       ...params,
-      // Only use transaction data as fallback if params don't have the values
-      providerName: preferNonEmpty(params.providerName, providerName),
-      providerStreet: preferNonEmpty(params.providerStreet, providerStreet),
-      providerCity: preferNonEmpty(params.providerCity, providerCity),
-      providerState: preferNonEmpty(params.providerState, providerState),
-      providerZip: preferNonEmpty(params.providerZip, providerZip),
-      providerEmail: preferNonEmpty(params.providerEmail, providerEmail),
-      providerPhone: preferNonEmpty(params.providerPhone, providerPhone),
-      customerName: preferNonEmpty(params.customerName, customerName),
-      customerStreet: preferNonEmpty(params.customerStreet, customerStreet),
-      customerCity: preferNonEmpty(params.customerCity, customerCity),
-      customerState: preferNonEmpty(params.customerState, customerState),
-      customerZip: preferNonEmpty(params.customerZip, customerZip),
-      customerEmail: preferNonEmpty(params.customerEmail, customerEmail),
-      customerPhone: preferNonEmpty(params.customerPhone, customerPhone),
+      protectedData: outgoingPD,
       // Add required IDs
       listingId,
       transactionId

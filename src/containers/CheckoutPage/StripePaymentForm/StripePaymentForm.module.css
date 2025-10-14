@@ -104,6 +104,31 @@
   margin: 24px 0;
 }
 
+.sameAsBillingRow {
+  grid-column: 1 / -1;
+  margin: 8px 0 16px;
+  text-align: left;
+}
+
+.inlineCheckbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;              /* small but readable space */
+  cursor: pointer;
+  font-style: italic;
+  font-weight: 400;
+  white-space: nowrap;   /* keep text on one line */
+}
+
+.inlineCheckbox input[type="checkbox"] {
+  margin: 0;
+  vertical-align: middle;
+}
+
+.fieldStack > * + * {
+  margin-top: 12px;
+}
+
 .messageLabel {
   margin: 0 0 5px 0;
 
@@ -151,6 +176,10 @@
   @media (--viewportLarge) {
     margin-top: 16px;
   }
+}
+
+.submitButtonDisabled {
+  cursor: default;
 }
 
 .missingStripeKey {

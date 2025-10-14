@@ -2,6 +2,7 @@
 // so, they are not directly calling Marketplace API or Integration API.
 // You can find these api endpoints from 'server/api/...' directory
 
+import axios from 'axios';
 import appSettings from '../config/settings';
 import { types as sdkTypes, transit } from './sdkLoader';
 import Decimal from 'decimal.js';
@@ -19,6 +20,25 @@ export const apiBaseUrl = marketplaceRootURL => {
   // Otherwise, use the given marketplaceRootURL parameter or the same domain and port as the frontend
   return marketplaceRootURL ? marketplaceRootURL.replace(/\/$/, '') : `${window.location.origin}`;
 };
+
+// Axios client for API calls with Basic authentication
+const apiBase = process.env.REACT_APP_API_BASE_URL || '/api';
+export const apiClient = axios.create({ baseURL: apiBase });
+
+apiClient.interceptors.request.use((config) => {
+  const u = process.env.REACT_APP_BASIC_AUTH_USERNAME;
+  const p = process.env.REACT_APP_BASIC_AUTH_PASSWORD;
+  if (u && p) {
+    const token = btoa(`${u}:${p}`);
+    config.headers = { ...config.headers, Authorization: `Basic ${token}` };
+  }
+  return config;
+});
+
+// Log Basic Auth status on boot
+console.log('[api] baseURL =', apiClient.defaults.baseURL,
+            'authHeaderEnabled =',
+            Boolean(process.env.REACT_APP_BASIC_AUTH_USERNAME && process.env.REACT_APP_BASIC_AUTH_PASSWORD));
 
 // Application type handlers for JS SDK.
 //
@@ -145,9 +165,22 @@ export const post = (path, body, options = {}) => {
 //
 // See `server/api/transaction-line-items.js` to see what data should
 // be sent in the body.
-export const transactionLineItems = body => {
-  return post('/api/transaction-line-items', body);
-};
+export const transactionLineItems = (params) =>
+  axios.post('/api/transaction-line-items', serialize(params), {
+    headers: {
+      'Content-Type': 'application/transit+json',
+      'Accept': 'application/transit+json',
+    },
+    // ensure Axios doesn't pre-parse Transit into an object when it guesses
+    transformResponse: [data => data],
+  }).then(res => {
+    const raw = res.data;
+    // ✅ Only decode if it's a string; otherwise assume it's already JS
+    const result = (typeof raw === 'string') ? deserialize(raw) : raw;
+    console.log('[tx-li] RESULT:', result);
+    // should be: { lineItems: [...], breakdownData: {...}, bookingDates: {...} }
+    return result;
+  });
 
 // Initiate a privileged transaction.
 //

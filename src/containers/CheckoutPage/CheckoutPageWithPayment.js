@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -9,15 +9,9 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
-import { selectStripeClientSecret } from './CheckoutPage.duck';
-import { Elements } from '@stripe/react-stripe-js';
-import { stripePromise } from '../../util/stripe';
 
-// Import shared components (direct imports to avoid circular deps via barrel)
-import { H3, H4 } from '../../components/Heading/Heading';
-import NamedLink from '../../components/NamedLink/NamedLink';
-import OrderBreakdown from '../../components/OrderBreakdown/OrderBreakdown';
-import Page from '../../components/Page/Page';
+// Import shared components
+import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
 
 import {
   bookingDatesMaybe,
@@ -42,24 +36,6 @@ import MobileOrderBreakdown from './MobileOrderBreakdown';
 import css from './CheckoutPage.module.css';
 import { __DEV__ } from '../../util/envFlags';
 
-// Import shared modules to break circular dependencies and avoid TDZ
-import { 
-  extractListingId, 
-  normalizeISO, 
-  buildOrderParams, 
-  normalizeBookingDates 
-} from './shared/orderParamsCore';
-import { buildCheckoutSessionKey } from './shared/sessionKey';
-
-// [DEBUG] one-shot logger
-const __LOG_ONCE = new Set();
-const logOnce = (key, ...args) => {
-  if (!__LOG_ONCE.has(key)) {
-    console.log(key, ...args);
-    __LOG_ONCE.add(key);
-  }
-};
-
 // Stripe PaymentIntent statuses, where user actions are already completed
 // https://stripe.com/docs/payments/payment-intents/status
 const STRIPE_PI_USER_ACTIONS_DONE_STATUSES = ['processing', 'requires_capture', 'succeeded'];
@@ -69,7 +45,7 @@ const ONETIME_PAYMENT = 'ONETIME_PAYMENT';
 const PAY_AND_SAVE_FOR_LATER_USE = 'PAY_AND_SAVE_FOR_LATER_USE';
 const USE_SAVED_CARD = 'USE_SAVED_CARD';
 
-function paymentFlow(selectedPaymentMethod, saveAfterOnetimePayment) {
+const paymentFlow = (selectedPaymentMethod, saveAfterOnetimePayment) => {
   // Payment mode could be 'replaceCard', but without explicit saveAfterOnetimePayment flag,
   // we'll handle it as one-time payment
   return selectedPaymentMethod === 'defaultCard'
@@ -77,52 +53,21 @@ function paymentFlow(selectedPaymentMethod, saveAfterOnetimePayment) {
     : saveAfterOnetimePayment
     ? PAY_AND_SAVE_FOR_LATER_USE
     : ONETIME_PAYMENT;
-}
-
-// Dev-safe helper: build protectedData from form/order data, omitting empty values.
-const buildProtectedData = (formValues = {}, profileFallback = {}) => {
-  const {
-    customerName,
-    customerStreet,
-    customerCity,
-    customerState,
-    customerZip,
-    customerEmail,
-    customerPhone,
-  } = formValues || {};
-
-  // Allow profile phone as fallback only if form doesn't provide it
-  const normalized = {
-    ...(customerName && { customerName: customerName.trim() }),
-    ...(customerStreet && { customerStreet: customerStreet.trim() }),
-    ...(customerCity && { customerCity: customerCity.trim() }),
-    ...(customerState && { customerState: customerState.trim() }),
-    ...(customerZip && { customerZip: customerZip.trim() }),
-    ...(customerEmail && { customerEmail: customerEmail.trim() }),
-    ...((customerPhone || profileFallback.customerPhone) && {
-      customerPhone: (customerPhone || profileFallback.customerPhone).trim(),
-    }),
-  };
-  return normalized;
 };
 
 // Helper to build customer protectedData from shipping form
-function buildCustomerPD(shipping, currentUser) {
-  return {
-    customerName: shipping?.recipientName || shipping?.name || '',
-    customerStreet: shipping?.streetAddress || shipping?.street || '',
-    customerStreet2: shipping?.streetAddress2 || shipping?.street2 || '',
-    customerCity: shipping?.city || '',
-    customerState: shipping?.state || '',
-    customerZip: shipping?.zip || shipping?.postalCode || shipping?.zipCode || '',
-    customerPhone: shipping?.phone || '',
-    customerEmail: shipping?.email || currentUser?.attributes?.email || '',
-  };
-}
+const buildCustomerPD = (shipping, currentUser) => ({
+  customerName: shipping?.recipientName || shipping?.name || '',
+  customerStreet: shipping?.streetAddress || shipping?.street || '',
+  customerStreet2: shipping?.streetAddress2 || shipping?.street2 || '',
+  customerCity: shipping?.city || '',
+  customerState: shipping?.state || '',
+  customerZip: shipping?.zip || shipping?.postalCode || shipping?.zipCode || '',
+  customerPhone: shipping?.phone || '',
+  customerEmail: shipping?.email || currentUser?.attributes?.email || '',
+});
 
-function capitalizeString(s) {
-  return `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
-}
+const capitalizeString = s => `${s.charAt(0).toUpperCase()}${s.substr(1)}`;
 
 /**
  * Prefix the properties of the chosen price variant as first level properties for the protected data of the transaction
@@ -140,7 +85,7 @@ function capitalizeString(s) {
  * @param {Object} priceVariant - The price variant object
  * @returns {Object} The price variant object with the properties prefixed with priceVariant*
  */
-function prefixPriceVariantProperties(priceVariant) {
+const prefixPriceVariantProperties = priceVariant => {
   if (!priceVariant) {
     return {};
   }
@@ -149,7 +94,7 @@ function prefixPriceVariantProperties(priceVariant) {
     return [`priceVariant${capitalizeString(key)}`, value];
   });
   return Object.fromEntries(entries);
-}
+};
 
 /**
  * Construct orderParams object using pageData from session storage, shipping details, and optional payment params.
@@ -161,15 +106,9 @@ function prefixPriceVariantProperties(priceVariant) {
  * @param {Object} shippingDetails shipping address if applicable.
  * @param {Object} optionalPaymentParams (E.g. paymentMethod or setupPaymentMethodForSaving)
  * @param {Object} config app-wide configs. This contains hosted configs too.
- * @param {Object} formValues form values containing customer data
  * @returns orderParams.
  */
-function getOrderParams(pageData = {}, shippingDetails = {}, optionalPaymentParams = {}, config = {}, formValues = {}) {
-  // Validate required parameters
-  if (!pageData || !config) {
-    console.error('[getOrderParams] Missing required parameters:', { hasPageData: !!pageData, hasConfig: !!config });
-    return null;
-  }
+const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config, formValues = {}) => {
   const quantity = pageData.orderData?.quantity;
   const quantityMaybe = quantity ? { quantity } : {};
   const seats = pageData.orderData?.seats;
@@ -237,25 +176,22 @@ function getOrderParams(pageData = {}, shippingDetails = {}, optionalPaymentPara
   console.log('📦 Final orderParams:', orderParams);
 
   return orderParams;
-}
+};
 
-// Module-level cache to prevent speculation loops when loadInitialDataForStripePayments is called
-const MODULE_SPEC_CACHE = { current: null };
-
-function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) {
+const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) => {
   const tx = pageData ? pageData.transaction : null;
   const pageDataListing = pageData.listing;
   const processName =
     tx?.attributes?.processName ||
     pageDataListing?.attributes?.publicData?.transactionProcessAlias?.split('/')[0];
-  const txProcess = processName ? getProcess(processName) : null;
+  const process = processName ? getProcess(processName) : null;
 
   // If transaction has passed payment-pending state, speculated tx is not needed.
   const shouldFetchSpeculatedTransaction =
     !!pageData?.listing?.id &&
     !!pageData.orderData &&
-    !!txProcess &&
-    !hasTransactionPassedPendingPayment(tx, txProcess);
+    !!process &&
+    !hasTransactionPassedPendingPayment(tx, process);
 
   if (shouldFetchSpeculatedTransaction) {
     // Create a stable key based on parameters that should trigger a new fetch
@@ -276,12 +212,12 @@ function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculat
       const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
       const transactionId = tx ? tx.id : null;
       const isInquiryInPaymentProcess =
-        tx?.attributes?.lastTransition === txProcess.transitions.INQUIRE;
+        tx?.attributes?.lastTransition === process.transitions.INQUIRE;
 
       const requestTransition = isInquiryInPaymentProcess
-        ? txProcess.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
-        : txProcess.transitions.REQUEST_PAYMENT;
-      const isPrivileged = txProcess.isPrivileged(requestTransition);
+        ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+        : process.transitions.REQUEST_PAYMENT;
+      const isPrivileged = process.isPrivileged(requestTransition);
 
       fetchSpeculatedTransaction(
         orderParams,
@@ -292,7 +228,7 @@ function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculat
       );
     }
   }
-}
+};
 
 /**
  * Load initial data for the page
@@ -310,12 +246,12 @@ function fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculat
  * This function also sets of fetching the speculative transaction
  * based on this initial data.
  */
-export function loadInitialDataForStripePayments({
+export const loadInitialDataForStripePayments = ({
   pageData,
   fetchSpeculatedTransaction,
   fetchStripeCustomer,
   config,
-}) {
+}) => {
   // Fetch currentUser with stripeCustomer entity
   fetchStripeCustomer();
 
@@ -325,17 +261,12 @@ export function loadInitialDataForStripePayments({
   const optionalPaymentParams = {};
   const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
 
-  // Validate orderParams before proceeding
-  if (!orderParams) {
-    console.warn('[loadInitialData] getOrderParams returned null, skipping speculation');
-    return;
-  }
+  // Use a more robust guard to prevent duplicate calls
+  const prevKeyRef = { current: null };
+  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
+};
 
-  // Use module-level cache to prevent duplicate calls across function invocations
-  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, MODULE_SPEC_CACHE);
-}
-
-async function handleSubmit(values, txProcess, props, stripe, submitting, setSubmitting) {
+const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting) => {
   if (submitting) {
     return;
   }
@@ -345,7 +276,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
     history,
     config,
     routeConfiguration,
-    speculativeTransaction,  // ← FIXED: Use new prop name
+    speculatedTransaction,
     currentUser,
     stripeCustomerFetched,
     paymentIntent,
@@ -559,7 +490,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
     console.log('[checkout→request-payment] customerZip:', mergedPD.customerZip);
   }
   
-  // ✅ EDIT C: Assert required fields and abort if missing (hard validation)
+  // Assert required fields and abort if missing
   if (!mergedPD.customerStreet?.trim() || !mergedPD.customerZip?.trim()) {
     const missingFields = [];
     if (!mergedPD.customerStreet?.trim()) missingFields.push('Street Address');
@@ -592,7 +523,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
   // Construct requestPaymentParams before calling processCheckoutWithPayment
   const requestPaymentParams = {
     pageData,
-    speculativeTransaction,  // ← FIXED: Use new prop name
+    speculatedTransaction,
     stripe,
     card,
     billingDetails: getBillingDetails(formValues, currentUser),
@@ -600,7 +531,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
     paymentIntent,
     hasPaymentIntentUserActionsDone,
     stripePaymentMethodId,
-    txProcess,
+    process,
     onInitiateOrder,
     onConfirmCardPayment,
     onConfirmPayment,
@@ -647,7 +578,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
     // Re-throw to ensure form submission state is properly reset
     throw err;
   }
-}
+};
 
 /**
  * A component that renders the checkout page with payment.
@@ -656,7 +587,7 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
  * @param {Object} props
  * @param {boolean} props.scrollingDisabled - Whether the page should scroll
  * @param {string} props.speculateTransactionError - The error message for the speculate transaction
- * @param {propTypes.transaction} props.speculativeTransaction - The speculative transaction (normalized name)
+ * @param {propTypes.transaction} props.speculatedTransaction - The speculated transaction
  * @param {boolean} props.isClockInSync - Whether the clock is in sync
  * @param {string} props.initiateOrderError - The error message for the initiate order
  * @param {string} props.confirmPaymentError - The error message for the confirm payment
@@ -689,9 +620,28 @@ async function handleSubmit(values, txProcess, props, stripe, submitting, setSub
  * @param {Object} props.history.push - The push state function of the history object
  * @returns {JSX.Element}
  */
-const CheckoutPageWithPayment = props => {
-  // ✅ STEP 1: Extract ALL props at the very top before any hooks or state
-  // This prevents TDZ errors in production builds where minification can reorder code
+export const CheckoutPageWithPayment = props => {
+  const [submitting, setSubmitting] = useState(false);
+  // Initialized stripe library is saved to state - if it's needed at some point here too.
+  const [stripe, setStripe] = useState(null);
+  // Payment element completion state
+  const [paymentElementComplete, setPaymentElementComplete] = useState(false);
+  const [formValues, setFormValues] = useState({});
+  const [formValid, setFormValid] = useState(false);
+  const [stripeElementMounted, setStripeElementMounted] = useState(false);
+  const stripeReady = !!stripeElementMounted;
+
+  const handleFormValuesChange = useCallback((next) => {
+    const prev = JSON.stringify(formValues || {});
+    const json = JSON.stringify(next || {});
+    if (json !== prev) setFormValues(next || {});
+  }, [formValues]);
+  
+  // Ref to prevent speculative transaction loops
+  const prevSpecKeyRef = useRef(null);
+  // Ref to throttle disabled gates logging
+  const lastReasonRef = useRef(null);
+
   const {
     scrollingDisabled,
     speculateTransactionError,
@@ -711,459 +661,45 @@ const CheckoutPageWithPayment = props => {
     listingTitle,
     title,
     config,
-    onInitiatePrivilegedSpeculativeTransaction, // Extract callback here to avoid TDZ
-    // New props for enhanced speculation state
-    speculateStatus,
-    stripeClientSecret: secretFromEntities,
-    clientSecretHotfix: secretFromHotfix,
-    // ✅ B) Extract clientSecret from speculate response
-    extractedClientSecret,
-    // ✅ Extract paymentsUnavailable flag
-    paymentsUnavailable,
   } = props;
-  
-  // ✅ B) Use extracted clientSecret from speculate response
-  const stripeClientSecret = extractedClientSecret || secretFromHotfix || secretFromEntities || null;
-  
-  // ✅ 3) Log Stripe environment sanity check
-  if (process.env.NODE_ENV !== 'production') {
-    const pubKey = config?.stripe?.publishableKey || '';
-    const pubKeyMode = pubKey.startsWith('pk_live') ? 'LIVE' : pubKey.startsWith('pk_test') ? 'TEST' : 'UNKNOWN';
-    const secretPrefix = (stripeClientSecret || '').substring(0, 3);
-    console.log('[ENV CHECK] Browser Stripe key mode:', pubKeyMode, `(${pubKey.substring(0, 12)}...)`);
-    console.log('[ENV CHECK] ClientSecret prefix:', secretPrefix, '(should be "pi_")');
-    console.log('[HOTFIX][STRIPE_PI] chosen secret tail:',
-      (stripeClientSecret || '').slice(-12),
-      { from: extractedClientSecret ? 'extracted' : (secretFromHotfix ? 'hotfix' : (secretFromEntities ? 'entities' : 'none')) }
-    );
-  }
 
-  // ✅ STEP 2: Initialize all state hooks
-  const [submitting, setSubmitting] = useState(false);
-  const [stripe, setStripe] = useState(null);
-  const [paymentElementComplete, setPaymentElementComplete] = useState(false);
-  const [formValues, setFormValues] = useState({});
-  const [formValid, setFormValid] = useState(false);
-  const [stripeElementMounted, setStripeElementMounted] = useState(false);
-  const [tokenTick, setTokenTick] = useState(0); // Force re-render when token appears via storage event
-  const stripeReady = !!stripeElementMounted;
+  // Handle speculative transaction initiation with proper guards (one-shot)
+  useEffect(() => {
+    const listingId = pageData?.listing?.id?.uuid || pageData?.listing?.id;
 
-  // ✅ B) Create formValuesHash for speculation effect
-  const formValuesHash = useMemo(() => JSON.stringify(formValues || {}), [formValues]);
+    if (!listingId) return;
 
-  // ✅ STEP 3: Initialize all refs
-  const prevSpecKeyRef = useRef(null);
-  const lastReasonRef = useRef(null);
-  const initiatedSessionRef = useRef(null);
-  const lastSessionKeyRef = useRef(null);
-  const retrievedRef = useRef(null);
-  const lastPDKeysSentRef = useRef([]);
-  const customerFormRef = useRef({});
-  
-  // Keep a stable ref to the handler so effect doesn't depend on its identity
-  const initiateRef = useRef(onInitiatePrivilegedSpeculativeTransaction);
-
-  // ✅ STEP 4: Define callbacks
-  const handleFormValuesChange = useCallback((vals) => {
-    // ✅ 5) Log form values streaming from child
-    console.log('[FORM STREAM]', vals);
-    setFormValues(vals || {});
-    // Also update ref for synchronous access in effects
-    customerFormRef.current = vals || {};
-  }, []);
-
-  // Normalize booking dates from pageData (handles multiple shapes)
-  // Use object assignment first to avoid minifier reordering TDZ issues
-  const normalizedDates = useMemo(() => normalizeBookingDates(pageData), [pageData]);
-  const startISO = normalizedDates?.startISO;
-  const endISO = normalizedDates?.endISO;
-  
-  const pageDataListing = pageData?.listing;
-  const listingIdRaw = pageData?.listing?.id;
-  const unitTypeFromListing = pageData?.listing?.attributes?.publicData?.unitType;
-  const userId = currentUser?.id?.uuid;
-  const anonymousId = !userId && typeof window !== 'undefined' 
-    ? window.sessionStorage?.getItem('anonymousId') || 'anonymous'
-    : null;
-
-  // Extract normalized listing ID
-  const listingIdNormalized = extractListingId(pageDataListing, listingIdRaw);
-
-  // Build order params with validation using new robust builder with normalized dates
-  const orderResult = useMemo(() => {
-    if (!startISO || !endISO) {
-      // Log once for debugging (only in development)
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] Missing booking dates in orderParams', { 
-          startISO, 
-          endISO, 
-          pageDataKeys: Object.keys(pageData || {}) 
-        });
-      }
-      return { ok: false, reason: 'missing-bookingDates', params: null };
+    // only when listing changes & we still don't have a speculative tx
+    if (!speculativeTransaction?.id && !speculativeInProgress) {
+      const orderParams = getOrderParams(pageData, {}, {}, config, formValues);
+      fetchSpeculatedTransactionIfNeeded(
+        orderParams,
+        pageData,
+        props.fetchSpeculatedTransaction,
+        prevSpecKeyRef // <-- use the stable ref
+      );
     }
-    
-    return buildOrderParams({
-      listing: pageDataListing,
-      listingId: listingIdNormalized,
-      start: startISO,
-      end: endISO,
-      protectedData: {}, // Will be populated later with form data
-    });
-  }, [pageDataListing, listingIdNormalized, startISO, endISO, pageData]);
+    // depend on listingId only, so it's a true one-shot per listing
+  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress, formValues]);
 
-  // Stable session key: includes user/listing/dates to identify unique checkout session
-  // MUST be declared before any effects that use it in deps
-  const sessionKey = useMemo(() => {
-    return buildCheckoutSessionKey({
-      userId,
-      anonymousId,
-      listingId: orderResult.params?.listingId,
-      startISO: orderResult.params?.bookingDates?.start,
-      endISO: orderResult.params?.bookingDates?.end,
-    });
-  }, [userId, anonymousId, orderResult.params]);
-
-  // Dev-only diagnostics deferred to effect to avoid TDZ in minified builds
-  // Consolidated logging with primitive deps only (no complex objects)
+  // Throttled logging for disabled gates
   useEffect(() => {
-    if (process.env.NODE_ENV === 'production') return;
-    try {
-      // Log orderParams validity
-      if (!orderResult?.ok) {
-        console.debug('[Checkout] orderParams invalid:', orderResult?.reason, orderResult);
-      } else {
-        const p = orderResult.params || {};
-        const lid = p.listingId;
-        const bookingDates = p.bookingDates;
-        console.debug('[Sherbrt] 🔍 Checkout render', {
-          lid,
-          hasBookingDates: Boolean(bookingDates && bookingDates.start && bookingDates.end),
-          ok: orderResult.ok,
-        });
-      }
-      
-      // Log normalized dates
-      if (startISO && endISO) {
-        console.debug('[Checkout] Normalized dates:', { startISO, endISO });
-      }
-      
-      // Log session key
-      if (sessionKey) {
-        console.debug('[Checkout] Session key:', sessionKey);
-      }
-    } catch (_) {
-      // swallow dev-only diagnostics errors - never block component
-    }
-  }, [sessionKey, !!orderResult?.ok, startISO, endISO]);
-
-  // Kill-switch: Allow disabling auto-initiation via env var
-  // Set REACT_APP_INITIATE_ON_MOUNT_ENABLED=false in .env to disable auto-initiation
-  // This is an emergency flag to quickly stop the initiation if issues occur in production
-  const autoInitEnabled = process.env.REACT_APP_INITIATE_ON_MOUNT_ENABLED !== 'false';
-
-  // Keep this lightweight boolean computed each render:
-  const hasToken = Boolean(
-    window.localStorage?.getItem('st-auth') ||
-    window.sessionStorage?.getItem('st-auth') ||
-    document.cookie?.includes('st=')
-  );
-
-  // Update the ref whenever the handler changes
-  useEffect(() => {
-    initiateRef.current = onInitiatePrivilegedSpeculativeTransaction;
-  }, [onInitiatePrivilegedSpeculativeTransaction]);
-
-  // Listen for storage events to force re-render when token appears (e.g., from login in another tab)
-  useEffect(() => {
-    const onStorage = e => {
-      if (e.key === 'st-auth') {
-        // Tiny state bump to force re-render and re-check hasToken
-        setTokenTick(t => t + 1);
-      }
+    const tx = speculativeTransaction;
+    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+    const gates = { 
+      hasSpeculativeTx: hasTxId, 
+      stripeReady, 
+      paymentElementComplete, 
+      formValid, 
+      notSubmitting: !submitting, 
+      notSpeculating: !speculativeInProgress 
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
-
-  // ✅ Single initiation effect with ref-based guard
-  // This triggers the speculative transaction AS SOON AS orderData is present
-  // The orderResult.ok gate ensures we have valid booking dates from orderData
-  // Note: Token/Stripe gates REMOVED - speculation fires immediately to get PaymentIntent
-  useEffect(() => {
-    // Get txProcess in this scope for gate checking
-    const pageDataListing = pageData?.listing;
-    const tx = pageData?.transaction;
-    const processNameForGate = 
-      tx?.attributes?.processName ||
-      pageDataListing?.attributes?.publicData?.transactionProcessAlias?.split('/')[0];
-    const txProcessForGate = processNameForGate ? getProcess(processNameForGate) : null;
-    
-    // Extract all gate values
-    const hasUser = Boolean(currentUser && currentUser.id);
-    const hasTxId = Boolean(props?.speculativeTransactionId);
-    const hasProcess = Boolean(txProcessForGate);
-
-    // Check all gates - orderResult.ok means we have valid orderData with booking dates
-    // ✅ REMOVED hasToken gate - speculate fires immediately after orderData exists
-    const allGatesPassed = hasUser && orderResult?.ok && !hasTxId && hasProcess;
-
-    // Log orderData and listingId for debugging
-    console.log('[CheckoutWithPayment] orderData from selector:', orderResult.params);
-    console.log('[CheckoutWithPayment] listingId:', listingIdNormalized);
-
-    // Log the exact gate state
-    if (allGatesPassed) {
-      console.log('[Checkout] triggering speculate…', { 
-        listingId: listingIdNormalized, 
-        orderData: orderResult.params 
-      });
-    } else {
-      console.debug('[INIT_GATES]', { 
-        hasUser: !!currentUser?.id, 
-        orderOk: !!orderResult?.ok, 
-        hasTxId, 
-        hasProcess: !!txProcessForGate, 
-        sessionKey 
-      });
+    const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
+    if (disabledReason !== lastReasonRef.current) {
+      lastReasonRef.current = disabledReason;
+      console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
     }
-
-    // ✅ Hard-gate #0: Skip if payments unavailable on server
-    if (paymentsUnavailable) {
-      console.info('[Checkout] Skipping speculation: payments unavailable');
-      return;
-    }
-
-    // ✅ Hard-gate #1: User must exist
-    if (!hasUser) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ⛔ Skipping initiate - user not authenticated yet');
-      }
-      return;
-    }
-
-    // Never initiate with bad params
-    if (!orderResult.ok) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ⛔ Skipping initiate - invalid params:', orderResult.reason);
-      }
-      return;
-    }
-
-    // ✅ Hard-gate #4: Wait for txProcess to exist
-    if (!hasProcess) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ⛔ Skipping initiate - txProcess not ready yet');
-      }
-      return;
-    }
-
-    // ✅ Hard-gate #5: Skip if we already have a txId (success!)
-    if (hasTxId) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] ✅ Already have txId:', props?.speculativeTransactionId);
-      }
-      return;
-    }
-
-    // ✅ B) Create guard key with formValuesHash for speculation effect
-    const keys = Object.keys(formValues || {});
-    console.log('[PRE-SPECULATE] protectedData keys:', keys);
-
-    const guardKey = `speculate:${listingIdNormalized}:${startISO}:${endISO}:${formValuesHash}`;
-    
-    // Skip only if exact params match (including form state)
-    if (prevSpecKeyRef.current === guardKey) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[Checkout] Skipping duplicate speculation:', guardKey);
-      }
-      return;
-    }
-
-    prevSpecKeyRef.current = guardKey;
-
-    if (process.env.NODE_ENV !== 'production') {
-      console.debug('[Checkout] 🚀 initiating once for', sessionKey);
-    }
-
-    // [DEBUG] about to dispatch (one-shot)
-    logOnce('[INITIATE_TX] about to dispatch', { sessionKey, orderParams: orderResult.params });
-
-    // ✅ B) Build protectedData from current formValues (not ref)
-    const profileFallback = {
-      customerPhone: currentUser?.attributes?.profile?.privateData?.phone
-        || currentUser?.attributes?.profile?.protectedData?.phone
-        || '',
-    };
-    
-    const protectedDataFromForm = buildProtectedData(formValues, profileFallback);
-    
-    // Merge protectedData into orderParams with booking dates
-    const orderParamsWithPD = {
-      ...orderResult.params,
-      protectedData: {
-        ...(orderResult.params?.protectedData || {}),
-        ...formValues,        // address/contact fields travel here
-        bookingStartISO: startISO,      // keep booking dates
-        bookingEndISO: endISO,
-        ...protectedDataFromForm,
-      },
-    };
-
-    // Capture PD keys for post-speculate logging
-    const pdKeys = Object.keys(orderParamsWithPD.protectedData || {});
-    lastPDKeysSentRef.current = pdKeys;
-
-    // Dev-only: log PD keys being sent (ALWAYS log, not inside typeof check)
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[PRE-SPECULATE] protectedData keys:', pdKeys);
-      console.log('[PRE-SPECULATE] protectedData:', orderParamsWithPD.protectedData);
-    }
-
-    // Call the latest handler via ref (no identity in deps)
-    const fn = initiateRef.current;
-    if (typeof fn === 'function') {
-      fn(orderParamsWithPD)
-        .then(res => {
-          const tx = res?.payload?.data || res;
-          const lineItems = tx?.attributes?.lineItems;
-          console.debug('[INITIATE_TX] success', { 
-            id: res?.id || res?.payload?.id 
-          });
-          console.log('[SPECULATE_SUCCESS]', { 
-            txId: tx?.id?.uuid || tx?.id, 
-            lineItems: lineItems?.length || 0 
-          });
-        })
-        .catch(err => {
-          console.error('[INITIATE_TX] FAILED', err);
-        });
-    }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValuesHash, paymentsUnavailable]); // ✅ Include paymentsUnavailable to halt speculation when flag is set
-
-  // Verify the speculative transaction state lands in props
-  useEffect(() => {
-    if (process.env.NODE_ENV !== 'production') {
-      console.debug('[TX_STATE]', {
-        hasTxId: !!props?.speculativeTransactionId,
-        txId: props?.speculativeTransactionId,
-        speculativeInProgress,
-        hasUser: !!currentUser?.id,
-      });
-    }
-  }, [props?.speculativeTransactionId, speculativeInProgress, currentUser?.id]);
-
-  // ✅ B) Log clientSecret availability
-  useEffect(() => {
-    console.log('[Stripe] element mounted?', !!stripeClientSecret);
-  }, [stripeClientSecret]);
-
-  // Log after speculation success with enhanced data
-  useEffect(() => {
-    if (speculateStatus === 'succeeded') {
-      console.log('[POST-SPECULATE]', {
-        speculativeTransactionId: props?.speculativeTransactionId,
-        clientSecretPresent: !!stripeClientSecret,
-        clientSecretLength: stripeClientSecret?.length || 0,
-        protectedDataKeysSent: lastPDKeysSentRef.current,
-      });
-    }
-  }, [speculateStatus, props?.speculativeTransactionId, stripeClientSecret]);
-
-  // 🔑 CRITICAL: Retrieve PaymentIntent after speculation succeeds
-  // This populates state.stripe.paymentIntent which StripePaymentForm needs to mount Elements
-  useEffect(() => {
-    if (!stripe || !stripeClientSecret) return;
-    if (retrievedRef.current === stripeClientSecret) return;
-
-    // 🔐 PROD HOTFIX: Double-check secret looks valid before calling Stripe
-    const looksStripey = typeof stripeClientSecret === 'string' && 
-                         (/_secret_/.test(stripeClientSecret) || /^pi_/.test(stripeClientSecret));
-    
-    if (!looksStripey) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn('[STRIPE] Invalid client secret shape; expected pi_* with _secret_. Not retrieving PI.');
-      }
-      return;
-    }
-
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[STRIPE] Retrieving PaymentIntent with clientSecret');
-    }
-    
-    props.onRetrievePaymentIntent({
-      stripe,
-      stripePaymentIntentClientSecret: stripeClientSecret,
-    });
-
-    retrievedRef.current = stripeClientSecret;
-  }, [stripe, stripeClientSecret, props.onRetrievePaymentIntent]);
-
-  // Retry speculation handler
-  const handleRetrySpeculation = useCallback(() => {
-    console.log('[Checkout] Retrying speculation...');
-    // Reset the guard to allow re-triggering
-    initiatedSessionRef.current = false;
-    lastSessionKeyRef.current = null;
-    
-    // Call the speculation handler with PD from form values
-    const fn = initiateRef.current;
-    if (typeof fn === 'function' && orderResult?.ok) {
-      // Build protectedData from form values (same as main speculation flow)
-      const profileFallback = {
-        customerPhone: currentUser?.attributes?.profile?.privateData?.phone
-          || currentUser?.attributes?.profile?.protectedData?.phone
-          || '',
-      };
-      
-      const protectedDataFromForm = buildProtectedData(customerFormRef.current, profileFallback);
-      
-      // Merge protectedData into orderParams
-      const orderParamsWithPD = {
-        ...orderResult.params,
-        protectedData: {
-          ...(orderResult.params?.protectedData || {}),
-          ...protectedDataFromForm,
-        },
-      };
-
-      // Capture PD keys for logging
-      const pdKeys = Object.keys(orderParamsWithPD.protectedData || {});
-      lastPDKeysSentRef.current = pdKeys;
-
-      if (process.env.NODE_ENV !== 'production') {
-        console.log('[RETRY-SPECULATE] protectedData keys:', pdKeys);
-      }
-
-      fn(orderParamsWithPD)
-        .then(res => {
-          console.log('[Checkout] Retry succeeded', { id: res?.id || res?.payload?.id });
-        })
-        .catch(err => {
-          console.error('[Checkout] Retry failed', err);
-        });
-    }
-  }, [orderResult, currentUser]);
-
-  // Comprehensive logging for submit gates (recomputes after each key state change)
-  useEffect(() => {
-    const hasSpeculativeTx = !!props.speculativeTransactionId;
-    const canSubmit =
-      hasSpeculativeTx &&
-      stripeReady &&
-      paymentElementComplete &&
-      formValid &&
-      !submitting;
-
-    console.log('[SUBMIT_GATES]', {
-      hasSpeculativeTx,
-      stripeReady,
-      paymentElementComplete,
-      formValid,
-      notSubmitting: !submitting,
-      canSubmit,
-    });
-  }, [props.speculativeTransactionId, stripeReady, paymentElementComplete, formValid, submitting]);
+  }, [speculativeTransaction, stripeReady, paymentElementComplete, formValid, submitting, speculativeInProgress]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -1215,25 +751,9 @@ const CheckoutPageWithPayment = props => {
   const totalPrice =
     tx?.attributes?.lineItems?.length > 0 ? getFormattedTotalPrice(tx, intl) : null;
 
-  const txProcess = processName ? getProcess(processName) : null;
-  const transitions = txProcess?.transitions || {};
-  const isPaymentExpired = hasPaymentExpired(existingTransaction, txProcess, isClockInSync);
-
-  // Extract txId for gate checks
-  const hasTxId = Boolean(props?.speculativeTransactionId);
-
-  // [DEBUG] INIT gates snapshot (one-shot)
-  logOnce('[INIT_GATES.hasToken]', hasToken);
-  logOnce('[INIT_GATES.hasUser]', !!currentUser?.id);
-  logOnce('[INIT_GATES.orderOk]', !!orderResult?.ok);
-  logOnce('[INIT_GATES.hasProcess]', !!txProcess);
-  logOnce('[INIT_GATES.hasTxId]', !!props?.speculativeTransactionId, props?.speculativeTransactionId);
-
-  // [DEBUG] TX_STATE snapshot (one-shot)
-  logOnce('[TX_STATE]', {
-    hasTxId: !!props?.speculativeTransactionId,
-    txId: props?.speculativeTransactionId,
-  });
+  const process = processName ? getProcess(processName) : null;
+  const transitions = process.transitions;
+  const isPaymentExpired = hasPaymentExpired(existingTransaction, process, isClockInSync);
 
   // Allow showing page when currentUser is still being downloaded,
   // but show payment form only when user info is loaded.
@@ -1245,10 +765,6 @@ const CheckoutPageWithPayment = props => {
     !retrievePaymentIntentError &&
     !isPaymentExpired
   );
-  
-  // ✅ EDIT A: Form should mount immediately when txProcess exists (don't wait for speculation)
-  const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
-  // Removed showStripeForm gate - form mounts as soon as txProcess loads
 
   const firstImage = listing?.images?.length > 0 ? listing.images[0] : null;
 
@@ -1267,8 +783,7 @@ const CheckoutPageWithPayment = props => {
     isPaymentExpired,
     retrievePaymentIntentError,
     speculateTransactionError,
-    listingLink,
-    handleRetrySpeculation
+    listingLink
   );
 
   const txTransitions = existingTransaction?.attributes?.transitions || [];
@@ -1294,10 +809,9 @@ const CheckoutPageWithPayment = props => {
     name: userName, 
     recipientName: userName
   };
-  
-  // Loosen form-mounting conditions to ensure UI appears
-  // (Once working, can re-tighten if needed)
-  const askShippingDetails = orderData?.deliveryMethod === 'shipping' && !!txProcess;
+  const askShippingDetails =
+    orderData?.deliveryMethod === 'shipping' &&
+    !hasTransactionPassedPendingPayment(existingTransaction, process);
 
   // Check if the listing currency is compatible with Stripe for the specified transaction process.
   // This function validates the currency against the transaction process requirements and
@@ -1308,13 +822,6 @@ const CheckoutPageWithPayment = props => {
     listing.attributes.price.currency,
     'stripe'
   );
-
-  // ✅ FIX: Allow rendering even if orderParams are initially invalid
-  // The form can still collect address/contact data while dates are being loaded
-  // Early return removed - page will render and show appropriate loading/error states
-  if (process.env.NODE_ENV !== 'production' && !orderResult.ok) {
-    console.log('[Checkout] rendering regardless of orderResult.ok; collecting form values...', orderResult.reason);
-  }
 
   // Render an error message if the listing is using a non Stripe supported currency
   // and is using a transaction process with Stripe actions (default-booking or default-purchase)
@@ -1362,125 +869,43 @@ const CheckoutPageWithPayment = props => {
             {errorMessages.speculateErrorMessage}
             {errorMessages.retrievePaymentIntentErrorMessage}
             {errorMessages.paymentExpiredMessage}
-            
-            {/* Show banner if payments are unavailable on server */}
-            {paymentsUnavailable && (
-              <div style={{ 
-                padding: '16px', 
-                marginBottom: '16px', 
-                backgroundColor: '#FEE', 
-                borderRadius: '4px',
-                border: '1px solid #F88',
-                textAlign: 'center'
-              }}>
-                <p style={{ margin: 0, color: '#C33', fontSize: '14px', fontWeight: 'bold' }}>
-                  <FormattedMessage 
-                    id="CheckoutPage.paymentsUnavailable" 
-                    defaultMessage="Payments are temporarily unavailable. Please try again later or contact support." 
-                  />
-                </p>
-              </div>
-            )}
-            
-            {/* 🔐 PROD HOTFIX: Safety valve - show banner if PI secret is invalid */}
-            {speculateStatus === 'succeeded' && props.speculativeTransactionId && !stripeClientSecret && !paymentsUnavailable && (
-              <div style={{ 
-                padding: '16px', 
-                marginBottom: '16px', 
-                backgroundColor: '#FFF3CD', 
-                borderRadius: '4px',
-                border: '1px solid #FFEAA7',
-                textAlign: 'center'
-              }}>
-                <p style={{ margin: 0, color: '#856404', fontSize: '14px' }}>
-                  <FormattedMessage 
-                    id="CheckoutPage.paymentTemporarilyUnavailable" 
-                    defaultMessage="Payment is temporarily unavailable. Please try again shortly or contact support." 
-                  />
-                </p>
-              </div>
-            )}
-            
-            {/* Show loading indicator while speculation is in progress */}
-            {speculativeInProgress && !props.speculativeTransactionId && !paymentsUnavailable && (
-              <div style={{ 
-                padding: '16px', 
-                marginBottom: '16px', 
-                backgroundColor: '#f0f4f8', 
-                borderRadius: '4px',
-                textAlign: 'center'
-              }}>
-                <p style={{ margin: 0, color: '#4A5568' }}>
-                  <FormattedMessage 
-                    id="CheckoutPage.initializingTransaction" 
-                    defaultMessage="Initializing transaction..." 
-                  />
-                </p>
-              </div>
-            )}
 
-            {showPaymentForm && !paymentsUnavailable ? (
+            {showPaymentForm ? (
               <>
                 {(() => {
-                  // Define submit gates clearly
-                  const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
-                  const canSubmit =
-                    hasSpeculativeTx &&
-                    stripeReady &&
-                    paymentElementComplete &&
-                    formValid &&
-                    !submitting;
+                  // Canonical gating (parent)
+                  const tx = speculativeTransaction; // ✅ use normalized name
+                  const hasTxId = !!(tx?.id?.uuid || tx?.id);
 
-                  const disabled = !canSubmit;
-                  const disabledReason = !hasSpeculativeTx ? 'Waiting for transaction initialization…'
-                    : !stripeReady ? 'Setting up secure payment…'
-                    : !paymentElementComplete ? 'Enter payment details…'
-                    : !formValid ? 'Complete required fields…'
-                    : submitting ? 'Processing…'
-                    : null;
+                  // Compute stripe readiness (strict boolean)
+                  const stripeReady = !!stripeElementMounted;
+
+                  const gates = {
+                    hasSpeculativeTx: hasTxId,
+                    stripeReady: stripeReady,                 // 👈 simplified
+                    paymentElementComplete: !!paymentElementComplete,
+                    formValid: formValid,                   // ✅ bubbled up from child form
+                    notSubmitting: !submitting,      // local state (no duck submitInProgress available)
+                    notSpeculating: !speculativeInProgress  // ✅ use normalized name
+                  };
+
+                  const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
+                  const submitDisabled = !!disabledReason;
 
                   return (
                     <>
-                      {disabled && (
-                        <div style={{ 
-                          fontSize: 12, 
-                          opacity: 0.7, 
-                          marginTop: 8, 
-                          padding: '8px 12px',
-                          backgroundColor: '#f7fafc',
-                          borderRadius: '4px',
-                          border: '1px solid #e2e8f0'
-                        }}>
-                          Can't submit yet: <code style={{ 
-                            backgroundColor: '#fff', 
-                            padding: '2px 6px', 
-                            borderRadius: '3px',
-                            fontSize: 11
-                          }}>{disabledReason}</code>
+                      {submitDisabled && (
+                        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
+                          Can't submit yet: <code>{disabledReason}</code>
                         </div>
                       )}
                     </>
                   );
                 })()}
-                {/* ✅ 1) Use singleton stripePromise + clientSecret in options */}
-                {(() => {
-                  const cs = extractedClientSecret;
-                  
-                  // ✅ 2) Log & validate the exact clientSecret we're passing
-                  console.log('[Stripe] clientSecret:', cs);
-                  const hasValidSecret = typeof cs === 'string' && cs.startsWith('pi_') && cs.includes('_secret_');
-                  console.log('[Stripe] clientSecret valid?', hasValidSecret);
-                  
-                  return hasValidSecret ? (
-                    <Elements 
-                      stripe={stripePromise}
-                      options={{ clientSecret: cs }}
-                      key={cs}
-                    >
-                      <StripePaymentForm
+                <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
-                    handleSubmit(values, txProcess, props, stripe, submitting, setSubmitting)
+                    handleSubmit(values, process, props, stripe, submitting, setSubmitting)
                   }
                   inProgress={submitting}
                   formId="CheckoutPagePaymentForm"
@@ -1512,15 +937,21 @@ const CheckoutPageWithPayment = props => {
                   requireInPaymentForm={false}  // billing/shipping collected outside this form
                   submitInProgress={submitting}  // spinner only
                   submitDisabled={(() => {
-                    // Use same gating logic as above
-                    const hasSpeculativeTx = Boolean(props?.speculativeTransactionId);
-                    const canSubmit =
-                      hasSpeculativeTx &&
-                      stripeReady &&
-                      paymentElementComplete &&
-                      formValid &&
-                      !submitting;
-                    return !canSubmit;
+                    const tx = speculativeTransaction; // ✅ use normalized name
+                    const hasTxId = !!(tx?.id?.uuid || tx?.id);
+                    
+                    // Compute stripe readiness (strict boolean)
+                    const stripeReady = !!stripeElementMounted;
+                    
+                    const gates = {
+                      hasSpeculativeTx: hasTxId,
+                      stripeReady: stripeReady,                 // 👈 simplified
+                      paymentElementComplete: !!paymentElementComplete,
+                      formValid: formValid,
+                      notSubmitting: !submitting,
+                      notSpeculating: !speculativeInProgress, // ✅ use normalized name
+                    };
+                    return !!Object.entries(gates).find(([, ok]) => !ok)?.[0];
                   })()}
                   askShippingDetails={askShippingDetails}
                   showPickUplocation={orderData?.deliveryMethod === 'pickup'}
@@ -1532,21 +963,6 @@ const CheckoutPageWithPayment = props => {
                   isBooking={isBookingProcessAlias(transactionProcessAlias)}
                   isFuzzyLocation={config.maps.fuzzy.enabled}
                 />
-                    </Elements>
-                  ) : (
-                    <div style={{ 
-                      padding: '16px', 
-                      marginBottom: '16px', 
-                      backgroundColor: '#f0f4f8', 
-                      borderRadius: '4px',
-                      textAlign: 'center'
-                    }}>
-                      <p style={{ margin: 0, color: '#4A5568' }}>
-                        Setting up secure payment…
-                      </p>
-                    </div>
-                  );
-                })()}
               </>
             ) : null}
           </section>
@@ -1569,7 +985,4 @@ const CheckoutPageWithPayment = props => {
   );
 };
 
-// Export both named and default (loadInitialDataForStripePayments is already exported above at line 255)
-export { CheckoutPageWithPayment };
 export default CheckoutPageWithPayment;
-

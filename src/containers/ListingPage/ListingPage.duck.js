@@ -5,6 +5,7 @@ import { storableError } from '../../util/errors';
 import { addMarketplaceEntities } from '../../ducks/marketplaceData.duck';
 import { transactionLineItems } from '../../util/api';
 import * as log from '../../util/log';
+import { toUuidString } from '../../util/id';
 import { denormalisedResponseEntities } from '../../util/data';
 import {
   bookingTimeUnits,
@@ -12,6 +13,7 @@ import {
   getStartOf,
   monthIdString,
   stringifyDateToISO8601,
+  monthBoundsUTCInTZ,
 } from '../../util/dates';
 import {
   hasPermissionToInitiateTransactions,
@@ -27,6 +29,25 @@ import { fetchCurrentUser, fetchCurrentUserHasOrdersSuccess } from '../../ducks/
 
 const { UUID } = sdkTypes;
 const MINUTE_IN_MS = 1000 * 60;
+
+// Flex timeslot query window constraints
+const DAY = 24 * 60 * 60 * 1000;
+const MAX_RANGE_DAYS = 90;
+
+const clampToFlexWindow = (startUTC, endUTC) => {
+  const now = new Date();
+
+  // Flex: start >= now - 1 day
+  const minStart = new Date(now.getTime() - DAY);
+  const start = startUTC < minStart ? minStart : startUTC;
+
+  // Flex: end <= start + 90 days AND <= now + 366 days
+  const maxEndByStart = new Date(start.getTime() + MAX_RANGE_DAYS * DAY);
+  const maxEndByNow = new Date(now.getTime() + 366 * DAY);
+  const end = new Date(Math.min(endUTC.getTime(), maxEndByStart.getTime(), maxEndByNow.getTime()));
+
+  return { start, end };
+};
 
 // Day-based time slots queries are cached for 1 minute.
 const removeOutdatedDateData = timeSlotsForDate => {
@@ -93,6 +114,8 @@ const initialState = {
     // },
   },
   lineItems: null,
+  breakdownData: null,
+  bookingDates: null,
   fetchLineItemsInProgress: false,
   fetchLineItemsError: null,
   sendInquiryInProgress: false,
@@ -195,11 +218,10 @@ const listingPageReducer = (state = initialState, action = {}) => {
     case FETCH_LINE_ITEMS_REQUEST:
       return { ...state, fetchLineItemsInProgress: true, fetchLineItemsError: null };
     case FETCH_LINE_ITEMS_SUCCESS:
-      // ✅ FIX: Store breakdownData and bookingDates from payload for rendering
       return { 
         ...state, 
         fetchLineItemsInProgress: false, 
-        lineItems: payload.lineItems || payload,
+        lineItems: payload.lineItems,
         breakdownData: payload.breakdownData,
         bookingDates: payload.bookingDates,
       };
@@ -275,9 +297,13 @@ export const fetchTimeSlotsForDateError = (dateId, error) => ({
 });
 
 export const fetchLineItemsRequest = () => ({ type: FETCH_LINE_ITEMS_REQUEST });
-export const fetchLineItemsSuccess = lineItems => ({
+export const fetchLineItemsSuccess = (lineItems, breakdownData, bookingDates) => ({
   type: FETCH_LINE_ITEMS_SUCCESS,
-  payload: lineItems,
+  payload: {
+    lineItems,
+    breakdownData,
+    bookingDates,
+  },
 });
 export const fetchLineItemsError = error => ({
   type: FETCH_LINE_ITEMS_ERROR,
@@ -388,28 +414,47 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
 ) => {
   const { extraQueryParams = null, useFetchTimeSlotsForDate = false } = options || {};
 
-  // The maximum pagination page size for timeSlots is 500
-  const extraParams = extraQueryParams || {
-    perPage: 500,
+  // Ensure listingId is a string UUID
+  const listingIdStr = typeof listingId === 'object' && listingId.uuid ? listingId.uuid : listingId;
+
+  // Convert start and end to Date objects for clamping
+  const startUTC = typeof start === 'string' ? new Date(start) : start;
+  const endUTC = typeof end === 'string' ? new Date(end) : end;
+
+  // Use proper TZ midnight for month boundaries (if we have a month date)
+  let monthStartUTC = startUTC;
+  let monthEndUTC = endUTC;
+  
+  // If we're dealing with month boundaries, use TZ helper
+  if (timeZone && startUTC.getDate() === 1 && endUTC.getDate() === 1) {
+    const monthBounds = monthBoundsUTCInTZ(startUTC, timeZone);
+    monthStartUTC = monthBounds.start;
+    monthEndUTC = monthBounds.end;
+  }
+
+  // Apply Flex window clamping
+  const { start: clampedStart, end: clampedEnd } = clampToFlexWindow(monthStartUTC, monthEndUTC);
+
+  // Safe params guard - only pass SDK's camelCase keys
+  const safeParams = {
+    listingId: listingIdStr,
+    start: clampedStart,      // Date object
+    end: clampedEnd,         // Date object
+    perPage: 100,
     page: 1,
   };
-
-  // Ensure listingId is a string UUID
-  const listing_id = typeof listingId === 'object' && listingId.uuid ? listingId.uuid : listingId;
-
-  // Ensure start and end are ISO8601 strings
-  const startISO = typeof start === 'string' ? start : start?.toISOString();
-  const endISO = typeof end === 'string' ? end : end?.toISOString();
-
-  const params = { listing_id, start: startISO, end: endISO, ...extraParams };
+  // Never spread anything else in here
 
   // Debug logging for time slot API call
-  console.log('📤 [ListingPage.duck] Time slot API call params:', {
-    listing_id,
-    start: startISO,
-    end: endISO,
-    timeZone,
-    extraParams,
+  console.log('📤 [ListingPage.duck] Flex timeslots params:', {
+    listingId: listingIdStr,
+    start: clampedStart.toISOString(),
+    end: clampedEnd.toISOString(),
+    perPage: 100,
+    page: 1,
+    originalStart: startUTC.toISOString(),
+    originalEnd: endUTC.toISOString(),
+    clamped: true,
   });
 
   if (useFetchTimeSlotsForDate) {
@@ -422,7 +467,7 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
     }
 
     dispatch(fetchTimeSlotsForDateRequest(dateId));
-    return dispatch(timeSlotsRequest(params))
+    return dispatch(timeSlotsRequest(safeParams))
       .then(timeSlots => {
         dispatch(fetchTimeSlotsForDateSuccess(dateId, timeSlots));
         return timeSlots;
@@ -434,15 +479,18 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
   } else {
     const monthId = monthIdString(start, timeZone);
     dispatch(fetchMonthlyTimeSlotsRequest(monthId));
-    return dispatch(timeSlotsRequest(params))
-      .then(timeSlots => {
+    
+    // Use SDK directly with safe params
+    return sdk.timeslots.query(safeParams)
+      .then(response => {
+        const timeSlots = denormalisedResponseEntities(response);
+        
         // Debug logging for returned time slots
-        console.log('📆 [ListingPage.duck] Time slots returned:', {
+        console.log('📆 [ListingPage.duck] Time slots fetched:', {
           monthId,
-          timeSlotsCount: timeSlots?.length || 0,
-          firstSlotDate: timeSlots?.[0]?.attributes?.start,
-          lastSlotDate: timeSlots?.[timeSlots.length - 1]?.attributes?.start,
-          timeSlots: timeSlots?.slice(0, 3), // Log first 3 slots for debugging
+          count: timeSlots?.length || 0,
+          first: timeSlots?.[0]?.attributes?.start,
+          last: timeSlots?.[timeSlots.length - 1]?.attributes?.end,
         });
         
         dispatch(fetchMonthlyTimeSlotsSuccess(monthId, timeSlots));
@@ -452,7 +500,7 @@ export const fetchTimeSlots = (listingId, start, end, timeZone, options) => (
         console.error('❌ [ListingPage.duck] Time slot fetch error:', {
           monthId,
           error: e.message,
-          params,
+          safeParams,
         });
         dispatch(fetchMonthlyTimeSlotsError(monthId, storableError(e)));
         return [];
@@ -643,52 +691,35 @@ const fetchMonthlyTimeSlots = (dispatch, listing) => {
   return Promise.all([]);
 };
 
-export const fetchTransactionLineItems = ({ orderData, listingId, isOwnListing }) => dispatch => {
+export const fetchTransactionLineItems = (params) => async (dispatch, getState, sdk) => {
+  const { listingId, orderData, isOwnListing } = params;
+
+  const normalizedListingId = toUuidString(listingId);
+  console.log('[lineItems] outgoing listingId:', listingId, '→', normalizedListingId);
+
+  if (!normalizedListingId) {
+    // surface a user-visible error if needed
+    return dispatch(fetchLineItemsError(new Error('Invalid listingId')));
+  }
+
   dispatch(fetchLineItemsRequest());
-  transactionLineItems({ orderData, listingId, isOwnListing })
-    .then(response => {
-      // ✅ FIX: Handle both old format { data: [...] } and new format { data: { lineItems, breakdownData, bookingDates } }
-      const data = response?.data;
-      
-      if (!data) {
-        console.error('[fetchLineItems] response.data is undefined', response);
-        throw new Error('Line items response is empty');
-      }
-      
-      // Support both:
-      //  A) New object shape: { lineItems, breakdownData, bookingDates }
-      //  B) Legacy array shape: [...]
-      let payload;
-      if (Array.isArray(data)) {
-        // Legacy format: data is array directly
-        payload = { 
-          lineItems: data,
-          breakdownData: undefined,
-          bookingDates: undefined,
-        };
-      } else if (data.lineItems) {
-        // New format: data is object with lineItems property
-        payload = {
-          lineItems: data.lineItems || [],
-          breakdownData: data.breakdownData,
-          bookingDates: data.bookingDates,
-        };
-      } else {
-        // Unexpected format - log and try to recover
-        console.warn('[fetchLineItems] Unexpected data format:', data);
-        payload = { 
-          lineItems: [],
-          breakdownData: undefined,
-          bookingDates: undefined,
-        };
-      }
-      
-      dispatch(fetchLineItemsSuccess(payload));
+  
+  return transactionLineItems({
+    listingId: normalizedListingId,   // <-- STRING
+    orderData,
+    isOwnListing,
+  })
+    .then(result => {
+      // result is the JS object from step 1 (deserialized)
+      const { lineItems, breakdownData, bookingDates } = result;
+      console.log('[duck] storing lineItems:', Array.isArray(result.lineItems), result.lineItems);
+      console.log('[duck] lineItems fetched:', {count: result.lineItems?.length, result});
+      dispatch(fetchLineItemsSuccess(lineItems, breakdownData, bookingDates));
     })
     .catch(e => {
       dispatch(fetchLineItemsError(storableError(e)));
       log.error(e, 'fetching-line-items-failed', {
-        listingId: listingId.uuid,
+        listingId: normalizedListingId,
         orderData,
       });
     });
@@ -704,7 +735,12 @@ export const loadData = (params, search, config) => (dispatch, getState, sdk) =>
       : null;
 
   // Clear old line-items
-  dispatch(setInitialValues({ lineItems: null, inquiryModalOpenForListingId }));
+  dispatch(setInitialValues({ 
+    lineItems: null, 
+    breakdownData: null, 
+    bookingDates: null, 
+    inquiryModalOpenForListingId 
+  }));
 
   const ownListingVariants = [LISTING_PAGE_DRAFT_VARIANT, LISTING_PAGE_PENDING_APPROVAL_VARIANT];
   if (ownListingVariants.includes(params.variant)) {

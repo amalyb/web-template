@@ -54,21 +54,6 @@ export const updatedEntities = (oldEntities, apiResponse, sanitizeConfig = {}) =
     hasAvailabilityPlan: !!data?.attributes?.availabilityPlan
   });
 
-  // --- DIAGNOSTIC PROBE: Track transaction protectedData through normalization ---
-  if (process.env.NODE_ENV !== 'production') {
-    try {
-      const items = Array.isArray(data) ? data : (data ? [data] : []);
-      items.forEach(ent => {
-        if (ent?.type === 'transaction') {
-          const pd = ent?.attributes?.protectedData;
-          console.log('[data.js][TX] protectedData keys =>', pd ? Object.keys(pd) : null);
-        }
-      });
-    } catch (e) {
-      console.log('[data.js][TX] probe error', e?.message);
-    }
-  }
-
   const newEntities = objects.reduce((entities, curr) => {
     if (!curr || !curr.id || !curr.type) {
       console.warn('⚠️ Skipping invalid entity in updatedEntities:', curr);

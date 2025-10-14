@@ -4,7 +4,7 @@
 
 ### Asset URL Policy
 
-**Always use relative URLs for assets served from the same host:**
+**Web App Assets: Always use relative URLs for assets served from the same host**
 
 ✅ **Correct (relative paths):**
 ```html
@@ -17,6 +17,21 @@
 ```html
 <script src="https://web-template-1.onrender.com/static/scripts/mapbox/mapbox-sdk.min.js"></script>
 <link rel="manifest" href="https://sherbrt-test.onrender.com/site.webmanifest">
+```
+
+**SMS/Email Links: Must use absolute URLs (phones/email clients can't resolve relative paths)**
+
+✅ **Correct (absolute URLs for outbound messages):**
+```javascript
+const base = process.env.ROOT_URL || `${req.protocol}://${req.get('host')}`;
+const qrLink = `${base}/api/qr/${txId}`;
+const inboxLink = `${base}/inbox/orders`;
+```
+
+❌ **Incorrect (relative paths in SMS/email):**
+```javascript
+const qrLink = `/api/qr/${txId}`;        // Won't work in SMS
+const inboxLink = `/inbox/orders`;        // Won't work in email
 ```
 
 ### URL Audit Script

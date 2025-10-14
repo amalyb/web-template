@@ -6,6 +6,7 @@ import {
   LINE_ITEM_DISCOUNT_25,
   LINE_ITEM_DISCOUNT_30,
   LINE_ITEM_DISCOUNT_40,
+  LINE_ITEM_DISCOUNT_50,
   propTypes,
 } from '../../util/types';
 
@@ -29,7 +30,8 @@ const LineItemDiscountMaybe = props => {
       (item.code === LINE_ITEM_DISCOUNT ||
         item.code === LINE_ITEM_DISCOUNT_25 ||
         item.code === LINE_ITEM_DISCOUNT_30 ||
-        item.code === LINE_ITEM_DISCOUNT_40) &&
+        item.code === LINE_ITEM_DISCOUNT_40 ||
+        item.code === LINE_ITEM_DISCOUNT_50) &&
       !item.reversal
   );
 
@@ -45,6 +47,8 @@ const LineItemDiscountMaybe = props => {
     discountPercent = 30;
   } else if (discountLineItem.code === LINE_ITEM_DISCOUNT_40) {
     discountPercent = 40;
+  } else if (discountLineItem.code === LINE_ITEM_DISCOUNT_50) {
+    discountPercent = 50;
   } else if (discountLineItem.description) {
     // Try to extract percentage from description (e.g. "25% off")
     const match = discountLineItem.description.match(/(\d+)% off/);

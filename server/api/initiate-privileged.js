@@ -11,50 +11,9 @@ const { maskPhone } = require('../api-util/phone');
 const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
 
-// ✅ Safe Stripe initializer (lazy + memoized)
-const Stripe = require('stripe');
-let _stripeSingleton = null;
-
-/**
- * Get Stripe instance with lazy initialization.
- * Returns null if STRIPE_SECRET_KEY is not configured (no crash).
- */
-function getStripe() {
-  // Accept multiple env var names for flexibility
-  const key =
-    process.env.STRIPE_SECRET_KEY ||
-    process.env.STRIPE_LIVE_SECRET_KEY ||
-    process.env.STRIPE_TEST_SECRET_KEY ||
-    null;
-
-  if (!key) {
-    if (process.env.NODE_ENV !== 'test') {
-      console.warn('[ENV CHECK][Stripe] Missing STRIPE_SECRET_KEY. Payments disabled.');
-    }
-    return null;
-  }
-
-  // Return cached instance if already initialized
-  if (_stripeSingleton) return _stripeSingleton;
-
-  try {
-    _stripeSingleton = new Stripe(key, { apiVersion: '2024-06-20' });
-    const mode = key.startsWith('sk_live_') ? 'LIVE' : key.startsWith('sk_test_') ? 'TEST' : 'UNKNOWN';
-    console.log('[ENV CHECK][Stripe] Initialized successfully. Mode:', mode, `(${key.substring(0, 8)}...)`);
-    return _stripeSingleton;
-  } catch (err) {
-    console.error('[Stripe] Failed to initialize Stripe SDK:', err?.message || err);
-    return null;
-  }
-}
-
 // Helper to normalize listingId to string
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
-
-// Helper to validate Stripe client_secret format (strict)
-const looksLikeStripeSecret = s =>
-  typeof s === 'string' && /^pi_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*_secret_[A-Za-z0-9]+$/.test(s);
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -68,16 +27,6 @@ try {
 
 console.log('🚦 initiate-privileged endpoint is wired up');
 
-// Log Stripe status (but don't initialize yet - that happens on first request)
-const stripeKeyPrefix = process.env.STRIPE_SECRET_KEY?.substring(0, 8) || 'not-set';
-if (stripeKeyPrefix !== 'not-set') {
-  const mode = stripeKeyPrefix.startsWith('sk_live') ? 'LIVE' : stripeKeyPrefix.startsWith('sk_test') ? 'TEST' : 'UNKNOWN';
-  console.log('[ENV CHECK][Stripe] Key found. Mode:', mode, `(${stripeKeyPrefix}...)`);
-} else {
-  console.warn('[ENV CHECK][Stripe] No key found. Payments will return 503.');
-}
-console.log('[ENV CHECK] Publishable key (first 12):', process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY?.substring(0, 12) || 'not-set');
-
 // Helper function to build carrier-friendly lender SMS message
 function buildLenderMsg(tx, listingTitle) {
   // Carrier-friendly: short, one link, no emojis
@@ -87,9 +36,6 @@ function buildLenderMsg(tx, listingTitle) {
 }
 
 module.exports = (req, res) => {
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('[SERVER_PROXY] /api/initiate-privileged hit');
-  }
   console.log('🚀 initiate-privileged endpoint HIT!');
   console.log('📋 Request method:', req.method);
   console.log('📋 Request URL:', req.url);
@@ -109,14 +55,6 @@ module.exports = (req, res) => {
     console.log('[initiate] forwarding PD keys:', Object.keys(protectedData));
     console.log('[initiate] customerStreet:', protectedData.customerStreet);
     console.log('[initiate] customerZip:', protectedData.customerZip);
-    // Presence check (no PII values)
-    console.log('[initiate] presence check', {
-      hasStreet: !!protectedData.customerStreet,
-      hasZip: !!protectedData.customerZip,
-      hasPhone: !!protectedData.customerPhone,
-      hasEmail: !!protectedData.customerEmail,
-      hasName: !!protectedData.customerName,
-    });
   } catch (_) {
     console.log('[initiate] forwarding PD keys: (unavailable)');
   }
@@ -179,7 +117,7 @@ module.exports = (req, res) => {
       );
       
       // Add booking start date to protectedData as durable fallback
-      const startRaw = 
+      const startRaw =
         params?.booking?.attributes?.start ||
         params?.bookingStart ||
         bodyParams?.params?.protectedData?.customerBookingStartISO ||
@@ -234,139 +172,11 @@ module.exports = (req, res) => {
       console.log('[initiate] merged finalProtectedData customerStreet:', finalProtectedData.customerStreet);
       console.log('[initiate] merged finalProtectedData customerZip:', finalProtectedData.customerZip);
       
-      // ✅ CRITICAL: Create/update Stripe PaymentIntent with real client secret
-      let updatedProtectedData = finalProtectedData;
-      
-      // Only create PaymentIntent for request-payment transitions
-      if (bodyParams?.transition === 'transition/request-payment' && lineItems && lineItems.length > 0) {
-        // Get Stripe instance (lazy init, returns null if not configured)
-        const stripe = getStripe();
-        
-        if (!stripe) {
-          // Graceful degradation: Stripe not configured
-          console.warn('[PI] Stripe not configured. Returning 503 for payment request.');
-          return res.status(503).json({
-            type: 'error',
-            code: 'payments-not-configured',
-            message: 'Stripe is not configured on this server. Please contact support.',
-          });
-        }
-        
-        try {
-          // Calculate payin total from lineItems
-          const payinLineItems = lineItems.filter(item => 
-            item.includeFor && item.includeFor.includes('customer')
-          );
-          
-          const payinTotal = payinLineItems.reduce((sum, item) => {
-            const itemTotal = item.unitPrice.amount * (item.quantity || 1);
-            return sum + itemTotal;
-          }, 0);
-          
-          // Get currency from first line item
-          const currency = lineItems[0]?.unitPrice?.currency?.toLowerCase() || 'usd';
-          
-          console.log('[PI] Calculated payment:', { amount: payinTotal, currency });
-          
-          // 🔒 SECURITY: Strip any client-provided secret (never trust client data)
-          const incomingPD = finalProtectedData || {};
-          const pd = JSON.parse(JSON.stringify(incomingPD)); // deep clone
-          
-          if (pd?.stripePaymentIntents?.default?.stripePaymentIntentClientSecret) {
-            console.log('[PI] Stripping client-provided secret (untrusted)');
-            delete pd.stripePaymentIntents.default.stripePaymentIntentClientSecret;
-          }
-          
-          // Get existing PI id (safe), but NEVER trust client-provided secret
-          const existingId = pd?.stripePaymentIntents?.default?.id || null;
-          
-          let pi, secretFromStripe;
-          if (existingId && /^pi_/.test(existingId)) {
-            // Update existing PaymentIntent
-            console.log('[PI] Updating existing PaymentIntent:', existingId.slice(0, 10) + '...');
-            pi = await stripe.paymentIntents.update(existingId, { 
-              amount: payinTotal, 
-              currency,
-              automatic_payment_methods: { enabled: true },
-              metadata: {
-                context: 'speculative',
-              },
-            });
-            secretFromStripe = pi.client_secret || null;
-            
-            // If Stripe didn't return secret on update, retrieve it
-            if (!secretFromStripe) {
-              console.log('[PI] Secret not returned on update, retrieving PI...');
-              const retrieved = await stripe.paymentIntents.retrieve(existingId);
-              secretFromStripe = retrieved.client_secret || null;
-            }
-          } else {
-            // Create fresh PaymentIntent
-            console.log('[PI] Creating new PaymentIntent');
-            pi = await stripe.paymentIntents.create({
-              amount: payinTotal,
-              currency,
-              automatic_payment_methods: { enabled: true },
-              metadata: {
-                context: 'speculative',
-              },
-            });
-            secretFromStripe = pi.client_secret || null;
-          }
-          
-          // Only use server-obtained secret (never trust client)
-          const secret = secretFromStripe;
-          
-          // Safe diagnostic logging
-          console.log('[PI]', { 
-            id: pi.id, 
-            status: pi.status, 
-            hasSecretFromStripe: !!secretFromStripe, 
-            willPersistSecret: looksLikeStripeSecret(secret), 
-            secretHead: secret ? secret.slice(0, 5) : null 
-          });
-          
-          // CRITICAL GUARD: Do NOT proceed if we don't have a valid Stripe client secret
-          if (!looksLikeStripeSecret(secret)) {
-            console.error('[PI] FATAL: missing/invalid client_secret for PI %s', pi?.id);
-            console.error('[PI] secretFromStripe:', secretFromStripe ? secretFromStripe.slice(0, 10) + '...' : null);
-            return res.status(500).json({
-              type: 'error',
-              code: 'stripe-client-secret-missing',
-              message: 'Could not obtain a valid Stripe client secret.',
-            });
-          }
-          
-          // ✅ Overwrite protectedData with server values (never merge in client secret)
-          pd.stripePaymentIntents = {
-            ...(pd.stripePaymentIntents || {}),
-            default: {
-              id: pi.id, // Stripe PI id ("pi_...")
-              stripePaymentIntentClientSecret: secret, // must be "pi_..._secret_..."
-            },
-          };
-          
-          // Final sanity log of what we're persisting
-          console.log('[SPEC_OUT] pd.stripePaymentIntents.default', { 
-            id: pd.stripePaymentIntents.default.id, 
-            secretLike: looksLikeStripeSecret(pd.stripePaymentIntents.default.stripePaymentIntentClientSecret) 
-          });
-          
-          // ✅ from now on, only use `pd` as the protectedData to persist/return
-          updatedProtectedData = pd;
-          
-        } catch (stripeError) {
-          console.error('[PI] Stripe PaymentIntent creation/update failed:', stripeError.message);
-          // Continue with transaction even if Stripe fails, but log the error
-          // You may want to throw here depending on your business logic
-        }
-      }
-      
       const body = {
         ...bodyParams,
         params: {
           ...params,
-          protectedData: updatedProtectedData, // use PD with real Stripe secret
+          protectedData: finalProtectedData, // use safely extracted PD
           lineItems,
         },
       };
@@ -381,47 +191,6 @@ module.exports = (req, res) => {
 
       // 🔧 FIXED: Use fresh transaction data from the API response
       const tx = apiResponse?.data?.data;  // Flex SDK shape
-      
-      // 🔐 PROD-SAFE: Log PI tails for request-payment speculative calls
-      if (isSpeculative && bodyParams?.transition === 'transition/request-payment') {
-        const pd = tx?.attributes?.protectedData?.stripePaymentIntents?.default || {};
-        const idTail = (pd.id || '').slice(0,3) + '...' + (pd.id || '').slice(-5);
-        const secretTail = (pd.stripePaymentIntentClientSecret || '').slice(0,3) + '...' + (pd.stripePaymentIntentClientSecret || '').slice(-5);
-        const secretPrefix = (pd.stripePaymentIntentClientSecret || '').substring(0, 3);
-        console.log('[PI_TAILS] idTail=%s secretTail=%s looksLikePI=%s looksLikeSecret=%s secretPrefix=%s', 
-          idTail, 
-          secretTail, 
-          /^pi_/.test(pd.id || ''), 
-          /_secret_/.test(pd.stripePaymentIntentClientSecret || ''),
-          secretPrefix
-        );
-      }
-      
-      // 🔐 PROD HOTFIX: Diagnose PaymentIntent data from Flex
-      if (process.env.NODE_ENV !== 'production') {
-        const pd = tx?.attributes?.protectedData || {};
-        const nested = pd?.stripePaymentIntents?.default || {};
-        const piId = nested?.id || pd?.id;
-        const piSecret = nested?.stripePaymentIntentClientSecret || pd?.stripePaymentIntentClientSecret;
-        
-        const looksLikePI = typeof piId === 'string' && /^pi_/.test(piId);
-        const secretLooksRight = typeof piSecret === 'string' && /_secret_/.test(piSecret);
-        
-        console.log('[SERVER_PROXY] PI data from Flex:', {
-          isSpeculative,
-          txId: tx?.id?.uuid || tx?.id,
-          piId: piId ? (looksLikePI ? piId.slice(0, 10) + '...' : piId) : null,
-          piSecret: piSecret ? (secretLooksRight ? '***' + piSecret.slice(-10) : piSecret) : null,
-          looksLikePI,
-          secretLooksRight,
-          hasNested: !!nested?.stripePaymentIntentClientSecret,
-          hasFlat: !!pd?.stripePaymentIntentClientSecret,
-        });
-        
-        if (!looksLikePI || !secretLooksRight) {
-          console.warn('[SERVER_PROXY] ⚠️ PaymentIntent data may be invalid! Expected pi_* id and secret with _secret_');
-        }
-      }
       
       // STEP 4: Add a forced test log
       console.log('🧪 Inside initiate-privileged — beginning SMS evaluation');

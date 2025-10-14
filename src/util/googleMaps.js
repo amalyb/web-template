@@ -2,6 +2,7 @@ import { types as sdkTypes } from '../util/sdkLoader';
 import { IS_DEV } from './envFlags';
 
 const { LatLng: SDKLatLng, LatLngBounds: SDKLatLngBounds } = sdkTypes;
+import { IS_DEV } from './envFlags';
 
 const isDev = IS_DEV;
 
