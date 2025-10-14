@@ -69,6 +69,22 @@ const mapToCustomerProtectedData = (values) => {
 };
 
 /**
+ * Summarize Stripe error for logging and user display
+ * Prevents logging massive nested objects
+ */
+const summarizeStripeError = (err) => {
+  if (!err) return { message: 'Unknown error' };
+  const { message, code, type, decline_code, payment_intent } = err;
+  return { 
+    message, 
+    code, 
+    type, 
+    decline_code, 
+    payment_intent_id: payment_intent?.id 
+  };
+};
+
+/**
  * Translate a Stripe API error object.
  *
  * To keep up with possible keys from the Stripe API, see:
@@ -309,9 +325,12 @@ class StripePaymentForm extends Component {
     this.handleSubmit = this.handleSubmit.bind(this);
     this.paymentForm = this.paymentForm.bind(this);
     this.initializeStripeElement = this.initializeStripeElement.bind(this);
+    this.initializePaymentElement = this.initializePaymentElement.bind(this);
     this.handleStripeElementRef = this.handleStripeElementRef.bind(this);
     this.changePaymentMethod = this.changePaymentMethod.bind(this);
     this.cardContainer = null;
+    this.paymentElement = null;
+    this.elements = null;
     this.reportedMounted = false;
   }
 
@@ -321,14 +340,52 @@ class StripePaymentForm extends Component {
       const publishableKey = this.props.stripePublishableKey;
       const {
         onStripeInitialized,
+        onElementsCreated,
         hasHandledCardPayment,
         defaultPaymentMethod,
         loadingData,
+        usePaymentElement,
+        clientSecret,
       } = this.props;
       this.stripe = window.Stripe(publishableKey);
       onStripeInitialized(this.stripe);
 
-      if (!(hasHandledCardPayment || defaultPaymentMethod || loadingData)) {
+      // Skip element initialization if payment is already handled or data is loading
+      if (hasHandledCardPayment || defaultPaymentMethod || loadingData) {
+        console.log('[Stripe] Skipping element initialization:', { 
+          hasHandledCardPayment, 
+          defaultPaymentMethod: !!defaultPaymentMethod, 
+          loadingData 
+        });
+        return;
+      }
+
+      // If using PaymentElement and we have a clientSecret, create Elements with it
+      if (usePaymentElement) {
+        if (!clientSecret) {
+          console.warn('[Stripe] PaymentElement enabled but no clientSecret provided');
+          return;
+        }
+        
+        console.log('[Stripe] Creating Elements with clientSecret for PaymentElement');
+        this.elements = this.stripe.elements({ 
+          clientSecret,
+          appearance: {
+            theme: 'stripe',
+            variables: {
+              colorPrimary: '#4A4A4A',
+            }
+          }
+        });
+        
+        if (onElementsCreated) {
+          onElementsCreated(this.elements);
+        }
+
+        this.initializePaymentElement();
+      } else {
+        // Use CardElement for legacy flow
+        console.log('[Stripe] Initializing CardElement (legacy flow)');
         this.initializeStripeElement();
       }
     }
@@ -339,6 +396,11 @@ class StripePaymentForm extends Component {
       this.card.removeEventListener('change', this.handleCardValueChange);
       this.card.unmount();
       this.card = null;
+    }
+    
+    if (this.paymentElement) {
+      this.paymentElement.unmount();
+      this.paymentElement = null;
     }
     
     // Notify parent that Stripe element is unmounted and reset guard
@@ -383,6 +445,38 @@ class StripePaymentForm extends Component {
     }
   }
 
+  initializePaymentElement(element) {
+    console.log('[Stripe] Initializing PaymentElement');
+    if (!this.elements) {
+      console.warn('[Stripe] Elements instance not available for PaymentElement');
+      return;
+    }
+
+    if (!this.paymentElement) {
+      this.paymentElement = this.elements.create('payment', {
+        layout: 'tabs',
+      });
+      
+      // Ensure the target element exists before mounting
+      const targetElement = element || this.cardContainer;
+      if (!targetElement) {
+        console.warn('[Stripe] No target element available for mounting PaymentElement');
+        return;
+      }
+      
+      this.paymentElement.mount(targetElement);
+      this.paymentElement.on('change', this.handleCardValueChange);
+      
+      // Notify parent that Stripe element is mounted (only once)
+      if (!this.reportedMounted) {
+        this.reportedMounted = true;
+        this.props.onStripeElementMounted?.(true);
+      }
+      
+      console.log('[Stripe] PaymentElement mounted successfully');
+    }
+  }
+
   updateBillingDetailsToMatchShippingAddress(shouldFill) {
     // Note: This method is deprecated in the new implementation
     // Billing/shipping synchronization is handled in the parent form
@@ -402,7 +496,12 @@ class StripePaymentForm extends Component {
   handleStripeElementRef(el) {
     this.cardContainer = el;
     if (this.stripe && el) {
-      this.initializeStripeElement(el);
+      const { usePaymentElement, clientSecret } = this.props;
+      if (usePaymentElement && clientSecret && this.elements) {
+        this.initializePaymentElement(el);
+      } else {
+        this.initializeStripeElement(el);
+      }
     }
   }
 
