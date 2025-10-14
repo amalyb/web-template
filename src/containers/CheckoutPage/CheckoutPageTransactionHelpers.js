@@ -4,6 +4,7 @@ import { ensureStripeCustomer, ensureTransaction } from '../../util/data';
 import { minutesBetween } from '../../util/dates';
 import { formatMoney } from '../../util/currency';
 import { storeData } from './CheckoutPageSessionHelpers';
+import { USE_PAYMENT_ELEMENT } from '../../util/envFlags';
 
 /**
  * Extract relevant transaction type data from listing type
@@ -144,23 +145,23 @@ export const hasDefaultPaymentMethod = (stripeCustomerFetched, currentUser) =>
  * @param {Object} process
  * @returns true if payment has expired.
  */
-export const hasPaymentExpired = (existingTransaction, txProcess, isClockInSync) => {
-  const state = txProcess.getState(existingTransaction);
-  return state === txProcess.states.PAYMENT_EXPIRED
+export const hasPaymentExpired = (existingTransaction, process, isClockInSync) => {
+  const state = process.getState(existingTransaction);
+  return state === process.states.PAYMENT_EXPIRED
     ? true
-    : state === txProcess.states.PENDING_PAYMENT && isClockInSync
+    : state === process.states.PENDING_PAYMENT && isClockInSync
     ? minutesBetween(existingTransaction.attributes.lastTransitionedAt, new Date()) >= 15
     : false;
 };
 
 /**
- * Check if the transaction has passed PENDING_PAYMENT state (assumes that txProcess has that state)
+ * Check if the transaction has passed PENDING_PAYMENT state (assumes that process has that state)
  * @param {Object} tx
- * @param {Object} txProcess
+ * @param {Object} process
  * @returns true if the transaction has passed that state
  */
-export const hasTransactionPassedPendingPayment = (tx, txProcess) => {
-  return txProcess.hasPassedState(txProcess.states.PENDING_PAYMENT, tx);
+export const hasTransactionPassedPendingPayment = (tx, process) => {
+  return process.hasPassedState(process.states.PENDING_PAYMENT, tx);
 };
 
 const persistTransaction = (order, pageData, storeData, setPageData, sessionStorageKey) => {
@@ -193,7 +194,7 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     onSendMessage,
     pageData,
     paymentIntent,
-    txProcess,
+    process,
     setPageData,
     sessionStorageKey,
     stripeCustomer,
@@ -215,10 +216,10 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     const hasPaymentIntents = storedTx.attributes.protectedData?.stripePaymentIntents;
 
     const requestTransition =
-      storedTx?.attributes?.lastTransition === txProcess.transitions.INQUIRE
-        ? txProcess.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
-        : txProcess.transitions.REQUEST_PAYMENT;
-    const isPrivileged = txProcess.isPrivileged(requestTransition);
+      storedTx?.attributes?.lastTransition === process.transitions.INQUIRE
+        ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+        : process.transitions.REQUEST_PAYMENT;
+    const isPrivileged = process.isPrivileged(requestTransition);
 
     // Add debug logging for transition
     console.log('🧾 Using transition for initiatePrivileged:', requestTransition);
@@ -266,27 +267,35 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       returnUrl 
     } = extraPaymentParams;
     
-    // Derive feature flag robustly (safe for all environments)
-    const USE_PAYMENT_ELEMENT_FLAG = 
-      typeof process !== 'undefined' && 
-      process.env && 
-      String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
-    
-    // If we're using PaymentElement, call the new confirmPayment API
-    if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement && elements) {
+    // Guard: Determine which payment flow to use
+    // If USE_PAYMENT_ELEMENT is true, we MUST use PaymentElement path
+    if (USE_PAYMENT_ELEMENT === true) {
       console.log('[checkout] Payment flow: PaymentElement');
+      
+      // Validate PaymentElement requirements
+      if (!elements) {
+        console.error('[stripe] PaymentElement flow selected but elements instance is missing');
+        return Promise.reject(new Error('Payment setup incomplete. Please refresh and try again.'));
+      }
+      
+      if (!stripePaymentIntentClientSecret) {
+        console.error('[stripe] PaymentElement flow selected but clientSecret is missing');
+        return Promise.reject(new Error('Payment initialization failed. Please try again.'));
+      }
+      
       console.log('[stripe] flow: PaymentElement/confirmPayment', {
         hasElements: !!elements,
         hasClientSecret: !!stripePaymentIntentClientSecret,
         orderId: order?.id?.uuid
       });
+      
       const params = {
         stripe,
         elements,
         stripePaymentIntentClientSecret,
         orderId: order?.id,
         billingDetails,
-        returnUrl,
+        returnUrl: returnUrl || undefined, // Use undefined to handle in-page
       };
 
       return hasPaymentIntentUserActionsDone
@@ -302,9 +311,10 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       orderId: order?.id?.uuid
     });
     
-    // Ensure card element exists for CardElement flow
+    // Guard: CardElement requires card instance (unless using saved card)
     if (!card && !isPaymentFlowUseSavedCard) {
-      throw new Error('Card element is required for CardElement payment flow');
+      console.error('[stripe] CardElement missing - cannot process payment');
+      return Promise.reject(new Error('Card information is required. Please refresh and try again.'));
     }
     
     const stripeElementMaybe = !isPaymentFlowUseSavedCard ? { card } : {};
@@ -342,7 +352,7 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     // Remember the created PaymentIntent for step 5
     createdPaymentIntent = fnParams.paymentIntent;
     const transactionId = fnParams.transactionId;
-    const transitionName = txProcess.transitions.CONFIRM_PAYMENT;
+    const transitionName = process.transitions.CONFIRM_PAYMENT;
     const isTransitionedAlready = storedTx?.attributes?.lastTransition === transitionName;
     const orderPromise = isTransitionedAlready
       ? Promise.resolve(storedTx)
