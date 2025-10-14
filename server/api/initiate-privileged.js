@@ -11,6 +11,9 @@ const { maskPhone } = require('../api-util/phone');
 const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
 
+// ✅ Initialize Stripe with secret key
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
 // Helper to normalize listingId to string
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
@@ -188,11 +191,88 @@ module.exports = (req, res) => {
       console.log('[initiate] merged finalProtectedData customerStreet:', finalProtectedData.customerStreet);
       console.log('[initiate] merged finalProtectedData customerZip:', finalProtectedData.customerZip);
       
+      // ✅ CRITICAL: Create/update Stripe PaymentIntent with real client secret
+      let updatedProtectedData = finalProtectedData;
+      
+      // Only create PaymentIntent for request-payment transitions
+      if (bodyParams?.transition === 'transition/request-payment' && lineItems && lineItems.length > 0) {
+        try {
+          // Calculate payin total from lineItems
+          const payinLineItems = lineItems.filter(item => 
+            item.includeFor && item.includeFor.includes('customer')
+          );
+          
+          const payinTotal = payinLineItems.reduce((sum, item) => {
+            const itemTotal = item.unitPrice.amount * (item.quantity || 1);
+            return sum + itemTotal;
+          }, 0);
+          
+          // Get currency from first line item
+          const currency = lineItems[0]?.unitPrice?.currency?.toLowerCase() || 'usd';
+          
+          console.log('[PI] Calculated payment:', { amount: payinTotal, currency });
+          
+          // Check if we already have a PaymentIntent ID in protectedData
+          const existingPiId = 
+            finalProtectedData?.stripePaymentIntents?.default?.stripePaymentIntentId;
+          
+          let intent;
+          if (existingPiId && /^pi_/.test(existingPiId)) {
+            // Update existing PaymentIntent
+            console.log('[PI] Updating existing PaymentIntent:', existingPiId.slice(0, 10) + '...');
+            intent = await stripe.paymentIntents.update(existingPiId, { 
+              amount: payinTotal, 
+              currency 
+            });
+          } else {
+            // Create new PaymentIntent
+            console.log('[PI] Creating new PaymentIntent');
+            intent = await stripe.paymentIntents.create({
+              amount: payinTotal,
+              currency,
+              automatic_payment_methods: { enabled: true },
+            });
+          }
+          
+          // ✅ Extract the real values we need
+          const paymentIntentId = intent.id;                 // MUST start with "pi_"
+          const clientSecret = intent.client_secret;         // MUST contain "_secret_"
+          
+          // 🔎 Sanity logs (safe tails)
+          console.log('[PI]', {
+            idTail: paymentIntentId?.slice(0, 3) + '...' + paymentIntentId?.slice(-4),
+            secretLooksRight:
+              typeof clientSecret === 'string' &&
+              clientSecret.startsWith('pi_') &&
+              clientSecret.includes('_secret_'),
+          });
+          
+          // ✅ MERGE into protectedData — DO NOT overwrite other keys
+          updatedProtectedData = {
+            ...finalProtectedData,
+            stripePaymentIntents: {
+              ...(finalProtectedData.stripePaymentIntents || {}),
+              default: {
+                stripePaymentIntentId: paymentIntentId,
+                stripePaymentIntentClientSecret: clientSecret, // << the real secret
+              },
+            },
+          };
+          
+          console.log('[PI] Successfully created/updated PaymentIntent and merged into protectedData');
+          
+        } catch (stripeError) {
+          console.error('[PI] Stripe PaymentIntent creation/update failed:', stripeError.message);
+          // Continue with transaction even if Stripe fails, but log the error
+          // You may want to throw here depending on your business logic
+        }
+      }
+      
       const body = {
         ...bodyParams,
         params: {
           ...params,
-          protectedData: finalProtectedData, // use safely extracted PD
+          protectedData: updatedProtectedData, // use PD with real Stripe secret
           lineItems,
         },
       };

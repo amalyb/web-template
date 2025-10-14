@@ -232,19 +232,20 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       const md = tx?.attributes?.metadata || {};
       const nested = pd?.stripePaymentIntents?.default || {};
 
-      // Try paths in priority order: flat legacy -> metadata -> nested default
+      // Try paths in priority order: nested default -> flat legacy -> metadata
+      // Prioritize nested since that's where server writes the real Stripe secret
       const maybeSecret =
+        nested?.stripePaymentIntentClientSecret ||
         pd?.stripePaymentIntentClientSecret ||
-        md?.stripePaymentIntentClientSecret ||
-        nested?.stripePaymentIntentClientSecret;
+        md?.stripePaymentIntentClientSecret;
 
       // Validate: must be a string AND look like a real Stripe secret
       const looksStripey = typeof maybeSecret === 'string' && (/_secret_/.test(maybeSecret) || /^pi_/.test(maybeSecret));
       
       // Determine which path was used (for diagnostics)
-      const pathUsed = pd?.stripePaymentIntentClientSecret ? 'protectedData.flat'
+      const pathUsed = nested?.stripePaymentIntentClientSecret ? 'protectedData.nested.default'
+                     : pd?.stripePaymentIntentClientSecret ? 'protectedData.flat'
                      : md?.stripePaymentIntentClientSecret ? 'metadata.flat'
-                     : nested?.stripePaymentIntentClientSecret ? 'protectedData.nested.default'
                      : 'none';
 
       // Dev-only diagnostics
