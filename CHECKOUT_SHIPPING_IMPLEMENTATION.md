@@ -10,27 +10,29 @@ Implemented conditional Shipping Address form with optional delivery phone featu
 #### Initial Values
 - Added shipping object with all required fields (name, line1, line2, city, state, postalCode, country)
 - Added `useDifferentPhone: false` and `phone: ''` to shipping initial values
-- Set `shippingSameAsBilling: true` as default
+- Set `shippingSameAsBilling: false` as default (shipping form shows by default)
 
 #### UI Implementation
-- Checkbox "Same as billing address" controls shipping form visibility
-- When **checked** (default): shipping form is hidden, billing values used at submit
-- When **unchecked**: full shipping address form appears with:
+- Checkbox "Same as billing address" controls shipping form visibility (boolean checkbox, no value prop)
+- When **unchecked** (default): shipping form is visible with full address fields
+- When **checked**: shipping form is hidden, billing values used at submit
+- Shipping form includes:
   - AddressForm component (name, line1, line2, city, state, postalCode, country)
-  - "Use different phone for delivery" checkbox
+  - "Use different phone for delivery" checkbox (boolean)
   - Conditional delivery phone field (appears when checkbox is checked)
 
 #### Validation
-- Validates only the active address (billing if same, shipping if different)
-- When shipping form is active:
+- Validates only the active address using `const same = !!values.shippingSameAsBilling`
+- When `same` is true (checkbox checked): validates billing address only
+- When `same` is false (checkbox unchecked): validates shipping address
   - Validates all required address fields (name, line1, city, state, postalCode)
   - Validates shipping.phone only when `useDifferentPhone` is true
   - Phone validation: 10 digits or +1 format (E.164)
 
 #### Submit Logic
-- Determines final address: `shippingSameAsBilling ? billing : shipping`
+- Determines final address: `const finalShipping = !!shippingSameAsBilling ? billing : shipping`
 - Phone priority logic:
-  1. `shipping.phone` (if `useDifferentPhone` is true and shipping address is used)
+  1. `shipping.phone` (if `!shippingSameAsBilling && useDifferentPhone` is true)
   2. `contactPhone` (fallback)
 - Normalizes phone to E.164 format before storing in protectedData
 - Maps values correctly:
@@ -85,15 +87,17 @@ User fills contact info (email, phone)
   ↓
 User fills billing address
   ↓
-"Same as billing address" checkbox:
-  - [CHECKED] → No shipping form, use billing values
-  - [UNCHECKED] → Show shipping form
+Shipping form visible by default (checkbox unchecked)
+  ↓
+"Same as billing address" checkbox (boolean):
+  - [UNCHECKED] (default) → Shipping form visible
                    ↓
                   User fills shipping address
                    ↓
-                  "Use different phone for delivery" checkbox:
+                  "Use different phone for delivery" checkbox (boolean):
                     - [UNCHECKED] → Use contact phone
                     - [CHECKED] → Show phone field, use this phone instead
+  - [CHECKED] → Hide shipping form, use billing values
   ↓
 Submit → protectedData with correct address and phone
 ```
