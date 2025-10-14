@@ -52,6 +52,11 @@ function getStripe() {
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
 
+// Helper to validate Stripe client_secret format
+function looksLikeStripeSecret(s) {
+  return typeof s === 'string' && s.startsWith('pi_') && s.includes('_secret_');
+}
+
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
 try {
@@ -264,40 +269,48 @@ module.exports = (req, res) => {
           
           console.log('[PI] Calculated payment:', { amount: payinTotal, currency });
           
-          // Check if we already have a PaymentIntent ID in protectedData
-          const existingPiId = 
-            finalProtectedData?.stripePaymentIntents?.default?.stripePaymentIntentId;
+          // Check if we already have a PaymentIntent ID in protectedData (for update vs create)
+          const piNode = finalProtectedData?.stripePaymentIntents?.default || {};
+          const existingPiId = piNode.id;
+          const existingClientSecret = piNode.stripePaymentIntentClientSecret;
           
-          let intent;
+          let paymentIntent;
           if (existingPiId && /^pi_/.test(existingPiId)) {
-            // Update existing PaymentIntent
+            // Update existing PaymentIntent to keep client_secret stable
             console.log('[PI] Updating existing PaymentIntent:', existingPiId.slice(0, 10) + '...');
-            intent = await stripe.paymentIntents.update(existingPiId, { 
+            paymentIntent = await stripe.paymentIntents.update(existingPiId, { 
               amount: payinTotal, 
-              currency 
+              currency,
+              automatic_payment_methods: { enabled: true },
+              metadata: {
+                context: 'speculative',
+              },
             });
           } else {
-            // Create new PaymentIntent
+            // Create fresh PaymentIntent
             console.log('[PI] Creating new PaymentIntent');
-            intent = await stripe.paymentIntents.create({
+            paymentIntent = await stripe.paymentIntents.create({
               amount: payinTotal,
               currency,
               automatic_payment_methods: { enabled: true },
+              metadata: {
+                context: 'speculative',
+              },
             });
           }
           
-          // ✅ Extract the real values we need
-          const paymentIntentId = intent.id;                 // MUST start with "pi_"
-          const clientSecret = intent.client_secret;         // MUST contain "_secret_"
+          // IMPORTANT: client_secret is only returned on create and some updates requiring a new secret.
+          // If Stripe didn't return client_secret here and we have a previous valid one, reuse it.
+          const clientSecretFromStripe = paymentIntent.client_secret;
+          const clientSecret =
+            looksLikeStripeSecret(clientSecretFromStripe)
+              ? clientSecretFromStripe
+              : (looksLikeStripeSecret(existingClientSecret) ? existingClientSecret : null);
           
-          // 🔎 Sanity logs (safe tails)
-          console.log('[PI]', {
-            idTail: paymentIntentId?.slice(0, 3) + '...' + paymentIntentId?.slice(-4),
-            secretLooksRight:
-              typeof clientSecret === 'string' &&
-              clientSecret.startsWith('pi_') &&
-              clientSecret.includes('_secret_'),
-          });
+          // Defensive logging (safe; does not print full secret)
+          const tail = clientSecret ? clientSecret.slice(0, 4) : 'null';
+          console.log('[PI] id=%s status=%s hasSecret=%s secretHead=%s',
+            paymentIntent.id, paymentIntent.status, !!clientSecret, tail);
           
           // ✅ MERGE into protectedData — DO NOT overwrite other keys
           updatedProtectedData = {
@@ -305,11 +318,18 @@ module.exports = (req, res) => {
             stripePaymentIntents: {
               ...(finalProtectedData.stripePaymentIntents || {}),
               default: {
-                stripePaymentIntentId: paymentIntentId,
-                stripePaymentIntentClientSecret: clientSecret, // << the real secret
+                ...(finalProtectedData.stripePaymentIntents?.default || {}),
+                id: paymentIntent.id, // persist id to allow update on next speculate
+                stripePaymentIntentClientSecret: clientSecret, // THIS MUST BE pi_..._secret_...
               },
             },
           };
+          
+          // Final sanity log of what we're writing (safe, partial only)
+          console.log('[SPEC_OUT] pd.stripePaymentIntents.default = { id:%s, secretLike:%s }',
+            updatedProtectedData.stripePaymentIntents.default.id,
+            looksLikeStripeSecret(updatedProtectedData.stripePaymentIntents.default.stripePaymentIntentClientSecret)
+          );
           
           console.log('[PI] Successfully created/updated PaymentIntent and merged into protectedData');
           
@@ -343,13 +363,13 @@ module.exports = (req, res) => {
       // 🔐 PROD-SAFE: Log PI tails for request-payment speculative calls
       if (isSpeculative && bodyParams?.transition === 'transition/request-payment') {
         const pd = tx?.attributes?.protectedData?.stripePaymentIntents?.default || {};
-        const idTail = (pd.stripePaymentIntentId || '').slice(0,3) + '...' + (pd.stripePaymentIntentId || '').slice(-5);
+        const idTail = (pd.id || '').slice(0,3) + '...' + (pd.id || '').slice(-5);
         const secretTail = (pd.stripePaymentIntentClientSecret || '').slice(0,3) + '...' + (pd.stripePaymentIntentClientSecret || '').slice(-5);
         const secretPrefix = (pd.stripePaymentIntentClientSecret || '').substring(0, 3);
         console.log('[PI_TAILS] idTail=%s secretTail=%s looksLikePI=%s looksLikeSecret=%s secretPrefix=%s', 
           idTail, 
           secretTail, 
-          /^pi_/.test(pd.stripePaymentIntentId || ''), 
+          /^pi_/.test(pd.id || ''), 
           /_secret_/.test(pd.stripePaymentIntentClientSecret || ''),
           secretPrefix
         );
@@ -359,7 +379,7 @@ module.exports = (req, res) => {
       if (process.env.NODE_ENV !== 'production') {
         const pd = tx?.attributes?.protectedData || {};
         const nested = pd?.stripePaymentIntents?.default || {};
-        const piId = nested?.stripePaymentIntentId || pd?.stripePaymentIntentId;
+        const piId = nested?.id || pd?.id;
         const piSecret = nested?.stripePaymentIntentClientSecret || pd?.stripePaymentIntentClientSecret;
         
         const looksLikePI = typeof piId === 'string' && /^pi_/.test(piId);
