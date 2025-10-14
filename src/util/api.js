@@ -73,6 +73,30 @@ const request = (path, options = {}) => {
     const contentType = contentTypeHeader ? contentTypeHeader.split(';')[0] : null;
 
     if (res.status >= 400) {
+      // Special handling for 503 Service Unavailable (e.g. Stripe not configured)
+      // Must be checked BEFORE 401 to ensure proper error structure
+      if (res.status === 503) {
+        return res.json().then(data => {
+          const err = new Error(data?.message || 'Service unavailable');
+          err.status = 503;
+          err.code = data?.code || 'service-unavailable';
+          err.data = data || null;
+          err.endpoint = path;
+          console.error('[API] 503 Service Unavailable:', path, { code: err.code, message: err.message });
+          throw err;
+        }).catch(jsonError => {
+          // If response is not JSON, create a generic 503 error
+          if (jsonError instanceof SyntaxError) {
+            const err = new Error('Service unavailable');
+            err.status = 503;
+            err.code = 'service-unavailable';
+            err.endpoint = path;
+            throw err;
+          }
+          throw jsonError;
+        });
+      }
+      
       // Special handling for 401 Unauthorized
       if (res.status === 401) {
         console.warn('[Sherbrt] 401 response from', path, '- session may be expired');

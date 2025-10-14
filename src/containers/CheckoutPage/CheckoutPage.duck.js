@@ -303,24 +303,28 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       
       return newState;
     }
-    case INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR:
+    case INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR: {
       // Check if this is a "payments not configured" error (503)
       const errorPayload = action.payload;
+      
+      // Comprehensive 503 detection across all possible error shapes
       const isPaymentNotConfigured = 
         errorPayload?.status === 503 || 
-        errorPayload?.error === 'payments-not-configured' ||
-        errorPayload?.data?.code === 'payments-not-configured';
+        errorPayload?.code === 'payments-not-configured' ||
+        errorPayload?.data?.code === 'payments-not-configured' ||
+        (errorPayload?.message || '').includes('Stripe is not configured');
       
-      if (isPaymentNotConfigured && process.env.NODE_ENV !== 'production') {
-        console.warn('[SPECULATE_ERROR] Payments not configured on server (503)');
+      if (isPaymentNotConfigured) {
+        console.warn('[REDUCER] Setting paymentsUnavailable flag');
       }
       
       return {
         ...state,
         speculateStatus: 'failed',
         lastSpeculateError: errorPayload,
-        paymentsUnavailable: isPaymentNotConfigured,
+        paymentsUnavailable: isPaymentNotConfigured || state.paymentsUnavailable === true,
       };
+    }
     
     case SET_PAYMENTS_UNAVAILABLE:
       return { ...state, paymentsUnavailable: true };
@@ -781,10 +785,24 @@ export const speculateTransaction = (
 
   const handleSuccess = response => {
     const entities = denormalisedResponseEntities(response);
+    
+    // Strictly validate response before treating as success
+    if (!entities || entities.length === 0) {
+      console.error('[SPECULATE] Invalid response - no entities');
+      throw new Error('Speculation response contained no entities');
+    }
+    
     if (entities.length !== 1) {
       throw new Error('Expected a resource in the speculate response');
     }
+    
     const tx = entities[0];
+    
+    // Validate transaction has an ID before proceeding
+    if (!tx?.id) {
+      console.error('[SPECULATE] Invalid transaction - no ID', { tx });
+      throw new Error('Speculation returned transaction without ID');
+    }
     
     // ✅ A) Extract clientSecret from speculate response - FIXED to get actual secret, not UUID
     const attrs = tx?.attributes || {};
@@ -1009,21 +1027,44 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     const updatedState = getState().CheckoutPage || {};
     const tx = updatedState.speculatedTransaction;
     
-    if (tx) {
-      console.log('[speculate] success', tx?.id?.uuid || tx?.id);
-      dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
+    // Validate transaction before treating as success
+    if (!tx?.id) {
+      console.error('[INITIATE_TX] invalid success: tx has no id', { tx });
+      throw new Error('Speculation success without transaction id');
     }
+    
+    console.log('[speculate] success', tx.id.uuid || tx.id);
+    dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS, payload: { tx, key }});
   } catch (e) {
     console.error('[speculate] failed', e);
     
-    // Check for 503 payments-not-configured error
+    // Debug error structure to understand what's coming from the API
+    console.debug('[DEBUG] error keys:', Object.keys(e || {}));
+    console.debug('[DEBUG] e.status:', e?.status);
+    console.debug('[DEBUG] e.code:', e?.code);
+    console.debug('[DEBUG] e.data:', e?.data);
+    console.debug('[DEBUG] e.apiErrors:', e?.apiErrors);
+    console.debug('[DEBUG] e.message:', e?.message);
+    
+    // Robust 503 detection: check multiple possible locations for the error code
     const status = e?.status;
-    const code = e?.data?.code || e?.code;
-    if (status === 503 && code === 'payments-not-configured') {
+    const code = 
+      e?.code || 
+      e?.data?.code || 
+      (Array.isArray(e?.apiErrors) ? e.apiErrors[0]?.code : undefined);
+    const message = e?.message || '';
+    
+    // Comprehensive check for payments unavailable
+    const is503PaymentsError = 
+      status === 503 || 
+      code === 'payments-not-configured' ||
+      message.includes('Stripe is not configured');
+    
+    if (is503PaymentsError) {
       console.warn('[Checkout] Payments unavailable on server. Halting speculation.');
       dispatch(setPaymentsUnavailable());
       dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
-      return; // Early exit; do not rethrow or schedule retry
+      return; // EARLY EXIT: do not fall back to non-privileged speculation
     }
     
     // Enhanced error handling for 401 unauthorized
@@ -1038,8 +1079,8 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     
     console.error('[specTx] error', e);
     
-    // Fallback to non-privileged speculation so UI can mount
-    console.warn('[INITIATE_TX] privileged failed, falling back to public speculation', e);
+    // Only fallback to non-privileged speculation for non-503 errors
+    console.warn('[INITIATE_TX] privileged failed (non-503), falling back to public speculation', e);
     try {
       const orderParams = params;
       const processAlias = 'default-booking/release-1';

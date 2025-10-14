@@ -1039,7 +1039,7 @@ const CheckoutPageWithPayment = props => {
           console.error('[INITIATE_TX] FAILED', err);
         });
     }
-  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValuesHash]); // ✅ B: Include formValuesHash to re-speculate when user fills form
+  }, [sessionKey, !!orderResult?.ok, currentUser?.id, props?.speculativeTransactionId, processName, listingIdNormalized, formValuesHash, paymentsUnavailable]); // ✅ Include paymentsUnavailable to halt speculation when flag is set
 
   // Verify the speculative transaction state lands in props
   useEffect(() => {
