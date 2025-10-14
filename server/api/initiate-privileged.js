@@ -11,8 +11,42 @@ const { maskPhone } = require('../api-util/phone');
 const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
 
-// ✅ Initialize Stripe with secret key
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+// ✅ Safe Stripe initializer (lazy + memoized)
+const Stripe = require('stripe');
+let _stripeSingleton = null;
+
+/**
+ * Get Stripe instance with lazy initialization.
+ * Returns null if STRIPE_SECRET_KEY is not configured (no crash).
+ */
+function getStripe() {
+  // Accept multiple env var names for flexibility
+  const key =
+    process.env.STRIPE_SECRET_KEY ||
+    process.env.STRIPE_LIVE_SECRET_KEY ||
+    process.env.STRIPE_TEST_SECRET_KEY ||
+    null;
+
+  if (!key) {
+    if (process.env.NODE_ENV !== 'test') {
+      console.warn('[ENV CHECK][Stripe] Missing STRIPE_SECRET_KEY. Payments disabled.');
+    }
+    return null;
+  }
+
+  // Return cached instance if already initialized
+  if (_stripeSingleton) return _stripeSingleton;
+
+  try {
+    _stripeSingleton = new Stripe(key, { apiVersion: '2024-06-20' });
+    const mode = key.startsWith('sk_live_') ? 'LIVE' : key.startsWith('sk_test_') ? 'TEST' : 'UNKNOWN';
+    console.log('[ENV CHECK][Stripe] Initialized successfully. Mode:', mode, `(${key.substring(0, 8)}...)`);
+    return _stripeSingleton;
+  } catch (err) {
+    console.error('[Stripe] Failed to initialize Stripe SDK:', err?.message || err);
+    return null;
+  }
+}
 
 // Helper to normalize listingId to string
 const toUuidString = id =>
@@ -30,9 +64,14 @@ try {
 
 console.log('🚦 initiate-privileged endpoint is wired up');
 
-// ✅ 3) Log Stripe environment mode (do not print full key)
+// Log Stripe status (but don't initialize yet - that happens on first request)
 const stripeKeyPrefix = process.env.STRIPE_SECRET_KEY?.substring(0, 8) || 'not-set';
-console.log('[ENV CHECK] Stripe mode:', stripeKeyPrefix.startsWith('sk_live') ? 'LIVE' : 'TEST', `(${stripeKeyPrefix}...)`);
+if (stripeKeyPrefix !== 'not-set') {
+  const mode = stripeKeyPrefix.startsWith('sk_live') ? 'LIVE' : stripeKeyPrefix.startsWith('sk_test') ? 'TEST' : 'UNKNOWN';
+  console.log('[ENV CHECK][Stripe] Key found. Mode:', mode, `(${stripeKeyPrefix}...)`);
+} else {
+  console.warn('[ENV CHECK][Stripe] No key found. Payments will return 503.');
+}
 console.log('[ENV CHECK] Publishable key (first 12):', process.env.REACT_APP_STRIPE_PUBLISHABLE_KEY?.substring(0, 12) || 'not-set');
 
 // Helper function to build carrier-friendly lender SMS message
@@ -196,6 +235,18 @@ module.exports = (req, res) => {
       
       // Only create PaymentIntent for request-payment transitions
       if (bodyParams?.transition === 'transition/request-payment' && lineItems && lineItems.length > 0) {
+        // Get Stripe instance (lazy init, returns null if not configured)
+        const stripe = getStripe();
+        
+        if (!stripe) {
+          // Graceful degradation: Stripe not configured
+          console.warn('[PI] Stripe not configured. Returning 503 for payment request.');
+          return res.status(503).json({
+            error: 'payments-not-configured',
+            message: 'Stripe is not configured on this server. Please contact support.',
+          });
+        }
+        
         try {
           // Calculate payin total from lineItems
           const payinLineItems = lineItems.filter(item => 

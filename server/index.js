@@ -81,6 +81,10 @@ const app = express();
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
 app.head('/healthz', (_req, res) => res.status(200).send('ok'));
 
+// Additional health check with underscore prefix (for consistency with k8s conventions)
+app.get('/_healthz', (_req, res) => res.status(200).send('ok'));
+app.head('/_healthz', (_req, res) => res.status(200).send('ok'));
+
 // SSR info endpoint - reads build/asset-manifest.json and lists /static/js bundles
 app.get('/__ssr-info', (_req, res) => {
   // Guard: only show in non-production or when SHOW_SSR_INFO=1

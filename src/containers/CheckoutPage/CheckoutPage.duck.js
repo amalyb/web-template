@@ -301,10 +301,20 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       return newState;
     }
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR:
+      // Check if this is a "payments not configured" error (503)
+      const errorPayload = action.payload;
+      const isPaymentNotConfigured = 
+        errorPayload?.status === 503 || 
+        errorPayload?.error === 'payments-not-configured';
+      
+      if (isPaymentNotConfigured && process.env.NODE_ENV !== 'production') {
+        console.warn('[SPECULATE_ERROR] Payments not configured on server (503)');
+      }
+      
       return {
         ...state,
         speculateStatus: 'failed',
-        lastSpeculateError: state.payload,
+        lastSpeculateError: errorPayload,
       };
 
     default:
