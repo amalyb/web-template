@@ -10,6 +10,7 @@ const { getIntegrationSdk } = require('../api-util/integrationSdk');
 const { maskPhone } = require('../api-util/phone');
 const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
+const { normalizePhoneE164 } = require('../util/phone');
 
 // Helper to normalize listingId to string
 const toUuidString = id =>
@@ -146,26 +147,17 @@ module.exports = (req, res) => {
         console.log('[initiate] No booking start date found to store in protectedData');
       }
 
-      // 🔁 Borrower phone fallback: if missing in PD, copy from current user's profile
-      if (!finalProtectedData.customerPhone) {
-        try {
-          const me = await sdk.currentUser.show({ include: ['profile'] });
-          const prof = me?.data?.data?.attributes?.profile;
-          const profilePhone =
-            prof?.protectedData?.phone ??
-            prof?.protectedData?.phoneNumber ??
-            prof?.publicData?.phone ??
-            prof?.publicData?.phoneNumber ??
-            null;
-          if (profilePhone) {
-            finalProtectedData.customerPhone = profilePhone;
-            console.log('[initiate] filled customerPhone from profile');
-          } else {
-            console.log('[initiate] no phone found in profile; leaving customerPhone unset');
-          }
-        } catch (e) {
-          console.warn('[initiate] could not read currentUser profile for phone fallback:', e?.message);
-        }
+      // 🚫 REMOVED: Do NOT auto-fill customerPhone from profile
+      // POLICY: Contact info must be explicitly entered at checkout (client-side only)
+      // Profile values are used ONLY as UI prefills, never auto-persisted to PD
+      
+      // Server-side phone normalization (safety net for E.164)
+      if (finalProtectedData.customerPhone) {
+        finalProtectedData.customerPhone = normalizePhoneE164(finalProtectedData.customerPhone, 'US');
+        console.log('[initiate] Normalized customerPhone to E.164:', finalProtectedData.customerPhone);
+      }
+      if (finalProtectedData.providerPhone) {
+        finalProtectedData.providerPhone = normalizePhoneE164(finalProtectedData.providerPhone, 'US');
       }
       
       console.log('[initiate] forwarding PD keys:', Object.keys(finalProtectedData));
