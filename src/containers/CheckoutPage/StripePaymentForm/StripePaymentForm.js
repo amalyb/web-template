@@ -24,7 +24,7 @@ import {
 // NOTE: AddressForm and ShippingDetails no longer used - billing/shipping handled in parent
 
 import css from './StripePaymentForm.module.css';
-import { __DEV__ } from '../../../util/envFlags';
+import { __DEV__, USE_PAYMENT_ELEMENT } from '../../../util/envFlags';
 
 // Extract a single string from either shipping.* or billing.* based on shippingSameAsBilling
 const pickFromShippingOrBilling = (values, field) => {
@@ -348,9 +348,6 @@ class StripePaymentForm extends Component {
         clientSecret,
       } = this.props;
       
-      // Derive feature flag robustly
-      const USE_PAYMENT_ELEMENT_FLAG = String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
-      
       this.stripe = window.Stripe(publishableKey);
       onStripeInitialized(this.stripe);
 
@@ -365,7 +362,7 @@ class StripePaymentForm extends Component {
       }
 
       // If using PaymentElement and we have a clientSecret, create Elements with it
-      if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement) {
+      if (USE_PAYMENT_ELEMENT && usePaymentElement) {
         if (!clientSecret) {
           console.warn('[Stripe] PaymentElement enabled but no clientSecret provided');
           return;
@@ -501,9 +498,8 @@ class StripePaymentForm extends Component {
     this.cardContainer = el;
     if (this.stripe && el) {
       const { usePaymentElement, clientSecret } = this.props;
-      const USE_PAYMENT_ELEMENT_FLAG = String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
       
-      if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement && clientSecret && this.elements) {
+      if (USE_PAYMENT_ELEMENT && usePaymentElement && clientSecret && this.elements) {
         this.initializePaymentElement(el);
       } else {
         this.initializeStripeElement(el);

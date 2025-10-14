@@ -3,23 +3,16 @@
  * Safely handles missing process object in browser environments
  */
 
-export const IS_DEV = (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'development');
+export const IS_PROD = (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production');
+export const IS_DEV  = (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'development');
 export const IS_TEST = (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'test');
-export const __DEV__ = !(typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production');
+export const __DEV__ = !IS_PROD;
 
 /**
  * Feature flag for Stripe PaymentElement
  * Default: false (uses legacy CardElement)
  * Set REACT_APP_USE_STRIPE_PAYMENT_ELEMENT=true to enable PaymentElement
- * Reads from process.env (build-time) or window.__ENV__ (runtime fallback)
  */
-export const USE_PAYMENT_ELEMENT = (() => {
-  // Try process.env first (build-time)
-  const fromProcessEnv = typeof process !== 'undefined' && process.env && process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT;
-  
-  // Try window.__ENV__ as fallback (runtime injection)
-  const fromWindowEnv = typeof window !== 'undefined' && window.__ENV__ && window.__ENV__.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT;
-  
-  const value = fromProcessEnv || fromWindowEnv || '';
-  return String(value).toLowerCase() === 'true';
-})();
+export const USE_PAYMENT_ELEMENT =
+  String((typeof process !== 'undefined' && process.env && process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT) || '')
+    .toLowerCase() === 'true';

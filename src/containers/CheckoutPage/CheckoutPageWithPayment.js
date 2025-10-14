@@ -286,11 +286,8 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   }
   setSubmitting(true);
 
-  // Derive feature flag (robust, safe for all environments)
-  const USE_PAYMENT_ELEMENT_FLAG = String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
-  
-  // Log which payment flow is active
-  console.log('[checkout] Payment flow:', USE_PAYMENT_ELEMENT_FLAG ? 'PaymentElement' : 'CardElement');
+  // Use centralized feature flag (safe for browser environments)
+  console.log('[checkout] Payment flow:', USE_PAYMENT_ELEMENT ? 'PaymentElement' : 'CardElement');
 
   const {
     history,
@@ -555,7 +552,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   
   // Pre-submit logging for debugging
   console.log('[checkout][pre-submit]', {
-    usePaymentElement: USE_PAYMENT_ELEMENT_FLAG,
+    usePaymentElement: USE_PAYMENT_ELEMENT,
     hasClientSecret: !!stripePaymentIntentClientSecret,
     hasElements: !!elements,
     paymentElementComplete,
@@ -567,7 +564,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     speculatedTransaction,
     stripe,
     card,
-    ...(USE_PAYMENT_ELEMENT_FLAG ? { elements, usePaymentElement: true } : { usePaymentElement: false }),
+    ...(USE_PAYMENT_ELEMENT ? { elements, usePaymentElement: true } : { usePaymentElement: false }),
     billingDetails: getBillingDetails(billingForGetBillingDetails, currentUser),
     message,
     paymentIntent,
