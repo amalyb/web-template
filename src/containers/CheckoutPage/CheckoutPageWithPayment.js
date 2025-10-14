@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Form as FinalForm, FormSpy } from 'react-final-form';
+import deepEqual from 'fast-deep-equal';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -744,6 +745,49 @@ export const CheckoutPageWithPayment = props => {
     onReSpeculate,
   } = props;
 
+  // Memoize initial values - only derive ONCE on mount to prevent form resets
+  // Do NOT include volatile deps like clientSecret, speculateStatus, or pageData
+  const seedInitialValues = useMemo(() => {
+    // Build the initial values from existing protected data or defaults
+    const existingPD = pageData?.transaction?.attributes?.protectedData || {};
+    const prefillEmail = currentUser?.attributes?.email || '';
+    const prefillPhone = currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
+                        currentUser?.attributes?.profile?.publicData?.phoneNumber || '';
+    
+    const initialValues = {
+      contactEmail: prefillEmail || '',
+      contactPhone: prefillPhone || '',
+      shippingSameAsBilling: false,
+      billing: {
+        name: existingPD?.customerName || '',
+        line1: existingPD?.customerStreet || '',
+        line2: existingPD?.customerStreet2 || '',
+        city: existingPD?.customerCity || '',
+        state: existingPD?.customerState || '',
+        postalCode: existingPD?.customerZip || '',
+        country: 'US',
+      },
+      shipping: {
+        name: existingPD?.customerName || '',
+        line1: existingPD?.customerStreet || '',
+        line2: existingPD?.customerStreet2 || '',
+        city: existingPD?.customerCity || '',
+        state: existingPD?.customerState || '',
+        postalCode: existingPD?.customerZip || '',
+        country: 'US',
+        useDifferentPhone: false,
+        phone: '',
+      },
+    };
+
+    console.log('[QA] seedInitialValues created (should only happen once):', {
+      billing_keys: Object.keys(initialValues.billing || {}),
+      shipping_keys: Object.keys(initialValues.shipping || {}),
+    });
+
+    return initialValues;
+  }, []); // Empty array - only derive once on mount
+
   // Handle speculative transaction initiation with proper guards (one-shot)
   useEffect(() => {
     const listingId = pageData?.listing?.id?.uuid || pageData?.listing?.id;
@@ -788,6 +832,13 @@ export const CheckoutPageWithPayment = props => {
       console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason, 'speculateStatus:', speculateStatus);
     }
   }, [hasSpeculativeTx, stripeReady, paymentElementComplete, submitting, speculateStatus]);
+
+  // QA logging: detect if PaymentElement changes trigger form resets (guard)
+  useEffect(() => {
+    if (paymentElementComplete) {
+      console.debug('[QA] PaymentElement complete detected. If form values clear after this, investigate form reinitialization.');
+    }
+  }, [paymentElementComplete]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -986,42 +1037,10 @@ export const CheckoutPageWithPayment = props => {
 
             {showPaymentForm ? (
               <>
-                {/* Build initial values from existing protected data or defaults */}
-                {(() => {
-                  const existingPD = pageData?.transaction?.attributes?.protectedData || {};
-                  const prefillEmail = currentUser?.attributes?.email || '';
-                  const prefillPhone = currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
-                                      currentUser?.attributes?.profile?.publicData?.phoneNumber || '';
-                  
-                  const initialValues = {
-                    contactEmail: prefillEmail || '',
-                    contactPhone: prefillPhone || '',
-                    shippingSameAsBilling: false,
-                    billing: {
-                      name: existingPD?.customerName || '',
-                      line1: existingPD?.customerStreet || '',
-                      line2: existingPD?.customerStreet2 || '',
-                      city: existingPD?.customerCity || '',
-                      state: existingPD?.customerState || '',
-                      postalCode: existingPD?.customerZip || '',
-                      country: 'US',
-                    },
-                    shipping: {
-                      name: existingPD?.customerName || '',
-                      line1: existingPD?.customerStreet || '',
-                      line2: existingPD?.customerStreet2 || '',
-                      city: existingPD?.customerCity || '',
-                      state: existingPD?.customerState || '',
-                      postalCode: existingPD?.customerZip || '',
-                      country: 'US',
-                      useDifferentPhone: false,
-                      phone: '',
-                    },
-                  };
-
-                  return (
-                    <FinalForm
-                      initialValues={initialValues}
+                <FinalForm
+                      initialValues={seedInitialValues}
+                      keepDirtyOnReinitialize={true}
+                      initialValuesEqual={deepEqual}
                       onSubmit={(values) => {
                         // This is the unified submit handler - extract contact and call Stripe payment
                         const contactEmail = values.contactEmail;
@@ -1041,8 +1060,7 @@ export const CheckoutPageWithPayment = props => {
                       }}
                       validate={validateCheckout}
                       subscription={{ submitting: true, pristine: true, valid: true, values: true }}
-                    >
-                      {({ handleSubmit, values, valid, submitting: formSubmitting }) => {
+                      render={({ handleSubmit, values, valid, submitting: formSubmitting, form }) => {
                         const stripeReady = !!stripeElementMounted;
                         
                         // ✅ Use hasSpeculativeTx from props/reducer instead of computing from transaction
@@ -1152,6 +1170,24 @@ export const CheckoutPageWithPayment = props => {
                               )}
                             </div>
 
+                            {/* QA FormSpy - Monitor for unexpected value changes */}
+                            <FormSpy subscription={{ values: true }}>
+                              {({ values }) => {
+                                // Log field counts to detect clears
+                                if (__DEV__) {
+                                  const billingKeys = Object.keys(values?.billing || {}).filter(k => values.billing[k]);
+                                  const shippingKeys = Object.keys(values?.shipping || {}).filter(k => values.shipping[k]);
+                                  if (paymentElementComplete && (billingKeys.length < 3 || shippingKeys.length < 3)) {
+                                    console.debug('[QA] Warning: Form values appear incomplete after PaymentElement complete:', {
+                                      billing_filled: billingKeys,
+                                      shipping_filled: shippingKeys,
+                                    });
+                                  }
+                                }
+                                return null;
+                              }}
+                            </FormSpy>
+
                             {/* Stripe Payment Form - receives form state via FormSpy */}
                             <FormSpy subscription={{ values: true, valid: true, submitting: true, errors: true, invalid: true }}>
                               {({ values: ffValues, valid: ffValid, submitting: ffSubmitting, errors: ffErrors, invalid: ffInvalid }) => (
@@ -1203,9 +1239,7 @@ export const CheckoutPageWithPayment = props => {
                           </form>
                         );
                       }}
-                    </FinalForm>
-                  );
-                })()}
+                    />
               </>
             ) : null}
           </section>
