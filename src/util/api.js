@@ -9,7 +9,7 @@ import Decimal from 'decimal.js';
 import { IS_DEV } from './envFlags';
 
 export const apiBaseUrl = marketplaceRootURL => {
-  const port = process.env.REACT_APP_DEV_API_SERVER_PORT;
+  const port = typeof process !== 'undefined' && process?.env?.REACT_APP_DEV_API_SERVER_PORT;
   const useDevApiServer = IS_DEV && !!port;
 
   // In development, the dev API server is running in a different port
@@ -22,12 +22,12 @@ export const apiBaseUrl = marketplaceRootURL => {
 };
 
 // Axios client for API calls with Basic authentication
-const apiBase = process.env.REACT_APP_API_BASE_URL || '/api';
+const apiBase = (typeof process !== 'undefined' && process?.env?.REACT_APP_API_BASE_URL) || '/api';
 export const apiClient = axios.create({ baseURL: apiBase });
 
 apiClient.interceptors.request.use((config) => {
-  const u = process.env.REACT_APP_BASIC_AUTH_USERNAME;
-  const p = process.env.REACT_APP_BASIC_AUTH_PASSWORD;
+  const u = typeof process !== 'undefined' && process?.env?.REACT_APP_BASIC_AUTH_USERNAME;
+  const p = typeof process !== 'undefined' && process?.env?.REACT_APP_BASIC_AUTH_PASSWORD;
   if (u && p) {
     const token = btoa(`${u}:${p}`);
     config.headers = { ...config.headers, Authorization: `Basic ${token}` };
@@ -36,9 +36,9 @@ apiClient.interceptors.request.use((config) => {
 });
 
 // Log Basic Auth status on boot
-console.log('[api] baseURL =', apiClient.defaults.baseURL,
-            'authHeaderEnabled =',
-            Boolean(process.env.REACT_APP_BASIC_AUTH_USERNAME && process.env.REACT_APP_BASIC_AUTH_PASSWORD));
+const hasBasicAuth = typeof process !== 'undefined' && 
+  Boolean(process?.env?.REACT_APP_BASIC_AUTH_USERNAME && process?.env?.REACT_APP_BASIC_AUTH_PASSWORD);
+console.log('[api] baseURL =', apiClient.defaults.baseURL, 'authHeaderEnabled =', hasBasicAuth);
 
 // Application type handlers for JS SDK.
 //

@@ -26,6 +26,7 @@ import {
   initiateOrder,
   setInitialValues,
   speculateTransaction,
+  reSpeculate,
   stripeCustomer,
   confirmPayment,
   sendMessage,
@@ -192,6 +193,9 @@ const mapStateToProps = state => {
     speculateTransactionInProgress,
     speculateTransactionError,
     speculatedTransaction,
+    hasSpeculativeTx,
+    speculateStatus,
+    speculateError,
     isClockInSync,
     transaction,
     initiateInquiryError,
@@ -208,6 +212,9 @@ const mapStateToProps = state => {
     speculateTransactionInProgress: speculateTransactionInProgress,
     speculateTransactionError,
     speculativeTransaction: speculatedTransaction, // normalize name
+    hasSpeculativeTx, // ✅ Track whether we have a valid speculative transaction
+    speculateStatus, // ✅ 'idle' | 'running' | 'succeeded' | 'failed'
+    speculateError, // ✅ { status, code, message }
     speculativeInProgress: speculateTransactionInProgress, // normalize name
     isClockInSync,
     transaction,
@@ -225,6 +232,8 @@ const mapDispatchToProps = dispatch => ({
   dispatch,
   fetchSpeculatedTransaction: (params, processAlias, txId, transitionName, isPrivileged) =>
     dispatch(speculateTransaction(params, processAlias, txId, transitionName, isPrivileged)),
+  onReSpeculate: (params, processAlias, txId, transitionName, isPrivileged) =>
+    dispatch(reSpeculate(params, processAlias, txId, transitionName, isPrivileged)),
   fetchStripeCustomer: () => dispatch(stripeCustomer()),
   onInquiryWithoutPayment: (params, processAlias, transitionName) =>
     dispatch(initiateInquiryWithoutPayment(params, processAlias, transitionName)),

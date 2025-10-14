@@ -5,6 +5,7 @@ import { storableError } from '../../util/errors';
 import * as log from '../../util/log';
 import { toUuidString } from '../../util/id';
 import { fetchCurrentUserHasOrdersSuccess, fetchCurrentUser } from '../../ducks/user.duck';
+import { getProcessAliasSafe } from '../../util/processHelpers';
 
 // ================ Action types ================ //
 
@@ -42,6 +43,9 @@ const initialState = {
   speculateTransactionInProgress: false,
   speculateTransactionError: null,
   speculatedTransaction: null,
+  hasSpeculativeTx: false, // Track if we have a valid speculative transaction
+  speculateStatus: 'idle', // 'idle' | 'running' | 'succeeded' | 'failed'
+  speculateError: null, // { status, code, message }
   isClockInSync: false,
   transaction: null,
   initiateOrderError: null,
@@ -72,6 +76,9 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         speculateTransactionInProgress: true,
         speculateTransactionError: null,
         speculatedTransaction: null,
+        hasSpeculativeTx: false,
+        speculateStatus: 'running',
+        speculateError: null,
       };
     case SPECULATE_TRANSACTION_SUCCESS: {
       // Check that the local devices clock is within a minute from the server
@@ -79,21 +86,34 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       const localTime = new Date();
       const minute = 60000;
       const tx = payload.transaction;
-      console.log('[duck] privileged speculative success:', tx?.id?.uuid || tx?.id);
+      const txId = tx?.id?.uuid || tx?.id;
+      const hasValidTx = Boolean(txId);
+      console.log('[duck][SPECULATE_SUCCESS] txId:', txId, 'hasValidTx:', hasValidTx);
       return {
         ...state,
         speculateTransactionInProgress: false,
         speculatedTransaction: payload.transaction,
+        hasSpeculativeTx: hasValidTx,
+        speculateStatus: 'succeeded',
+        speculateError: null,
         isClockInSync: Math.abs(lastTransitionedAt?.getTime() - localTime.getTime()) < minute,
       };
     }
-    case SPECULATE_TRANSACTION_ERROR:
+    case SPECULATE_TRANSACTION_ERROR: {
       console.error(payload); // eslint-disable-line no-console
+      // Extract error details
+      const status = payload?.status || payload?.statusCode || payload?.response?.status;
+      const code = payload?.code || payload?.data?.errors?.[0]?.code;
+      const message = payload?.message || payload?.data?.errors?.[0]?.title || 'Unknown error';
       return {
         ...state,
         speculateTransactionInProgress: false,
         speculateTransactionError: payload,
+        hasSpeculativeTx: false,
+        speculateStatus: 'failed',
+        speculateError: { status, code, message },
       };
+    }
 
     case INITIATE_ORDER_REQUEST:
       return { ...state, initiateOrderError: null };
@@ -331,7 +351,7 @@ export const initiateOrder = (
   } else if (isPrivilegedTransition) {
     // initiate privileged
     const transition = 'transition/request-payment';
-    const processAlias = 'default-booking/release-1';
+    const processAlias = getProcessAliasSafe();
     console.log('Initiating privileged transaction with:', {
       transactionId,
       transition,
@@ -483,6 +503,22 @@ export const speculateTransaction = (
 ) => (dispatch, getState, sdk) => {
   dispatch(speculateTransactionRequest());
 
+  // 🔍 Comprehensive logging helper
+  const logSpec = (label, data) => {
+    console.info(`[speculate][${label}]`, JSON.stringify(data, null, 2));
+  };
+  const logSpecError = (label, err) => {
+    const status = err?.status || err?.statusCode || err?.response?.status;
+    const data = err?.data || err?.response?.data;
+    const message = err?.message || 'Unknown error';
+    console.error(`[speculate][${label}][ERROR]`, {
+      status,
+      message,
+      data,
+      stack: err?.stack,
+    });
+  };
+
   // Log transactionId before determining flow
   console.log('speculateTransaction: transactionId =', transactionId);
 
@@ -534,11 +570,19 @@ export const speculateTransaction = (
       throw new Error('Expected a resource in the speculate response');
     }
     const tx = entities[0];
-    console.log('[duck] privileged speculative success:', tx?.id?.uuid || tx?.id);
+    const txId = tx?.id?.uuid || tx?.id;
+    logSpec('SUCCESS', {
+      txId,
+      hasId: Boolean(txId),
+      lineItemsCount: tx?.attributes?.lineItems?.length || 0,
+      lastTransition: tx?.attributes?.lastTransition,
+    });
+    console.log('[duck] privileged speculative success:', txId);
     dispatch(speculateTransactionSuccess(tx));
   };
 
   const handleError = e => {
+    logSpecError('FAILED', e);
     log.error(e, 'speculate-transaction-failed', {
       listingId: transitionParams.listingId?.uuid || transitionParams.listingId,
       ...quantityMaybe,
@@ -570,15 +614,24 @@ export const speculateTransaction = (
   } else if (isPrivilegedTransition) {
     // initiate privileged (speculative)
     const transition = 'transition/request-payment';
-    const processAlias = 'default-booking/release-1';
+    const processAliasToUse = processAlias || getProcessAliasSafe();
+    
+    logSpec('REQUEST [privileged initiate]', {
+      listingId: transitionParams.listingId,
+      transition,
+      processAlias: processAliasToUse,
+      bookingDates: bookingParamsMaybe,
+      isSpeculative: true,
+    });
+    
     console.log('Initiating privileged speculative transaction with:', {
       transactionId,
       transition,
-      processAlias,
+      processAlias: processAliasToUse,
     });
     const bodyParams = {
       transition,
-      processAlias,
+      processAlias: processAliasToUse,
       params: transitionParams,
     };
     return initiatePrivileged({
@@ -597,6 +650,13 @@ export const speculateTransaction = (
       .catch(handleError);
   }
 };
+
+/**
+ * Re-run speculation with the same parameters (for retry after failure)
+ * This is a convenience wrapper around speculateTransaction
+ */
+export const reSpeculate = (orderParams, processAlias, transactionId, transitionName, isPrivilegedTransition) => 
+  speculateTransaction(orderParams, processAlias, transactionId, transitionName, isPrivilegedTransition);
 
 // StripeCustomer is a relantionship to currentUser
 // We need to fetch currentUser with correct params to include relationship

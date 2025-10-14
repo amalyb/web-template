@@ -11,9 +11,10 @@ import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
 import { normalizePhoneE164 } from '../../util/phone';
+import { IS_DEV, __DEV__ } from '../../util/envFlags';
 
 // Import shared components
-import { H3, H4, NamedLink, OrderBreakdown, Page, FieldTextInput, FieldCheckbox } from '../../components';
+import { H3, H4, NamedLink, OrderBreakdown, Page, FieldTextInput, FieldCheckbox, InlineAlert } from '../../components';
 import AddressForm from '../../components/AddressForm/AddressForm';
 
 import {
@@ -37,7 +38,6 @@ import MobileListingImage from './MobileListingImage';
 import MobileOrderBreakdown from './MobileOrderBreakdown';
 
 import css from './CheckoutPage.module.css';
-import { __DEV__ } from '../../util/envFlags';
 
 // Stripe PaymentIntent statuses, where user actions are already completed
 // https://stripe.com/docs/payments/payment-intents/status
@@ -221,6 +221,16 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
         ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
         : process.transitions.REQUEST_PAYMENT;
       const isPrivileged = process.isPrivileged(requestTransition);
+
+      // 🔍 Log speculation trigger
+      console.log('[CheckoutPage] Triggering speculation:', {
+        listingId: pageData.listing.id?.uuid || pageData.listing.id,
+        processAlias,
+        processName,
+        requestTransition,
+        isPrivileged,
+        hasBookingDates: !!(orderParams?.bookingStart && orderParams?.bookingEnd),
+      });
 
       fetchSpeculatedTransaction(
         orderParams,
@@ -713,6 +723,9 @@ export const CheckoutPageWithPayment = props => {
     scrollingDisabled,
     speculateTransactionError,
     speculativeTransaction, // ✅ normalized name from mapStateToProps
+    hasSpeculativeTx, // ✅ boolean flag for valid speculative tx
+    speculateStatus, // ✅ 'idle' | 'running' | 'succeeded' | 'failed'
+    speculateError, // ✅ { status, code, message }
     speculativeInProgress, // ✅ normalized name from mapStateToProps
     isClockInSync,
     initiateOrderError,
@@ -728,16 +741,27 @@ export const CheckoutPageWithPayment = props => {
     listingTitle,
     title,
     config,
+    onReSpeculate,
   } = props;
 
   // Handle speculative transaction initiation with proper guards (one-shot)
   useEffect(() => {
     const listingId = pageData?.listing?.id?.uuid || pageData?.listing?.id;
+    const bookingDates = pageData?.orderData?.bookingDates;
+    const hasRequiredData = listingId && bookingDates?.bookingStart && bookingDates?.bookingEnd;
 
-    if (!listingId) return;
+    if (!hasRequiredData) {
+      console.log('[CheckoutPage][useEffect] Missing required data for speculation:', {
+        listingId: Boolean(listingId),
+        bookingStart: Boolean(bookingDates?.bookingStart),
+        bookingEnd: Boolean(bookingDates?.bookingEnd),
+      });
+      return;
+    }
 
-    // only when listing changes & we still don't have a speculative tx
-    if (!speculativeTransaction?.id && !speculativeInProgress) {
+    // Only trigger speculation if we don't have a valid tx and we're not currently running
+    // This allows retry after failure
+    if (!hasSpeculativeTx && speculateStatus !== 'running') {
       const orderParams = getOrderParams(pageData, {}, {}, config, {});
       fetchSpeculatedTransactionIfNeeded(
         orderParams,
@@ -746,26 +770,24 @@ export const CheckoutPageWithPayment = props => {
         prevSpecKeyRef // <-- use the stable ref
       );
     }
-    // depend on listingId only, so it's a true one-shot per listing
-  }, [pageData?.listing?.id, speculativeTransaction?.id, speculativeInProgress]);
+    // depend on listingId and bookingDates, so speculation triggers when data is ready
+  }, [pageData?.listing?.id, pageData?.orderData?.bookingDates, hasSpeculativeTx, speculateStatus]);
 
   // Throttled logging for disabled gates
   useEffect(() => {
-    const tx = speculativeTransaction;
-    const hasTxId = !!(tx?.id?.uuid || tx?.id);
     const gates = { 
-      hasSpeculativeTx: hasTxId, 
+      hasSpeculativeTx, // ✅ Use the explicit flag from reducer
       stripeReady, 
       paymentElementComplete, 
       notSubmitting: !submitting, 
-      notSpeculating: !speculativeInProgress 
+      notSpeculating: speculateStatus !== 'running'
     };
     const disabledReason = Object.entries(gates).find(([, ok]) => !ok)?.[0] || null;
     if (disabledReason !== lastReasonRef.current) {
       lastReasonRef.current = disabledReason;
-      console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason);
+      console.log('[Checkout] submit disabled gates:', gates, 'disabledReason:', disabledReason, 'speculateStatus:', speculateStatus);
     }
-  }, [speculativeTransaction, stripeReady, paymentElementComplete, submitting, speculativeInProgress]);
+  }, [hasSpeculativeTx, stripeReady, paymentElementComplete, submitting, speculateStatus]);
 
   // Since the listing data is already given from the ListingPage
   // and stored to handle refreshes, it might not have the possible
@@ -889,6 +911,21 @@ export const CheckoutPageWithPayment = props => {
     'stripe'
   );
 
+  // Handler for retrying speculation after failure
+  const handleRetrySpeculation = useCallback(() => {
+    const orderParams = getOrderParams(pageData, {}, {}, config, {});
+    const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
+    const transactionId = existingTransaction ? existingTransaction.id : null;
+    const isInquiryInPaymentProcess =
+      existingTransaction?.attributes?.lastTransition === process.transitions.INQUIRE;
+    const requestTransition = isInquiryInPaymentProcess
+      ? process.transitions.REQUEST_PAYMENT_AFTER_INQUIRY
+      : process.transitions.REQUEST_PAYMENT;
+    const isPrivileged = process.isPrivileged(requestTransition);
+    
+    onReSpeculate(orderParams, processAlias, transactionId, requestTransition, isPrivileged);
+  }, [pageData, config, existingTransaction, process, onReSpeculate]);
+
   // Render an error message if the listing is using a non Stripe supported currency
   // and is using a transaction process with Stripe actions (default-booking or default-purchase)
   if (!isStripeCompatibleCurrency) {
@@ -935,6 +972,17 @@ export const CheckoutPageWithPayment = props => {
             {errorMessages.speculateErrorMessage}
             {errorMessages.retrievePaymentIntentErrorMessage}
             {errorMessages.paymentExpiredMessage}
+
+            {/* Speculation Error Banner with Retry */}
+            {speculateStatus === 'failed' && (
+              <InlineAlert
+                type="error"
+                title="We couldn't prepare your payment"
+                message={speculateError?.message || 'There was a problem preparing your booking. Please try again.'}
+                actionText="Try again"
+                onAction={handleRetrySpeculation}
+              />
+            )}
 
             {showPaymentForm ? (
               <>
@@ -995,14 +1043,34 @@ export const CheckoutPageWithPayment = props => {
                       subscription={{ submitting: true, pristine: true, valid: true, values: true }}
                     >
                       {({ handleSubmit, values, valid, submitting: formSubmitting }) => {
-                        const tx = speculativeTransaction;
-                        const hasTxId = !!(tx?.id?.uuid || tx?.id);
                         const stripeReady = !!stripeElementMounted;
                         
-                        const submitDisabled = !hasTxId || !stripeReady || !paymentElementComplete || !valid || submitting || speculativeInProgress;
+                        // ✅ Use hasSpeculativeTx from props/reducer instead of computing from transaction
+                        const submitDisabled = !hasSpeculativeTx || !stripeReady || !paymentElementComplete || !valid || submitting || speculateStatus === 'running';
+
+                        // QA Helper Line - only show when explicitly enabled
+                        const showQa = 
+                          (IS_DEV || __DEV__) && 
+                          (typeof process !== 'undefined' && process?.env?.REACT_APP_SHOW_QA_STATE === '1');
 
                         return (
                           <form onSubmit={handleSubmit}>
+                            {/* QA Helper Line (explicit opt-in only) */}
+                            {showQa && (
+                              <div style={{ 
+                                padding: '8px 12px', 
+                                marginBottom: '16px', 
+                                backgroundColor: '#f3f4f6', 
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                fontFamily: 'monospace',
+                                color: '#6b7280'
+                              }}>
+                                <strong>QA State:</strong>{' '}
+                                spec: {speculateStatus} | hasTx: {String(hasSpeculativeTx)} | stripeReady: {String(stripeReady)} | element: {String(paymentElementComplete)} | valid: {String(valid)}
+                              </div>
+                            )}
+                            
                             {/* Contact Info Section */}
                             <div className={css.contactInfoSection}>
                               <H3 as="h3" className={css.sectionHeading}>
