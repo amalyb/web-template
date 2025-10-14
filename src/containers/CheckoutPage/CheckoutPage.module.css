@@ -185,6 +185,22 @@
   }
 }
 
+.contactInfoSection {
+  margin-bottom: 32px;
+}
+
+.contactFields {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.contactInfoHint {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--colorAttention);
+}
+
 .paymentContainer {
   flex-grow: 1;
   display: flex;

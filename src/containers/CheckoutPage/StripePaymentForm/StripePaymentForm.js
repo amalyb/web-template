@@ -308,9 +308,10 @@ const copyBillingToShipping = (form) => {
 };
 
 // Shipping section component with checkbox at top
-const ShippingSection = ({ intl, css }) => {
+const ShippingSection = ({ intl, css, contactPhone }) => {
   const form = useForm();
   const { values } = useFormState({ subscription: { values: true } });
+  const [useDifferentPhone, setUseDifferentPhone] = React.useState(false);
 
   const onSameAsBillingChange = (e) => {
     const checked = !!e.target.checked;
@@ -330,9 +331,14 @@ const ShippingSection = ({ intl, css }) => {
     values.billing?.state,
     values.billing?.postalCode,
     values.billing?.country,
-    values.billing?.email,
-    values.billing?.phone,
   ]);
+
+  // Auto-populate shipping phone with contact phone when not using different phone
+  React.useEffect(() => {
+    if (!useDifferentPhone && contactPhone) {
+      form.change('shipping.phone', contactPhone);
+    }
+  }, [useDifferentPhone, contactPhone]);
 
   return (
     <section aria-labelledby="shippingTitle">
@@ -357,9 +363,36 @@ const ShippingSection = ({ intl, css }) => {
         <div className={css.fieldStack}>
           <AddressForm
             namespace="shipping"
-            requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: true }}
+            requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true }}
             countryAfterZipForUSCA
+            showEmail={false}
+            showPhone={false}
           />
+          
+          {/* Phone toggle - use contact phone or provide different */}
+          <div className={css.phoneToggleRow}>
+            <label className={css.inlineCheckbox} htmlFor="useDifferentPhone">
+              <input
+                id="useDifferentPhone"
+                type="checkbox"
+                checked={useDifferentPhone}
+                onChange={(e) => setUseDifferentPhone(e.target.checked)}
+              />
+              <span>{intl.formatMessage({ id: 'StripePaymentForm.useDifferentPhone', defaultMessage: 'Use different phone for shipping' })}</span>
+            </label>
+          </div>
+          
+          {useDifferentPhone && (
+            <FieldTextInput
+              className={css.field}
+              id="shipping-phone"
+              name="shipping.phone"
+              label={intl.formatMessage({ id: 'StripePaymentForm.shippingPhoneLabel', defaultMessage: 'Shipping Phone Number' })}
+              type="tel"
+              required={true}
+              autoComplete="tel"
+            />
+          )}
         </div>
       )}
     </section>
@@ -569,6 +602,8 @@ class StripePaymentForm extends Component {
       hasHandledCardPayment,
       defaultPaymentMethod,
       submitDisabled,
+      contactEmail,
+      contactPhone,
     } = this.props;
     const { initialMessage } = values;
     const { cardValueValid, paymentMethod } = this.state;
@@ -591,14 +626,14 @@ class StripePaymentForm extends Component {
       return;
     }
 
-    // Extract raw form values
-    const rawBilling = values.billing || {};
-    const rawShipping = values.shipping || {};
+    // Extract raw form values and add contact info
+    const rawBilling = { ...(values.billing || {}), email: contactEmail, phone: contactPhone };
+    const rawShipping = { ...(values.shipping || {}), email: contactEmail, phone: values.shipping?.phone || contactPhone };
     
     // Normalize addresses (happens before mapping & submit)
     const billing = normalizeAddress(rawBilling);
     const shipping = values.shippingSameAsBilling
-      ? normalizeAddress({ ...values.billing, phone: values.billing?.phone || values.shipping?.phone })
+      ? normalizeAddress({ ...rawBilling, phone: rawBilling.phone })
       : normalizeAddress(rawShipping);
     
     // Optional: block PO Boxes for couriers (UPS/FedEx). Route to USPS if needed.
@@ -896,16 +931,18 @@ class StripePaymentForm extends Component {
 
             {showOnetimePaymentFields ? (
               <div className={css.billingDetails}>
-                {/* Billing Address */}
+                {/* Billing Address - no email (using parent's contactEmail) */}
                 <AddressForm
                   namespace="billing"
                   title="Billing details"
-                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true, email: true, phone: true }}
+                  requiredFields={{ name: true, line1: true, city: true, state: true, postalCode: true, country: true }}
                   countryAfterZipForUSCA
+                  showEmail={false}
+                  showPhone={false}
                 />
 
-                {/* Shipping Address */}
-                <ShippingSection intl={intl} css={css} />
+                {/* Shipping Address - no email, conditional phone */}
+                <ShippingSection intl={intl} css={css} contactPhone={this.props.contactPhone} />
               </div>
             ) : null}
           </React.Fragment>
@@ -1051,20 +1088,20 @@ class StripePaymentForm extends Component {
       
       // Only validate billing/shipping if they're collected within this form
       if (this.props.requireInPaymentForm) {
-        const billErr = validateAddress(values.billing || {}, { requirePhone: false });
+        const billErr = validateAddress(values.billing || {}, { requirePhone: false, requireEmail: false });
         if (Object.keys(billErr).length) errors.billing = billErr;
         if (!values.shippingSameAsBilling) {
-          const shipErr = validateAddress(values.shipping || {}, { requirePhone: true });
+          const shipErr = validateAddress(values.shipping || {}, { requirePhone: false, requireEmail: false });
           if (Object.keys(shipErr).length) errors.shipping = shipErr;
         }
       }
       
-      // Validate required customer fields for protectedData
+      // Validate required customer fields for protectedData (address only, email/phone from parent)
       const shipping = values.shipping || {};
       const billing = values.billing || {};
       const effectiveShipping = values.shippingSameAsBilling ? billing : shipping;
       
-      // Required fields validation
+      // Required address fields validation (email/phone validated at parent level)
       if (!effectiveShipping.name?.trim()) {
         errors.customerName = 'Name is required';
       }
@@ -1082,20 +1119,9 @@ class StripePaymentForm extends Component {
       } else if (!/^\d{5,}$/.test(effectiveShipping.postalCode.trim())) {
         errors.customerZip = 'ZIP code must be at least 5 digits';
       }
-      if (!effectiveShipping.email?.trim()) {
-        errors.customerEmail = 'Email is required';
-      } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(effectiveShipping.email.trim())) {
-        errors.customerEmail = 'Please enter a valid email address';
-      }
-      if (!effectiveShipping.phone?.trim()) {
-        errors.customerPhone = 'Phone number is required';
-      } else {
-        const phone = effectiveShipping.phone.trim();
-        // Accept E.164 format (+1234567890) or 10-digit US format
-        if (!/^\+1\d{10}$/.test(phone) && !/^\d{10}$/.test(phone)) {
-          errors.customerPhone = 'Please enter a valid phone number (10 digits or E.164 format)';
-        }
-      }
+      
+      // Note: email and phone are validated at parent (CheckoutPageWithPayment) level
+      // and passed as props, so we don't validate them here
       
       return errors;
     };

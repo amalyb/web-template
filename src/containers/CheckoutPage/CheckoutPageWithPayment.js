@@ -9,9 +9,10 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
+import { normalizePhoneE164 } from '../../util/phone';
 
 // Import shared components
-import { H3, H4, NamedLink, OrderBreakdown, Page } from '../../components';
+import { H3, H4, NamedLink, OrderBreakdown, Page, FieldTextInput } from '../../components';
 
 import {
   bookingDatesMaybe,
@@ -266,7 +267,7 @@ export const loadInitialDataForStripePayments = ({
   fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 };
 
-const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting) => {
+const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone) => {
   if (submitting) {
     return;
   }
@@ -325,20 +326,25 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
 
+  // Normalize phone to E.164 format
+  const normalizedPhone = normalizePhoneE164(contactPhone);
+  console.log('📞 Contact phone normalized:', contactPhone, '→', normalizedPhone);
+
   // Build customer protectedData for request-payment
   // Filter out empty strings so you don't clobber later merges
   const protectedData = {};
   
-  // Customer fields - only include if non-empty
+  // Contact info (collected at parent level)
+  if (contactEmail?.trim()) protectedData.customerEmail = contactEmail.trim();
+  if (normalizedPhone?.trim()) protectedData.customerPhone = normalizedPhone.trim();
+  
+  // Customer address fields from form - only include if non-empty
   if (formValues.customerName?.trim()) protectedData.customerName = formValues.customerName.trim();
   if (formValues.customerStreet?.trim()) protectedData.customerStreet = formValues.customerStreet.trim();
   if (formValues.customerStreet2?.trim()) protectedData.customerStreet2 = formValues.customerStreet2.trim();
   if (formValues.customerCity?.trim()) protectedData.customerCity = formValues.customerCity.trim();
   if (formValues.customerState?.trim()) protectedData.customerState = formValues.customerState.trim();
   if (formValues.customerZip?.trim()) protectedData.customerZip = formValues.customerZip.trim();
-  if (formValues.customerEmail?.trim()) protectedData.customerEmail = formValues.customerEmail.trim();
-  else if (currentUser?.attributes?.email?.trim()) protectedData.customerEmail = currentUser.attributes.email.trim();
-  if (formValues.customerPhone?.trim()) protectedData.customerPhone = formValues.customerPhone.trim();
   
   // Provider fields - only include if non-empty
   if (currentUser?.attributes?.profile?.displayName?.trim()) {
@@ -630,6 +636,18 @@ export const CheckoutPageWithPayment = props => {
   const [formValid, setFormValid] = useState(false);
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   const stripeReady = !!stripeElementMounted;
+  
+  // Contact info state (collected once, used everywhere)
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactInfoValid, setContactInfoValid] = useState(false);
+
+  // Validate contact info
+  useEffect(() => {
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail?.trim() || '');
+    const phoneValid = /^(\+1\d{10}|\d{10})$/.test(contactPhone?.trim().replace(/[^\d+]/g, '') || '');
+    setContactInfoValid(emailValid && phoneValid);
+  }, [contactEmail, contactPhone]);
 
   const handleFormValuesChange = useCallback((next) => {
     const prev = JSON.stringify(formValues || {});
@@ -872,6 +890,47 @@ export const CheckoutPageWithPayment = props => {
 
             {showPaymentForm ? (
               <>
+                {/* Contact Info Section - Collected once for all forms */}
+                <div className={css.contactInfoSection}>
+                  <H3 as="h3" className={css.sectionHeading}>
+                    <FormattedMessage id="CheckoutPage.contactInfoHeading" defaultMessage="Contact Information" />
+                  </H3>
+                  <div className={css.contactFields}>
+                    <FieldTextInput
+                      id="contactEmail"
+                      name="contactEmail"
+                      type="email"
+                      label={intl.formatMessage({ id: 'CheckoutPage.contactEmailLabel', defaultMessage: 'Email Address' })}
+                      placeholder={intl.formatMessage({ id: 'CheckoutPage.contactEmailPlaceholder', defaultMessage: 'your@email.com' })}
+                      value={contactEmail}
+                      onChange={(e) => setContactEmail(e.target.value)}
+                      autoComplete="email"
+                    />
+                    <FieldTextInput
+                      id="contactPhone"
+                      name="contactPhone"
+                      type="tel"
+                      label={intl.formatMessage({ id: 'CheckoutPage.contactPhoneLabel', defaultMessage: 'Phone Number' })}
+                      placeholder={intl.formatMessage({ id: 'CheckoutPage.contactPhonePlaceholder', defaultMessage: '(555) 123-4567' })}
+                      value={contactPhone}
+                      onChange={(e) => setContactPhone(e.target.value)}
+                      autoComplete="tel"
+                    />
+                  </div>
+                  {!contactInfoValid && (contactEmail || contactPhone) && (
+                    <p className={css.contactInfoHint}>
+                      <FormattedMessage 
+                        id="CheckoutPage.contactInfoHint" 
+                        defaultMessage="Please enter a valid email and phone number (10 digits or +1 format)" 
+                      />
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : null}
+
+            {showPaymentForm ? (
+              <>
                 {(() => {
                   // Canonical gating (parent)
                   const tx = speculativeTransaction; // ✅ use normalized name
@@ -885,6 +944,7 @@ export const CheckoutPageWithPayment = props => {
                     stripeReady: stripeReady,                 // 👈 simplified
                     paymentElementComplete: !!paymentElementComplete,
                     formValid: formValid,                   // ✅ bubbled up from child form
+                    contactInfoValid: contactInfoValid,     // ✅ contact email + phone valid
                     notSubmitting: !submitting,      // local state (no duck submitInProgress available)
                     notSpeculating: !speculativeInProgress  // ✅ use normalized name
                   };
@@ -905,7 +965,7 @@ export const CheckoutPageWithPayment = props => {
                 <StripePaymentForm
                   className={css.paymentForm}
                   onSubmit={values =>
-                    handleSubmit(values, process, props, stripe, submitting, setSubmitting)
+                    handleSubmit(values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone)
                   }
                   inProgress={submitting}
                   formId="CheckoutPagePaymentForm"
@@ -948,6 +1008,7 @@ export const CheckoutPageWithPayment = props => {
                       stripeReady: stripeReady,                 // 👈 simplified
                       paymentElementComplete: !!paymentElementComplete,
                       formValid: formValid,
+                      contactInfoValid: contactInfoValid,     // ✅ contact email + phone valid
                       notSubmitting: !submitting,
                       notSpeculating: !speculativeInProgress, // ✅ use normalized name
                     };
@@ -962,6 +1023,8 @@ export const CheckoutPageWithPayment = props => {
                   marketplaceName={config.marketplaceName}
                   isBooking={isBookingProcessAlias(transactionProcessAlias)}
                   isFuzzyLocation={config.maps.fuzzy.enabled}
+                  contactEmail={contactEmail}
+                  contactPhone={contactPhone}
                 />
               </>
             ) : null}

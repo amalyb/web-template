@@ -41,6 +41,8 @@ export default function AddressForm({
   requiredFields = {},
   disabled = false,
   countryAfterZipForUSCA = true,
+  showEmail = true,
+  showPhone = true,
 }) {
   // Guard: prevent nameless <Field> crash
   if (!namespace) {
@@ -193,29 +195,33 @@ export default function AddressForm({
         </FieldSelect>
       )}
 
-      {/* Email */}
-      <FieldTextInput
-        className={css.field}
-        id={`${namespace}-email`}
-        name={`${namespace}.email`}
-        label="Email Address"
-        type="email"
-        required={!!requiredFields.email}
-        autoComplete="email"
-        disabled={disabled}
-      />
+      {/* Email - conditionally rendered */}
+      {showEmail && (
+        <FieldTextInput
+          className={css.field}
+          id={`${namespace}-email`}
+          name={`${namespace}.email`}
+          label="Email Address"
+          type="email"
+          required={!!requiredFields.email}
+          autoComplete="email"
+          disabled={disabled}
+        />
+      )}
 
-      {/* Phone */}
-      <FieldTextInput
-        className={css.field}
-        id={`${namespace}-phone`}
-        name={`${namespace}.phone`}
-        label="Phone Number"
-        type="tel"
-        required={!!requiredFields.phone}
-        autoComplete="tel"
-        disabled={disabled}
-      />
+      {/* Phone - conditionally rendered */}
+      {showPhone && (
+        <FieldTextInput
+          className={css.field}
+          id={`${namespace}-phone`}
+          name={`${namespace}.phone`}
+          label="Phone Number"
+          type="tel"
+          required={!!requiredFields.phone}
+          autoComplete="tel"
+          disabled={disabled}
+        />
+      )}
 
     </div>
   );
@@ -227,4 +233,6 @@ AddressForm.propTypes = {
   requiredFields: PropTypes.object,
   disabled: PropTypes.bool,
   countryAfterZipForUSCA: PropTypes.bool,
+  showEmail: PropTypes.bool,
+  showPhone: PropTypes.bool,
 };

@@ -110,6 +110,12 @@
   text-align: left;
 }
 
+.phoneToggleRow {
+  grid-column: 1 / -1;
+  margin: 16px 0 8px;
+  text-align: left;
+}
+
 .inlineCheckbox {
   display: inline-flex;
   align-items: center;
