@@ -242,7 +242,8 @@ module.exports = (req, res) => {
           // Graceful degradation: Stripe not configured
           console.warn('[PI] Stripe not configured. Returning 503 for payment request.');
           return res.status(503).json({
-            error: 'payments-not-configured',
+            type: 'error',
+            code: 'payments-not-configured',
             message: 'Stripe is not configured on this server. Please contact support.',
           });
         }

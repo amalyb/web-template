@@ -260,6 +260,8 @@ const mapStateToProps = state => {
     clientSecretHotfix,
     // ✅ B) Add extractedClientSecret from speculate response
     extractedClientSecret,
+    // ✅ Add paymentsUnavailable flag
+    paymentsUnavailable,
   } = state.CheckoutPage;
   const { currentUser } = state.user;
   const { confirmCardPaymentError, paymentIntent, retrievePaymentIntentError } = state.stripe;
@@ -291,6 +293,8 @@ const mapStateToProps = state => {
     clientSecretHotfix,
     // ✅ B) Pass extractedClientSecret to CheckoutPageWithPayment
     extractedClientSecret,
+    // ✅ Pass paymentsUnavailable flag to CheckoutPageWithPayment
+    paymentsUnavailable,
   };
 };
 

@@ -45,6 +45,7 @@ export const INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR   = 'app/CheckoutPage/I
 
 const HOTFIX_SET_CLIENT_SECRET = 'CHECKOUT/HOTFIX_SET_CLIENT_SECRET';
 export const SET_STRIPE_CLIENT_SECRET = 'app/CheckoutPage/SET_STRIPE_CLIENT_SECRET';
+export const SET_PAYMENTS_UNAVAILABLE = 'app/CheckoutPage/SET_PAYMENTS_UNAVAILABLE';
 
 // ================ Reducer ================ //
 
@@ -72,6 +73,8 @@ const initialState = {
   clientSecretHotfix: null,
   // ✅ A) Store clientSecret from speculate response
   extractedClientSecret: null,
+  // Payments availability flag
+  paymentsUnavailable: false,
 };
 
 export default function checkoutPageReducer(state = initialState, action = {}) {
@@ -305,7 +308,8 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
       const errorPayload = action.payload;
       const isPaymentNotConfigured = 
         errorPayload?.status === 503 || 
-        errorPayload?.error === 'payments-not-configured';
+        errorPayload?.error === 'payments-not-configured' ||
+        errorPayload?.data?.code === 'payments-not-configured';
       
       if (isPaymentNotConfigured && process.env.NODE_ENV !== 'production') {
         console.warn('[SPECULATE_ERROR] Payments not configured on server (503)');
@@ -315,7 +319,11 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
         ...state,
         speculateStatus: 'failed',
         lastSpeculateError: errorPayload,
+        paymentsUnavailable: isPaymentNotConfigured,
       };
+    
+    case SET_PAYMENTS_UNAVAILABLE:
+      return { ...state, paymentsUnavailable: true };
 
     default:
       return state;
@@ -325,12 +333,17 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
 // ================ Selectors ================ //
 
 export const selectStripeClientSecret = state => state.CheckoutPage?.extractedClientSecret;
+export const selectPaymentsUnavailable = state => state.CheckoutPage?.paymentsUnavailable;
 
 // ================ Action creators ================ //
 
 export const setStripeClientSecret = clientSecret => ({
   type: SET_STRIPE_CLIENT_SECRET,
   payload: clientSecret,
+});
+
+export const setPaymentsUnavailable = () => ({ 
+  type: SET_PAYMENTS_UNAVAILABLE 
 });
 
 export const setInitialValues = initialValues => ({
@@ -1002,6 +1015,17 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
     }
   } catch (e) {
     console.error('[speculate] failed', e);
+    
+    // Check for 503 payments-not-configured error
+    const status = e?.status;
+    const code = e?.data?.code || e?.code;
+    if (status === 503 && code === 'payments-not-configured') {
+      console.warn('[Checkout] Payments unavailable on server. Halting speculation.');
+      dispatch(setPaymentsUnavailable());
+      dispatch({ type: INITIATE_PRIV_SPECULATIVE_TRANSACTION_ERROR, payload: e, error: true });
+      return; // Early exit; do not rethrow or schedule retry
+    }
+    
     // Enhanced error handling for 401 unauthorized
     if (e.status === 401) {
       console.error('[Sherbrt] 401 Unauthorized in initiatePrivilegedSpeculativeTransaction - user may need to log in again');

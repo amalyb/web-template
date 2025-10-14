@@ -718,6 +718,8 @@ const CheckoutPageWithPayment = props => {
     clientSecretHotfix: secretFromHotfix,
     // ✅ B) Extract clientSecret from speculate response
     extractedClientSecret,
+    // ✅ Extract paymentsUnavailable flag
+    paymentsUnavailable,
   } = props;
   
   // ✅ B) Use extracted clientSecret from speculate response
@@ -924,6 +926,12 @@ const CheckoutPageWithPayment = props => {
         hasProcess: !!txProcessForGate, 
         sessionKey 
       });
+    }
+
+    // ✅ Hard-gate #0: Skip if payments unavailable on server
+    if (paymentsUnavailable) {
+      console.info('[Checkout] Skipping speculation: payments unavailable');
+      return;
     }
 
     // ✅ Hard-gate #1: User must exist
@@ -1355,8 +1363,27 @@ const CheckoutPageWithPayment = props => {
             {errorMessages.retrievePaymentIntentErrorMessage}
             {errorMessages.paymentExpiredMessage}
             
+            {/* Show banner if payments are unavailable on server */}
+            {paymentsUnavailable && (
+              <div style={{ 
+                padding: '16px', 
+                marginBottom: '16px', 
+                backgroundColor: '#FEE', 
+                borderRadius: '4px',
+                border: '1px solid #F88',
+                textAlign: 'center'
+              }}>
+                <p style={{ margin: 0, color: '#C33', fontSize: '14px', fontWeight: 'bold' }}>
+                  <FormattedMessage 
+                    id="CheckoutPage.paymentsUnavailable" 
+                    defaultMessage="Payments are temporarily unavailable. Please try again later or contact support." 
+                  />
+                </p>
+              </div>
+            )}
+            
             {/* 🔐 PROD HOTFIX: Safety valve - show banner if PI secret is invalid */}
-            {speculateStatus === 'succeeded' && props.speculativeTransactionId && !stripeClientSecret && (
+            {speculateStatus === 'succeeded' && props.speculativeTransactionId && !stripeClientSecret && !paymentsUnavailable && (
               <div style={{ 
                 padding: '16px', 
                 marginBottom: '16px', 
@@ -1375,7 +1402,7 @@ const CheckoutPageWithPayment = props => {
             )}
             
             {/* Show loading indicator while speculation is in progress */}
-            {speculativeInProgress && !props.speculativeTransactionId && (
+            {speculativeInProgress && !props.speculativeTransactionId && !paymentsUnavailable && (
               <div style={{ 
                 padding: '16px', 
                 marginBottom: '16px', 
@@ -1392,7 +1419,7 @@ const CheckoutPageWithPayment = props => {
               </div>
             )}
 
-            {showPaymentForm ? (
+            {showPaymentForm && !paymentsUnavailable ? (
               <>
                 {(() => {
                   // Define submit gates clearly
