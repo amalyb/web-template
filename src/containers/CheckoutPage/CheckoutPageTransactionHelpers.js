@@ -266,8 +266,15 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
       returnUrl 
     } = extraPaymentParams;
     
+    // Derive feature flag robustly (safe for all environments)
+    const USE_PAYMENT_ELEMENT_FLAG = 
+      typeof process !== 'undefined' && 
+      process.env && 
+      String(process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT || '').toLowerCase() === 'true';
+    
     // If we're using PaymentElement, call the new confirmPayment API
-    if (usePaymentElement && elements) {
+    if (USE_PAYMENT_ELEMENT_FLAG && usePaymentElement && elements) {
+      console.log('[checkout] Payment flow: PaymentElement');
       console.log('[stripe] flow: PaymentElement/confirmPayment', {
         hasElements: !!elements,
         hasClientSecret: !!stripePaymentIntentClientSecret,
@@ -288,11 +295,18 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
     }
     
     // Otherwise, use the legacy CardElement flow
+    console.log('[checkout] Payment flow: CardElement');
     console.log('[stripe] flow: CardElement/confirmCardPayment', {
       hasCard: !!card,
       hasClientSecret: !!stripePaymentIntentClientSecret,
       orderId: order?.id?.uuid
     });
+    
+    // Ensure card element exists for CardElement flow
+    if (!card && !isPaymentFlowUseSavedCard) {
+      throw new Error('Card element is required for CardElement payment flow');
+    }
+    
     const stripeElementMaybe = !isPaymentFlowUseSavedCard ? { card } : {};
 
     // Note: For basic USE_SAVED_CARD scenario, we have set it already on API side, when PaymentIntent was created.
