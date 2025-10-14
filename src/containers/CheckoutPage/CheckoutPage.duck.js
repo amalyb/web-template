@@ -230,6 +230,22 @@ export default function checkoutPageReducer(state = initialState, action = {}) {
     case INITIATE_PRIV_SPECULATIVE_TRANSACTION_SUCCESS: {
       const { tx, key } = payload;
       
+      // ✅ HARDENING: Validate tx.id exists before treating as success
+      const hasId = !!tx?.id;
+      if (!hasId) {
+        console.error('[REDUCER] SUCCESS action received but tx.id missing!', { tx });
+        return {
+          ...state,
+          speculateStatus: 'failed',
+          lastSpeculateError: new Error('Speculation returned no transaction ID'),
+          // ✅ CRITICAL: Clear stale transaction data when no ID present
+          speculatedTransaction: null,
+          speculativeTransactionId: null,
+          stripeClientSecret: null,
+          clientSecretHotfix: null,
+        };
+      }
+      
       // 🔐 PROD HOTFIX: Robustly extract Stripe client secret from all possible paths
       const pd = tx?.attributes?.protectedData || {};
       const md = tx?.attributes?.metadata || {};
@@ -976,6 +992,13 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
   
   console.log('[speculate] dispatching', params);
   
+  // ✅ HARDENING: Check paymentsUnavailable flag FIRST
+  const alreadyUnavailable = selectPaymentsUnavailable(state);
+  if (alreadyUnavailable) {
+    console.warn('[Checkout] Skipping speculation: paymentsUnavailable=true');
+    return;
+  }
+  
   if (!currentUser?.id) {
     const authError = new Error('Cannot initiate privileged speculative transaction - user not authenticated');
     authError.status = 401;
@@ -1038,32 +1061,30 @@ export const initiatePrivilegedSpeculativeTransactionIfNeeded = params => async 
   } catch (e) {
     // ✅ HARDENED: Extensive error introspection for debugging
     console.error('[speculate] failed', e);
-    console.error('[DEBUG] error keys:', Object.keys(e || {}));
-    console.error('[DEBUG] e.status:', e?.status);
-    console.error('[DEBUG] e.code:', e?.code);
-    console.error('[DEBUG] e.data:', e?.data);
-    console.error('[DEBUG] e.apiErrors:', e?.apiErrors);
-    console.error('[DEBUG] e.response:', e?.response);
     
-    // ✅ HARDENED: Robust 503 detection across all possible error shapes
+    // Extract error properties with consistent shape (following api.js structured errors)
     const status = e?.status ?? e?.response?.status;
     const code = 
+      e?.code ||
       e?.data?.code ||
-      e?.code || 
       e?.apiErrors?.[0]?.code ||
       e?.response?.data?.code;
     const message = 
       e?.message || 
+      e?.data?.message ||
       e?.response?.data?.message ||
       '';
     
-    // ✅ HARDENED: Comprehensive check for payments unavailable
-    // Guard: ensure 403 (forbidden) never sets paymentsUnavailable flag
+    // Dev-only: Log structured error details
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[DEBUG] Structured error:', { status, code, message });
+    }
+    
+    // ✅ HARDENED: Comprehensive check for payments unavailable (503 or payments-not-configured)
     const isPaymentsUnavailable = 
-      (status === 503 || 
-       code === 'payments-not-configured' ||
-       /Stripe is not configured/i.test(message)) &&
-      status !== 403; // 403 is permission denied, not payments unavailable
+      status === 503 || 
+      code === 'payments-not-configured' ||
+      /Stripe is not configured/i.test(message);
     
     if (isPaymentsUnavailable) {
       console.warn('[Checkout] Payments unavailable on server. Halting speculation.');
