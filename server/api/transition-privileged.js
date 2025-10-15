@@ -228,11 +228,11 @@ async function createShippingLabels({
     };
 
     // Outbound shipment payload
+    // Note: QR code will be requested per-carrier at purchase time (USPS only)
     const outboundPayload = {
       address_from: providerAddress,
       address_to: customerAddress,
       parcels: [parcel],
-      extra: { qr_code_requested: true },
       async: false
     };
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
@@ -254,20 +254,71 @@ async function createShippingLabels({
     
     // Select a shipping rate from the available rates
     const availableRates = shipmentRes.data.rates || [];
+    const shipmentData = shipmentRes.data;
+    
     console.log('📊 [SHIPPO] Available rates:', availableRates.length);
     
+    // Diagnostics if no rates returned
     if (availableRates.length === 0) {
-      console.error('❌ [SHIPPO] No shipping rates available for outbound shipment');
+      console.error('❌ [SHIPPO][NO-RATES] No shipping rates available for outbound shipment');
+      
+      // Log Shippo messages for diagnostics
+      if (shipmentData.messages && shipmentData.messages.length > 0) {
+        console.error('[SHIPPO][NO-RATES] messages:', JSON.stringify(shipmentData.messages, null, 2));
+      }
+      
+      // Log carrier accounts if available
+      if (shipmentData.carrier_accounts && shipmentData.carrier_accounts.length > 0) {
+        const carriers = shipmentData.carrier_accounts.map(c => c.carrier);
+        console.error('[SHIPPO][NO-RATES] carrier_accounts:', carriers);
+      }
+      
+      // Log addresses being used (masked)
+      console.error('[SHIPPO][NO-RATES] address_from:', {
+        street1: providerAddress.street1,
+        city: providerAddress.city,
+        state: providerAddress.state,
+        zip: providerAddress.zip,
+        country: providerAddress.country
+      });
+      console.error('[SHIPPO][NO-RATES] address_to:', {
+        street1: customerAddress.street1,
+        city: customerAddress.city,
+        state: customerAddress.state,
+        zip: customerAddress.zip,
+        country: customerAddress.country
+      });
+      
+      // Log parcel dimensions
+      console.error('[SHIPPO][NO-RATES] parcel:', parcel);
+      
       return { success: false, reason: 'no_shipping_rates' };
     }
     
-    // Rate selection logic: prefer USPS, fallback to first available
-    let selectedRate = availableRates.find(rate => rate.provider === 'USPS');
+    // Rate selection logic: use provider preference from env
+    const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
+      .split(',')
+      .map(p => p.trim().toUpperCase())
+      .filter(Boolean);
+    
+    const providersAvailable = availableRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
+    
+    console.log('[SHIPPO][RATE-SELECT] providers_available=' + JSON.stringify(providersAvailable) + ' prefs=' + JSON.stringify(preferredProviders));
+    
+    // Select rate based on preference order
+    let selectedRate = null;
+    for (const preferredProvider of preferredProviders) {
+      selectedRate = availableRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
+      if (selectedRate) {
+        console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`);
+        break;
+      }
+    }
+    
+    // Fallback: use first available if no preference match
     if (!selectedRate) {
       selectedRate = availableRates[0];
-      console.log('⚠️ [SHIPPO] USPS rate not found, using first available:', selectedRate.provider);
-    } else {
-      console.log('✅ [SHIPPO] Selected USPS rate:', selectedRate.provider, selectedRate.servicelevel);
+      console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`);
     }
     
     console.log('📦 [SHIPPO] Selected rate:', {
@@ -279,14 +330,25 @@ async function createShippingLabels({
     
     // Create the actual label by purchasing the transaction
     console.log('📦 [SHIPPO] Purchasing label for selected rate...');
+    
+    // Build transaction payload - only request QR code for USPS
+    const transactionPayload = {
+      rate: selectedRate.object_id,
+      async: false,
+      label_file_type: 'PNG'
+    };
+    
+    // Only request QR code for USPS (UPS doesn't support it)
+    if (selectedRate.provider.toUpperCase() === 'USPS') {
+      transactionPayload.extra = { qr_code_requested: true };
+      console.log('📦 [SHIPPO] Requesting QR code for USPS label');
+    } else {
+      console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
+    }
+    
     const transactionRes = await axios.post(
       'https://api.goshippo.com/transactions/',
-      {
-        rate: selectedRate.object_id,
-        async: false,
-        label_file_type: 'PNG',
-        qr_code_requested: true,
-      },
+      transactionPayload,
       {
         headers: {
           'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
@@ -394,13 +456,13 @@ async function createShippingLabels({
         let body;
         if (shipUrl) {
           body = shipByStr
-            ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
-            : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
+            ? `Sherbrt 🍧: your QR shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
+            : `Sherbrt 🍧: your QR shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
         } else {
           // Fallback: no link available
           body = shipByStr
-            ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}.`
-            : `Sherbrt: your shipping label for "${listingTitle}" is ready.`;
+            ? `Sherbrt 🍧: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}.`
+            : `Sherbrt 🍧 : your shipping label for "${listingTitle}" is ready.`;
           console.warn('[SMS][Step-3] sending without link (fallback) txId=' + txId + ' reason=missing_link');
         }
         
@@ -485,7 +547,6 @@ async function createShippingLabels({
           address_from: customerAddress,
           address_to: providerAddress,
           parcels: [parcel],
-          extra: { qr_code_requested: true },
           async: false
         };
 
@@ -505,10 +566,33 @@ async function createShippingLabels({
         
         // Get return rates and select one
         const returnRates = returnShipmentRes.data.rates || [];
+        const returnShipmentData = returnShipmentRes.data;
+        
+        if (returnRates.length === 0) {
+          console.warn('⚠️ [SHIPPO] No return rates available');
+          if (returnShipmentData.messages && returnShipmentData.messages.length > 0) {
+            console.warn('[SHIPPO][NO-RATES][RETURN] messages:', JSON.stringify(returnShipmentData.messages, null, 2));
+          }
+        }
+        
         if (returnRates.length > 0) {
-          let returnSelectedRate = returnRates.find(rate => rate.provider === 'USPS');
+          // Use same provider preference logic for return labels
+          const returnProvidersAvailable = returnRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
+          console.log('[SHIPPO][RATE-SELECT][RETURN] providers_available=' + JSON.stringify(returnProvidersAvailable));
+          
+          let returnSelectedRate = null;
+          for (const preferredProvider of preferredProviders) {
+            returnSelectedRate = returnRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
+            if (returnSelectedRate) {
+              console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`);
+              break;
+            }
+          }
+          
+          // Fallback to first available
           if (!returnSelectedRate) {
             returnSelectedRate = returnRates[0];
+            console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`);
           }
           
           console.log('📦 [SHIPPO] Selected return rate:', {
@@ -518,15 +602,24 @@ async function createShippingLabels({
             object_id: returnSelectedRate.object_id
           });
           
+          // Build return transaction payload - only request QR for USPS
+          const returnTransactionPayload = {
+            rate: returnSelectedRate.object_id,
+            async: false,
+            label_file_type: 'PNG'
+          };
+          
+          if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
+            returnTransactionPayload.extra = { qr_code_requested: true };
+            console.log('📦 [SHIPPO] Requesting QR code for USPS return label');
+          } else {
+            console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
+          }
+          
           // Purchase return label
           const returnTransactionRes = await axios.post(
             'https://api.goshippo.com/transactions/',
-            {
-              rate: returnSelectedRate.object_id,
-              async: false,
-              label_file_type: 'PNG',
-              qr_code_requested: true,
-            },
+            returnTransactionPayload,
             {
               headers: {
                 'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
