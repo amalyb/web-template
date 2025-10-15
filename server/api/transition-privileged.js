@@ -12,6 +12,7 @@ const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink } = require('../util/url');
+const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
 
 // ---- helpers (add once, top-level) ----
@@ -432,24 +433,27 @@ async function createShippingLabels({
         
         // Build shipUrl using strategy
         const linkResult = buildShipLabelLink(txId, { label_url: labelUrl, qr_code_url: qrUrl }, { strategy: process.env.SMS_LINK_STRATEGY });
-        const shipUrl = linkResult.url;
+        const shipUrl = await shortLink(linkResult.url);
         const strategyUsed = linkResult.strategy;
         
-        // Get listing title
-        const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+        // Get listing title (truncate if too long to keep SMS compact)
+        const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+        const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
         
-        // Build SMS body based on QR presence (any carrier)
+        // Build SMS body based on QR presence (any carrier) - tighter copy with short links
         let smsBody;
         if (hasQr) {
-          // QR code present: use "Scan this QR at drop-off" message
+          // QR code present: use "Scan QR" message (more compact)
+          const shortQr = await shortLink(qrUrl);
           smsBody = shipByStr
-            ? `Sherbrt 🍧: 📦 Ship "${listingTitle}" by ${shipByStr}. Scan this QR at drop-off: ${qrUrl}. Open ${shipUrl}`
-            : `Sherbrt 🍧: 📦 Ship "${listingTitle}". Scan this QR at drop-off: ${qrUrl}. Open ${shipUrl}`;
+            ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${shortQr}`
+            : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${shortQr}`;
         } else {
-          // No QR code: use "Print & attach your label" message
+          // No QR code: use "Label" message (more compact)
+          const shortLabel = await shortLink(labelUrl);
           smsBody = shipByStr
-            ? `Sherbrt 🍧: 📦 Ship "${listingTitle}" by ${shipByStr}. Print & attach your label: ${labelUrl}. Open ${shipUrl}`
-            : `Sherbrt 🍧: 📦 Ship "${listingTitle}". Print & attach your label: ${labelUrl}. Open ${shipUrl}`;
+            ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${shortLabel}`
+            : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${shortLabel}`;
         }
         
         // Log before send

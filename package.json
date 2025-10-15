@@ -117,6 +117,7 @@
     "dev-server": "cross-env-shell NODE_ENV=development PORT=4000 REACT_APP_MARKETPLACE_ROOT_URL=http://localhost:4000 \"npm run build && nodemon --watch server server/index.js\"",
     "test-server": "jest ./server/**/*.test.js",
     "webhook:ups:accepted": "node test-ups-webhook.js",
+    "webhook:test:track": "curl -s -X POST ${APP_HOST:-http://localhost:3500}/api/webhooks/__test/shippo/track -H 'Content-Type: application/json' -d '{\"tracking_number\":\"1Z123TEST456\",\"carrier\":\"ups\",\"status\":\"TRANSIT\"}' && echo",
     "heroku-postbuild": "npm run build",
     "render-build": "npm run build",
     "postinstall": "patch-package",

@@ -285,6 +285,21 @@ app.use(passport.initialize());
 // Server-side routes that do not render the application
 app.use('/api', apiRouter);
 
+// Short link redirect handler
+// Decodes compact tokens and redirects to long URLs (Shippo labels, tracking, etc.)
+const { expandShortToken } = require('./api-util/shortlink');
+
+app.get('/r/:t', async (req, res) => {
+  try {
+    const url = await expandShortToken(req.params.t);
+    console.log('[SHORTLINK] Redirecting to:', url.substring(0, 50) + '...');
+    res.redirect(302, url);
+  } catch (e) {
+    console.error('[SHORTLINK] Invalid token:', e.message);
+    res.status(400).send('Invalid link');
+  }
+});
+
 // Redis smoke test endpoint - standalone test for Redis connection and QR functionality
 const { getRedis } = require('./redis');
 
