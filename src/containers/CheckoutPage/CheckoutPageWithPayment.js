@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Form as FinalForm, FormSpy } from 'react-final-form';
-import deepEqual from 'fast-deep-equal';
+import isEqual from 'lodash.isequal';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -280,14 +280,11 @@ export const loadInitialDataForStripePayments = ({
   fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
 };
 
-const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone, elements, paymentElementComplete, stripePaymentIntentClientSecret) => {
+const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone, elements, paymentElementComplete, stripePaymentIntentClientSecret, cardElementRef) => {
   if (submitting) {
     return;
   }
   setSubmitting(true);
-
-  // Use centralized feature flag (safe for browser environments)
-  console.log('[checkout] Payment flow:', USE_PAYMENT_ELEMENT ? 'PaymentElement' : 'CardElement');
 
   const {
     history,
@@ -563,7 +560,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     pageData,
     speculatedTransaction,
     stripe,
-    card,
+    card: USE_PAYMENT_ELEMENT ? null : (cardElementRef || card),
     ...(USE_PAYMENT_ELEMENT ? { elements, usePaymentElement: true } : { usePaymentElement: false }),
     billingDetails: getBillingDetails(billingForGetBillingDetails, currentUser),
     message,
@@ -604,7 +601,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     onSubmitCallback();
     
     // Log redirect for debugging
-    console.log('[checkout] Redirecting to order page:', orderId.uuid, orderDetailsPath);
+    console.log('[checkout] ✅ Payment success, redirecting to order page:', orderId.uuid, orderDetailsPath);
     history.push(orderDetailsPath);
   } catch (err) {
     console.error('[Checkout] processCheckoutWithPayment failed:', err);
@@ -728,15 +725,14 @@ export const CheckoutPageWithPayment = props => {
   const [stripe, setStripe] = useState(null);
   // Elements instance (needed for PaymentElement)
   const [elements, setElements] = useState(null);
+  // CardElement ref (needed for CardElement flow)
+  const [cardElementRef, setCardElementRef] = useState(null);
   // Flag to determine which Stripe flow to use (from env)
   const usePaymentElement = USE_PAYMENT_ELEMENT;
   // Payment element completion state
   const [paymentElementComplete, setPaymentElementComplete] = useState(false);
   const [stripeElementMounted, setStripeElementMounted] = useState(false);
   const stripeReady = !!stripeElementMounted;
-  
-  // Log which payment flow is active
-  console.log('[checkout] Payment flow:', usePaymentElement ? 'PaymentElement' : 'CardElement');
   
   // Ref to prevent speculative transaction loops
   const prevSpecKeyRef = useRef(null);
@@ -768,8 +764,8 @@ export const CheckoutPageWithPayment = props => {
     onReSpeculate,
   } = props;
 
-  // Memoize initial values - only derive ONCE on mount to prevent form resets
-  // Do NOT include volatile deps like clientSecret, speculateStatus, or pageData
+  // Memoize initial values - only derive when stable identifiers change (not on every render)
+  // Do NOT include volatile deps like clientSecret, speculateStatus, stripe, elements, paymentElementComplete, cardElementRef
   const seedInitialValues = useMemo(() => {
     // Build the initial values from existing protected data or defaults
     const existingPD = pageData?.transaction?.attributes?.protectedData || {};
@@ -803,13 +799,15 @@ export const CheckoutPageWithPayment = props => {
       },
     };
 
-    console.log('[QA] seedInitialValues created (should only happen once):', {
+    console.log('[QA] seedInitialValues created:', {
+      currentUserId: currentUser?.id?.uuid,
+      transactionId: pageData?.transaction?.id?.uuid,
       billing_keys: Object.keys(initialValues.billing || {}),
       shipping_keys: Object.keys(initialValues.shipping || {}),
     });
 
     return initialValues;
-  }, []); // Empty array - only derive once on mount
+  }, [currentUser?.id?.uuid, pageData?.transaction?.id?.uuid]); // Only recompute when user or transaction ID changes
 
   // Handle speculative transaction initiation with proper guards (one-shot)
   useEffect(() => {
@@ -1069,7 +1067,7 @@ export const CheckoutPageWithPayment = props => {
                 <FinalForm
                       initialValues={seedInitialValues}
                       keepDirtyOnReinitialize={true}
-                      initialValuesEqual={deepEqual}
+                      initialValuesEqual={isEqual}
                       onSubmit={(values) => {
                         // This is the unified submit handler - extract contact and call Stripe payment
                         const contactEmail = values.contactEmail;
@@ -1087,7 +1085,8 @@ export const CheckoutPageWithPayment = props => {
                           contactPhone,
                           elements,
                           paymentElementComplete,
-                          stripePaymentIntentClientSecret
+                          stripePaymentIntentClientSecret,
+                          cardElementRef
                         );
                       }}
                       validate={validateCheckout}
@@ -1245,6 +1244,7 @@ export const CheckoutPageWithPayment = props => {
                                   paymentIntent={paymentIntent}
                                   onStripeInitialized={stripe => setStripe(stripe)}
                                   onElementsCreated={setElements}
+                                  onCardElementReady={setCardElementRef}
                                   onStripeElementMounted={(v) => { 
                                     console.log('[Stripe] element mounted:', v);
                                     setStripeElementMounted(!!v);
