@@ -1,4 +1,4 @@
-@import '../../styles/propertySets.css';
+@import '../../styles/marketplaceDefaults.css';
 
 .root {
   composes: marketplaceModalRootStyles from global;
