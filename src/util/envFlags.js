@@ -14,12 +14,16 @@ export const __DEV__ = !(typeof process !== 'undefined' && process.env && proces
  * Reads from process.env (build-time) or window.__ENV__ (runtime fallback)
  */
 export const USE_PAYMENT_ELEMENT = (() => {
-  // Try process.env first (build-time)
-  const fromProcessEnv = typeof process !== 'undefined' && process.env && process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT;
-  
-  // Try window.__ENV__ as fallback (runtime injection)
-  const fromWindowEnv = typeof window !== 'undefined' && window.__ENV__ && window.__ENV__.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT;
-  
+  const fromProcessEnv =
+    typeof process !== 'undefined' &&
+    process.env &&
+    process.env.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT;
+
+  const fromWindowEnv =
+    typeof window !== 'undefined' &&
+    window.__ENV__ &&
+    window.__ENV__.REACT_APP_USE_STRIPE_PAYMENT_ELEMENT;
+
   const value = fromProcessEnv || fromWindowEnv || '';
   return String(value).toLowerCase() === 'true';
 })();

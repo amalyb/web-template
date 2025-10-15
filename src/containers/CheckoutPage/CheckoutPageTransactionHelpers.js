@@ -295,7 +295,7 @@ export const processCheckoutWithPayment = (orderParams, extraPaymentParams) => {
         stripePaymentIntentClientSecret,
         orderId: order?.id,
         billingDetails,
-        returnUrl: returnUrl || undefined, // Use undefined to handle in-page
+        returnUrl: returnUrl || undefined,
       };
 
       return hasPaymentIntentUserActionsDone

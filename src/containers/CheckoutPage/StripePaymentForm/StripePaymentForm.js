@@ -335,6 +335,9 @@ class StripePaymentForm extends Component {
   }
 
   componentDidMount() {
+    // One-time console log at mount
+    console.log('[checkout] Payment flow:', USE_PAYMENT_ELEMENT ? 'PaymentElement' : 'CardElement');
+    
     // SSR/boot safety: gate Stripe init
     if (typeof window !== 'undefined' && window.Stripe && this.props.stripePublishableKey) {
       const publishableKey = this.props.stripePublishableKey;
@@ -416,6 +419,7 @@ class StripePaymentForm extends Component {
 
     if (!this.card) {
       this.card = elements.create('card', { style: cardStyles });
+      this.cardElement = this.card; // Store the instance for parent access
       
       // Ensure the target element exists before mounting
       const targetElement = element || this.cardContainer;
@@ -426,6 +430,11 @@ class StripePaymentForm extends Component {
       
       this.card.mount(targetElement);
       this.card.addEventListener('change', this.handleCardValueChange);
+      
+      // Notify parent that card element is ready
+      if (this.props.onCardElementReady) {
+        this.props.onCardElementReady(this.cardElement);
+      }
       
       // Notify parent that Stripe element is mounted (only once)
       if (!this.reportedMounted) {
