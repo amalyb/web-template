@@ -355,7 +355,87 @@ async function createShippingLabels({
     console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
     console.log('[label-ready] shipByStr:', shipByStr);
     
-    // Persist to Flex protectedData using txId
+    // ========== STEP 1: SEND SMS TO LENDER (INDEPENDENT OF PERSISTENCE) ==========
+    // SMS must happen immediately after Shippo success, before any persistence attempts
+    console.log('[SMS][Step-3] Starting lender notification flow...');
+    
+    try {
+      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
+      
+      if (!lenderPhone) {
+        console.warn('[SMS][Step-3] No lender phone available, skipping SMS');
+      } else {
+        // Build link using strategy
+        const strategy = (process.env.SMS_LINK_STRATEGY || 'app').toLowerCase();
+        const forceShippoLink = process.env.SMS_FORCE_SHIPPO_LINK === '1';
+        
+        let shipUrl = null;
+        let strategyUsed = strategy;
+        
+        if (forceShippoLink && (qrUrl || labelUrl)) {
+          shipUrl = qrUrl || labelUrl;
+          strategyUsed = 'shippo-forced';
+          console.log('[SMS][Step-3] Using forced Shippo link (SMS_FORCE_SHIPPO_LINK=1)');
+        } else if (strategy === 'shippo' && (qrUrl || labelUrl)) {
+          shipUrl = qrUrl || labelUrl;
+          strategyUsed = 'shippo';
+        } else {
+          // Default: app strategy
+          shipUrl = makeAppUrl(`/ship/${txId}`);
+          strategyUsed = 'app';
+          if (strategy === 'shippo' && !qrUrl && !labelUrl) {
+            console.warn('[SMS][Step-3] SMS_LINK_STRATEGY=shippo but no Shippo URLs available, falling back to app');
+          }
+        }
+        
+        const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+        
+        // Build message - always include link if we have one
+        let body;
+        if (shipUrl) {
+          body = shipByStr
+            ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
+            : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
+        } else {
+          // Fallback: no link available
+          body = shipByStr
+            ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}.`
+            : `Sherbrt: your shipping label for "${listingTitle}" is ready.`;
+          console.warn('[SMS][Step-3] sending without link (fallback) txId=' + txId + ' reason=missing_link');
+        }
+        
+        // Log before send
+        console.log(`[SMS][Step-3] strategy=${strategyUsed} link=${shipUrl || 'none'} txId=${txId} tracking=${trackingNumber || 'none'}`);
+        
+        // Send SMS
+        await sendSMS(
+          lenderPhone,
+          body,
+          {
+            role: 'lender',
+            transactionId: txId,
+            tag: 'label_ready_to_lender',
+            meta: { 
+              listingId: listing?.id?.uuid || listing?.id,
+              strategy: strategyUsed,
+              trackingNumber: trackingNumber
+            }
+          }
+        );
+        
+        // Log success (sendSMS returns SID in production, undefined in DRY_RUN)
+        console.log(`[SMS][Step-3] sent to=${lenderPhone.replace(/(\d{2})\d+(\d{4})/, '$1***$2')} txId=${txId}`);
+      }
+    } catch (smsError) {
+      console.error('[SMS][Step-3] ERROR err=' + smsError.message + ' txId=' + txId);
+      console.error('[SMS][Step-3] stack:', smsError.stack);
+      // Do not rethrow - SMS failure should not block persistence
+    }
+    
+    // ========== STEP 2: PERSIST TO FLEX (INDEPENDENT OF SMS) ==========
+    // Persistence happens after SMS, and failures here don't affect SMS delivery
+    console.log('[SHIPPO] Attempting to persist label data to Flex protectedData...');
+    
     try {
       const patch = {
         outboundTrackingNumber: trackingNumber,
@@ -373,55 +453,16 @@ async function createShippingLabels({
       };
       const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
       if (result && result.success === false) {
-        console.warn('📝 [SHIPPO] Persistence not available, but SMS will continue:', result.reason);
+        console.warn('📝 [SHIPPO] Persistence not available (SMS already sent):', result.reason);
       } else {
         console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
         if (shipByDate) {
           console.log('📅 [SHIPPO] Set ship-by date:', shipByDate.toISOString());
         }
       }
-    } catch (e) {
-      console.error('[SHIPPO] Failed to persist outbound label details to protectedData', e);
-    }
-
-    // Lender SMS block – carrier-friendly messaging
-    try {
-      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
-      
-      // Build message defensively: omit "Please ship by …" if unknown
-      // Use URL helper with Shippo fallback support
-      const shippoData = {
-        label_url: labelRes?.data?.label_url,
-        qr_code_url: qrUrl,
-      };
-      const { url: shipUrl, strategy } = buildShipLabelLink(txId, shippoData, { preferQr: true });
-      const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
-
-      const body = shipByStr
-        ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
-        : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
-
-      console.log('[label-ready] sms body preview:', body);
-
-      console.log(`[SMS][Step-3] link=${shipUrl} strategy=${strategy} txId=${txId}`);
-
-      if (!lenderPhone || !body) {
-        console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
-      } else {
-        await sendSMS(
-          lenderPhone,
-          body,
-          {
-            role: 'lender',
-            transactionId: txId,
-            tag: 'label_ready_to_lender',
-            meta: { listingId: listing?.id?.uuid || listing?.id }
-          }
-        );
-        console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
-      }
-    } catch (e) {
-      console.error('[SHIPPO][SMS] Failed to send provider SMS', e);
+    } catch (persistError) {
+      console.error('[SHIPPO] Failed to persist outbound label details (SMS already sent):', persistError.message);
+      // Do not rethrow - persistence failure should not fail the overall flow
     }
 
     // Parse expiry from QR code URL (keep existing logic)
@@ -1017,21 +1058,27 @@ module.exports = async (req, res) => {
         
         if (!outbound.acceptedAt) {
           try {
-            await sdk.transactions.update({
-              id: transaction.id,
-              attributes: {
-                protectedData: {
-                  ...protectedData,
-                  outbound: {
-                    ...outbound,
-                    acceptedAt: timestamp() // ← respects FORCE_NOW
+            // Guard: check if sdk.transactions.update exists before calling
+            if (typeof sdk.transactions.update === 'function') {
+              await sdk.transactions.update({
+                id: transaction.id,
+                attributes: {
+                  protectedData: {
+                    ...protectedData,
+                    outbound: {
+                      ...outbound,
+                      acceptedAt: timestamp() // ← respects FORCE_NOW
+                    }
                   }
                 }
-              }
-            });
-            console.log('💾 Set outbound.acceptedAt for transition/accept');
+              });
+              console.log('💾 Set outbound.acceptedAt for transition/accept');
+            } else {
+              console.warn('⚠️ sdk.transactions.update not available, skipping acceptedAt update (non-critical)');
+            }
           } catch (updateError) {
-            console.error('❌ Failed to set acceptedAt:', updateError.message);
+            console.error('❌ Failed to set acceptedAt (non-critical):', updateError.message);
+            // Do not rethrow - this is a non-essential update
           }
         }
       }
