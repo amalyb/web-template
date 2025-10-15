@@ -18,6 +18,7 @@ const transitionPrivileged = require('./api/transition-privileged');
 const shippoWebhook = require('./webhooks/shippoTracking');
 const qrRouter = require('./api/qr');
 const smsStatus = require('./api/twilio/sms-status');
+const ship = require('./api/ship');
 
 const createUserWithIdp = require('./api/auth/createUserWithIdp');
 const loginWithIdp = require('./api/auth/loginWithIdp');
@@ -69,6 +70,9 @@ router.post('/twilio/sms-status', express.urlencoded({ extended: false }), smsSt
 // QR code redirect endpoint
 const qrRouterInstance = qrRouter({ getTrustedSdk }); // factory export
 router.use('/qr', qrRouterInstance);
+
+// Shipping label endpoint (for /ship/:id page)
+router.get('/ship/:id', ship);
 
 // Create user with identity provider (e.g. Facebook or Google)
 // This endpoint is called to create a new user after user has confirmed

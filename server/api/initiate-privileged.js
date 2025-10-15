@@ -31,7 +31,8 @@ console.log('🚦 initiate-privileged endpoint is wired up');
 // Helper function to build carrier-friendly lender SMS message
 function buildLenderMsg(tx, listingTitle) {
   // Carrier-friendly: short, one link, no emojis
-  const lenderInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/sales';
+  const { makeAppUrl } = require('../util/url');
+  const lenderInboxUrl = makeAppUrl('/inbox/sales');
   const lenderMsg = `Sherbrt 🍧: new booking request for "${listingTitle}". Check your inbox: ${lenderInboxUrl}`;
   return lenderMsg;
 }
@@ -287,10 +288,11 @@ module.exports = (req, res) => {
             try {
               console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
               
-                              const listingTitle = listing?.attributes?.title || 'your listing';
-                // Carrier-friendly borrower message
-                const borrowerInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/orders';
-                const borrowerMsg = `Sherbrt: your booking request for "${listingTitle}" was sent. Track in your inbox: ${borrowerInboxUrl}`;
+              const { makeAppUrl } = require('../util/url');
+              const listingTitle = listing?.attributes?.title || 'your listing';
+              // Carrier-friendly borrower message
+              const borrowerInboxUrl = makeAppUrl('/inbox/orders');
+              const borrowerMsg = `Sherbrt: your booking request for "${listingTitle}" was sent. Track in your inbox: ${borrowerInboxUrl}`;
               
               const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:borrower`;
               if (alreadySent(key)) {

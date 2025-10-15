@@ -35,6 +35,7 @@ const SearchPageWithGrid = loadable(() => import(/* webpackChunkName: "SearchPag
 const StripePayoutPage = loadable(() => import(/* webpackChunkName: "StripePayoutPage" */ '../containers/StripePayoutPage/StripePayoutPage'));
 const TermsOfServicePage = loadable(() => import(/* webpackChunkName: "TermsOfServicePage" */ '../containers/TermsOfServicePage/TermsOfServicePage'));
 const TransactionPage = loadable(() => import(/* webpackChunkName: "TransactionPage" */ '../containers/TransactionPage/TransactionPage'));
+const ShipPage = loadable(() => import(/* webpackChunkName: "ShipPage" */ '../containers/ShipPage/ShipPage'));
 const NoAccessPage = loadable(() => import(/* webpackChunkName: "NoAccessPage" */ '../containers/NoAccessPage/NoAccessPage'));
 
 // Styleguide helps you to review current components and develop new ones
@@ -266,6 +267,16 @@ const routeConfiguration = (layoutConfig, accessControlConfig) => {
       auth: true,
       authPage: 'LoginPage',
       component: props => <NamedRedirect name="SaleDetailsPage" params={{ id: props.params?.id }} />,
+    },
+    {
+      path: '/ship/:id',
+      name: 'ShipPage',
+      component: ShipPage,
+    },
+    {
+      path: '/return/:id',
+      name: 'ReturnPage',
+      component: ShipPage, // Reuse ShipPage for return labels
     },
     {
       path: '/listings',

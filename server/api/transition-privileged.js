@@ -11,6 +11,8 @@ const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
+const { buildShipLabelLink } = require('../util/url');
+const { timestamp } = require('../util/time');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -94,7 +96,7 @@ async function persistWithRetry(id, data, { retries = 3, delayMs = 250 } = {}) {
             ...currentProtectedData.shippo?.outbound,
             ...data.shippoData
           },
-          updatedAt: new Date().toISOString()
+          updatedAt: timestamp() // ← respects FORCE_NOW
         }
       };
       
@@ -363,7 +365,7 @@ async function createShippingLabels({
         outboundCarrier: carrier,
         outboundService: service,
         outboundQrExpiry: parseExpiresParam(qrUrl),
-        outboundPurchasedAt: new Date().toISOString(),
+        outboundPurchasedAt: timestamp(), // ← respects FORCE_NOW
         outbound: {
           ...protectedData.outbound,
           shipByDate: shipByDate ? shipByDate.toISOString() : null
@@ -387,7 +389,12 @@ async function createShippingLabels({
       const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
       
       // Build message defensively: omit "Please ship by …" if unknown
-      const shipUrl = `${process.env.SITE_URL || 'https://sherbrt.com'}/ship/${txId}`;
+      // Use URL helper with Shippo fallback support
+      const shippoData = {
+        label_url: labelRes?.data?.label_url,
+        qr_code_url: qrUrl,
+      };
+      const { url: shipUrl, strategy } = buildShipLabelLink(txId, shippoData, { preferQr: true });
       const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
 
       const body = shipByStr
@@ -396,7 +403,7 @@ async function createShippingLabels({
 
       console.log('[label-ready] sms body preview:', body);
 
-      console.log('[sms] sending lender_label_ready', { txId, shipUrl });
+      console.log(`[SMS][Step-3] link=${shipUrl} strategy=${strategy} txId=${txId}`);
 
       if (!lenderPhone || !body) {
         console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
@@ -510,7 +517,7 @@ async function createShippingLabels({
                 returnCarrier: returnSelectedRate?.provider || null,
                 returnService: returnSelectedRate?.service?.name ?? returnSelectedRate?.servicelevel?.name ?? null,
                 returnQrExpiry: parseExpiresParam(returnQrUrl || ''),
-                returnPurchasedAt: new Date().toISOString(),
+                returnPurchasedAt: timestamp(), // ← respects FORCE_NOW
               };
               const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
               if (result && result.success === false) {
@@ -570,7 +577,7 @@ async function createShippingLabels({
               id: txId,
               protectedData: {
                 shippingNotification: {
-                  labelCreated: { sent: true, sentAt: new Date().toISOString() }
+                  labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
                 }
               }
             });
@@ -1017,7 +1024,7 @@ module.exports = async (req, res) => {
                   ...protectedData,
                   outbound: {
                     ...outbound,
-                    acceptedAt: new Date().toISOString()
+                    acceptedAt: timestamp() // ← respects FORCE_NOW
                   }
                 }
               }

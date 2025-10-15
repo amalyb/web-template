@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { getTrustedSdk } = require('../api-util/sdk');
+const { timestamp } = require('../util/time');
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -347,7 +348,7 @@ function getLenderPhone(transaction) {
                 ...protectedData,
                 return: {
                   ...returnData,
-                  firstScanAt: new Date().toISOString()
+                  firstScanAt: timestamp() // ← respects FORCE_NOW
                 }
               }
             }
@@ -403,12 +404,12 @@ function getLenderPhone(transaction) {
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
-            timestamp: new Date().toISOString(),
+            timestamp: timestamp(), // ← respects FORCE_NOW
             event: 'delivered'
           },
           shippingNotification: {
             ...protectedData.shippingNotification,
-            delivered: { sent: true, sentAt: new Date().toISOString() }
+            delivered: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
           }
         };
       } else if (isFirstScan) {
@@ -426,12 +427,12 @@ function getLenderPhone(transaction) {
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
-            timestamp: new Date().toISOString(),
+            timestamp: timestamp(), // ← respects FORCE_NOW
             event: 'first_scan'
           },
           shippingNotification: {
             ...protectedData.shippingNotification,
-            firstScan: { sent: true, sentAt: new Date().toISOString() }
+            firstScan: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
           }
         };
       }

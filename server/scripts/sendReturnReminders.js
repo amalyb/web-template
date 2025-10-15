@@ -12,6 +12,7 @@ try {
 
 // ✅ Use the correct SDK helper
 const { getTrustedSdk } = require('../api-util/sdk');
+const { getToday, getTomorrow, yyyymmdd, timestamp, logTimeState } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -66,10 +67,8 @@ if (DRY) {
   };
 }
 
-function yyyymmdd(d) {
-  // Always use UTC for consistent date handling
-  return new Date(d).toISOString().split('T')[0];
-}
+// Note: Date helper functions (yyyymmdd, getToday, getTomorrow, timestamp)
+// are now centralized in server/util/time.js with FORCE_TODAY/FORCE_TOMORROW support
 
 async function sendReturnReminders() {
   console.log('🚀 Starting return reminder SMS script...');
@@ -77,10 +76,12 @@ async function sendReturnReminders() {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
 
-    // today/tomorrow window (allow overrides for testing)
-    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
-    const tomorrow = process.env.FORCE_TOMORROW || yyyymmdd(Date.now() + 24 * 60 * 60 * 1000);
+    // today/tomorrow window (respects FORCE_TODAY/FORCE_TOMORROW)
+    const today = getToday();
+    const tomorrow = getTomorrow();
     const tMinus1 = yyyymmdd(new Date(today).getTime() - 24 * 60 * 60 * 1000);
+    
+    logTimeState(); // Log current time state with all overrides
     console.log(`📅 Window: t-1=${tMinus1}, today=${today}, tomorrow=${tomorrow}`);
 
     // Query transactions for T-1, today, and tomorrow
@@ -148,8 +149,9 @@ async function sendReturnReminders() {
         if (!returnLabelUrl && !returnData.tMinus1SentAt) {
           console.log(`🔧 Creating return label for tx ${tx?.id?.uuid || '(no id)'}`);
           // TODO: Call return label creation function here
-          // For now, we'll use a placeholder URL
-          returnLabelUrl = `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
+          // For now, we'll use app URL via helper
+          const { makeAppUrl } = require('../util/url');
+          returnLabelUrl = makeAppUrl(`/return/${tx?.id?.uuid || tx?.id}`);
           
           // Update protectedData with return label info
           try {
@@ -162,7 +164,7 @@ async function sendReturnReminders() {
                     ...returnData,
                     label: {
                       url: returnLabelUrl,
-                      createdAt: new Date().toISOString()
+                      createdAt: timestamp() // ← respects FORCE_NOW
                     }
                   }
                 }
@@ -218,7 +220,7 @@ async function sendReturnReminders() {
                   ...pd,
                   return: {
                     ...returnData,
-                    tMinus1SentAt: new Date().toISOString()
+                    tMinus1SentAt: timestamp() // ← respects FORCE_NOW
                   }
                 }
               }

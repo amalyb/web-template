@@ -1,6 +1,8 @@
 const { getTrustedSdk } = require('../api-util/sdk');
 const { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
+const { makeAppUrl } = require('../util/url');
+const { getToday, getNow, getNext9AM, diffDays, timestamp, logTimeState } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -56,16 +58,8 @@ if (DRY) {
   };
 }
 
-function yyyymmdd(d) {
-  // Always use UTC for consistent date handling
-  return new Date(d).toISOString().split('T')[0];
-}
-
-function diffDays(date1, date2) {
-  const d1 = new Date(date1 + 'T00:00:00.000Z'); // Force UTC
-  const d2 = new Date(date2 + 'T00:00:00.000Z'); // Force UTC
-  return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
-}
+// Note: Date helper functions (yyyymmdd, diffDays, getToday, getNow, getNext9AM, timestamp)
+// are now centralized in server/util/time.js with FORCE_NOW/FORCE_TODAY support
 
 function isInTransit(trackingStatus) {
   const upperStatus = trackingStatus?.toUpperCase();
@@ -86,7 +80,7 @@ async function evaluateReplacementCharge(tx) {
   return {
     replacementAmount: 5000, // $50.00 in cents
     evaluated: true,
-    timestamp: new Date().toISOString()
+    timestamp: timestamp() // ← respects FORCE_NOW
   };
 }
 
@@ -97,9 +91,10 @@ async function sendOverdueReminders() {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
 
-    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
+    const today = getToday(); // ← respects FORCE_TODAY
     const todayDate = new Date(today);
     
+    logTimeState(); // Log current time state with all overrides
     console.log(`📅 Processing overdue reminders for: ${today}`);
 
     // Load delivered transactions where return date has passed and no first scan
@@ -163,12 +158,13 @@ async function sendOverdueReminders() {
       const listing = listingKey ? included.get(listingKey) : null;
       
       // Get return label URL
+      const { makeAppUrl } = require('../util/url');
       const returnLabelUrl = returnData.label?.url ||
                             protectedData.returnLabelUrl ||
                             protectedData.returnLabel ||
                             protectedData.shippingLabelUrl ||
                             protectedData.returnShippingLabel ||
-                            `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
+                            makeAppUrl(`/return/${tx?.id?.uuid || tx?.id}`);
       
       // Check if we've already notified for this day
       const overdue = returnData.overdue || {};
@@ -318,12 +314,8 @@ if (require.main === module) {
     };
     
     // Calculate time until next 9 AM UTC
-    const now = new Date();
-    const next9AM = new Date(now);
-    next9AM.setUTCHours(9, 0, 0, 0);
-    if (next9AM <= now) {
-      next9AM.setUTCDate(next9AM.getUTCDate() + 1);
-    }
+    const now = getNow(); // ← respects FORCE_NOW
+    const next9AM = getNext9AM(); // ← respects FORCE_NOW
     
     const msUntilNext9AM = next9AM.getTime() - now.getTime();
     console.log(`⏰ Next run scheduled for: ${next9AM.toISOString()}`);

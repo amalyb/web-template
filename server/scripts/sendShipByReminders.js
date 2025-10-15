@@ -2,6 +2,7 @@ const { getTrustedSdk } = require('../api-util/sdk');
 let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
+const { getToday, diffDays, addDays, isSameDay, isMorningOf, logTimeState, timestamp } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -57,34 +58,8 @@ if (DRY) {
   };
 }
 
-function yyyymmdd(d) {
-  // Always use UTC for consistent date handling
-  return new Date(d).toISOString().split('T')[0];
-}
-
-function diffDays(date1, date2) {
-  const d1 = new Date(date1 + 'T00:00:00.000Z'); // Force UTC
-  const d2 = new Date(date2 + 'T00:00:00.000Z'); // Force UTC
-  return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
-}
-
-function addDays(date, days) {
-  const result = new Date(date + 'T00:00:00.000Z'); // Force UTC
-  result.setUTCDate(result.getUTCDate() + days);
-  return result;
-}
-
-function isSameDay(date1, date2) {
-  return yyyymmdd(date1) === yyyymmdd(date2);
-}
-
-function isMorningOf(date) {
-  const now = new Date();
-  const target = new Date(date + 'T00:00:00.000Z'); // Force UTC
-  return isSameDay(now, target) && now.getUTCHours() >= 6 && now.getUTCHours() < 12;
-}
-
-// Removed local computeShipByDate - now using centralized helper from server/lib/shipping.js
+// Note: Date helper functions (yyyymmdd, diffDays, addDays, isSameDay, isMorningOf)
+// are now centralized in server/util/time.js with FORCE_NOW/FORCE_TODAY support
 
 async function sendShipByReminders() {
   console.log('🚀 Starting ship-by reminder SMS script...');
@@ -93,9 +68,10 @@ async function sendShipByReminders() {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
 
-    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
+    const today = getToday(); // ← respects FORCE_TODAY
     const todayDate = new Date(today);
     
+    logTimeState(); // Log current time state with all overrides
     console.log(`📅 Processing reminders for: ${today}`);
 
     // Load accepted transactions with future ship-by dates and no first scan
@@ -168,7 +144,13 @@ async function sendShipByReminders() {
       const listing = listingKey ? included.get(listingKey) : null;
       const title = listing?.attributes?.title || 'your item';
       
-      const qrUrl = `https://sherbrt.com/ship/${tx?.id?.uuid || tx?.id}`;
+      // Use URL helper with Shippo fallback support
+      const { buildShipLabelLink } = require('../util/url');
+      const shippoData = {
+        qr_code_url: pd?.outboundQrCodeUrl,
+        label_url: pd?.outboundLabelUrl,
+      };
+      const { url: qrUrl, strategy } = buildShipLabelLink(tx?.id?.uuid || tx?.id, shippoData, { preferQr: true });
       const reminders = outbound.reminders || {};
       
       let message = null;
@@ -224,6 +206,7 @@ async function sendShipByReminders() {
         if (VERBOSE) {
           console.log(`📬 To ${providerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
         }
+        console.log(`[SMS][${tag}] link=${qrUrl} strategy=${strategy} txId=${tx?.id?.uuid || tx?.id}`);
         
         try {
           await sendSMS(providerPhone, message, {
@@ -236,7 +219,7 @@ async function sendShipByReminders() {
           });
           
           // Mark reminder as sent
-          const updatedReminders = { ...reminders, [reminderKey]: new Date().toISOString() };
+          const updatedReminders = { ...reminders, [reminderKey]: timestamp() };
           
           try {
             await sdk.transactions.update({
