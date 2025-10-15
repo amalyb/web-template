@@ -1,0 +1,67 @@
+feat(shipments): persist label data with privileged SDK + robust retries
+
+- Use privileged Integration SDK (no req.cookies) for protectedData writes
+- Implement txUpdateProtectedData() with read-modify-write and 409 retry
+- Persist outbound/return label fields (tracking, urls, carrier, service, purchasedAt)
+- Webhook: prefer metadata.txId; fallback to tracking# search
+- Tests: persistence + webhook Step-4 mapping
+- Logs: clearer success/failure and idempotency breadcrumbs
+
+BREAKING CHANGE: txUpdateProtectedData signature changed from object to (txId, patch)
+All callsites updated. No req.cookies dependency. Works in any server context.
+
+---
+
+Details:
+
+1. server/api-util/integrationSdk.js
+   - Added getTrustedSdk() - returns Integration SDK with client credentials
+   - Implemented txUpdateProtectedData(txId, patch, options):
+     * Read current transaction with privileged SDK
+     * Deep merge patch into existing protectedData (non-destructive)
+     * Update using privileged SDK
+     * Retry on 409 conflict up to 3 times with backoff (100ms, 200ms, 300ms)
+     * Return { success: true/false, data?, error? }
+   - Added deepMerge(base, patch) helper for non-destructive object merging
+   - Structured logs: [PERSIST] prefix for all operations
+
+2. server/api/transition-privileged.js
+   - Import txUpdateProtectedData from integrationSdk
+   - Updated all 3 callsites to new signature: txUpdateProtectedData(txId, patch)
+   - Added metadata.txId to outbound label purchase (line 340)
+   - Added metadata.txId to return label purchase (line 604)
+   - Persist outbound fields: tracking#, urls, carrier, service, purchased timestamp
+   - Persist return fields: same fields for return label
+   - Persist notification state: shippingNotification.{labelCreated,firstScan,delivered}
+
+3. server/webhooks/shippoTracking.js
+   - Already implements metadata.txId lookup first (line 296)
+   - Falls back to tracking# search if metadata missing (line 310)
+   - Test endpoint includes metadata.transactionId (line 615)
+   - Uses getTrustedSdk() throughout (no req dependency)
+
+4. server/test/integrationSdk.test.js
+   - Created unit tests for deepMerge() - 5 test cases
+   - Test stubs for txUpdateProtectedData() retry logic
+   - Test stubs for webhook metadata.txId lookup
+
+Migration Notes:
+- Old: txUpdateProtectedData({ id: txId, protectedData: patch })
+- New: txUpdateProtectedData(txId, patch)
+- All callsites updated in this commit
+- No database migrations required
+- Backward compatible (no breaking runtime changes)
+
+Environment Requirements:
+- INTEGRATION_CLIENT_ID (required)
+- INTEGRATION_CLIENT_SECRET (required)
+
+Testing:
+- npm test server/test/integrationSdk.test.js
+- curl POST /api/webhooks/__test/shippo/track (requires TEST_ENDPOINTS=1)
+- Verify protectedData fields populated after label purchase
+
+Resolves: Shippo label persistence robustness
+Improves: Webhook lookup speed via metadata.txId
+Adds: 409 conflict retry logic with backoff
+

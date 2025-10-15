@@ -12,50 +12,102 @@ function getIntegrationSdk() {
   return cached;
 }
 
-// Plain helper (no monkey-patching)
-async function txUpdateProtectedData({ id, protectedData }) {
-  const sdk = getIntegrationSdk();
-  
-  console.log('📝 [SHIPPO] Attempting to update protectedData for transaction:', id);
-  console.log('📝 [SHIPPO] ProtectedData to update:', Object.keys(protectedData));
-  
-  try {
-    // First, get the current transaction state to understand what transitions are available
-    const currentTx = await sdk.transactions.show({ id });
-    const currentState = currentTx.data.attributes.state;
-    const availableTransitions = currentTx.data.attributes.transitions || [];
-    
-    console.log(`[PERSIST] Current state: ${currentState}`);
-    console.log(`[PERSIST] Available transitions:`, availableTransitions);
-    
-    // Look for a transition that can write protectedData
-    const writerTransitions = availableTransitions.filter(t => 
-      t.includes('store') || t.includes('update') || t.includes('shipping')
-    );
-    
-    if (writerTransitions.length > 0) {
-      const transitionName = writerTransitions[0]; // Use the first available writer transition
-      console.log(`[PERSIST] Using transition: ${transitionName}`);
-      
-      return sdk.transactions.transition({
-        id,
-        transition: transitionName,
-        params: { protectedData },
-      });
-    } else {
-      console.error('[PERSIST] No writer transitions available from current state');
-      console.error('[PERSIST] Available transitions:', availableTransitions);
-      return { success: false, reason: 'no_writer_transitions_available' };
-    }
-    
-  } catch (error) {
-    console.error('[PERSIST][409]', error.response?.data || error);
-    console.error('[PERSIST] This means the shipping data cannot be persisted to the database');
-    console.error('[PERSIST] SMS will still work, but shipping details won\'t be saved');
-    
-    // Don't throw - let SMS continue working
-    return { success: false, reason: 'persistence_not_available', error: error.message };
-  }
+// Alias for consistency with other modules
+// Uses Integration SDK with client credentials (no req.cookies needed)
+function getTrustedSdk() {
+  return getIntegrationSdk();
 }
 
-module.exports = { getIntegrationSdk, txUpdateProtectedData };
+/**
+ * Deep merge helper - non-destructive merge of patch into base
+ * Arrays are replaced, not merged
+ */
+function deepMerge(base, patch) {
+  const result = { ...base };
+  
+  for (const key in patch) {
+    if (patch[key] && typeof patch[key] === 'object' && !Array.isArray(patch[key])) {
+      // Recursively merge objects
+      result[key] = deepMerge(base[key] || {}, patch[key]);
+    } else {
+      // Replace primitives and arrays
+      result[key] = patch[key];
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Safely update transaction protectedData with read-modify-write pattern
+ * 
+ * @param {string} txId - Transaction UUID
+ * @param {object} patch - Partial protectedData to merge (non-destructive)
+ * @param {object} options - { maxRetries: 3, backoffMs: 100 }
+ * @returns {Promise<object>} - { success: true/false, data?, error? }
+ */
+async function txUpdateProtectedData(txId, patch, options = {}) {
+  const { maxRetries = 3, backoffMs = 100 } = options;
+  const sdk = getTrustedSdk();
+  
+  console.log(`[PERSIST] Updating protectedData for tx=${txId}, keys=${Object.keys(patch).join(',')}`);
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // 1. Read current transaction
+      const showResponse = await sdk.transactions.show({ id: txId });
+      const currentTx = showResponse.data.data;
+      const currentProtectedData = currentTx.attributes.protectedData || {};
+      
+      // 2. Deep merge patch into current protectedData
+      const mergedProtectedData = deepMerge(currentProtectedData, patch);
+      
+      console.log(`[PERSIST] Attempt ${attempt}/${maxRetries}: Merging keys into protectedData`);
+      
+      // 3. Write back using update() (privileged)
+      const updateResponse = await sdk.transactions.update({
+        id: txId,
+        protectedData: mergedProtectedData
+      });
+      
+      console.log(`✅ [PERSIST] Successfully updated protectedData for tx=${txId}`);
+      return { success: true, data: updateResponse.data };
+      
+    } catch (error) {
+      const status = error.status || error.response?.status;
+      
+      if (status === 409 && attempt < maxRetries) {
+        // Conflict - another concurrent update happened, retry
+        const backoff = backoffMs * attempt; // Linear backoff
+        console.warn(`⚠️ [PERSIST] 409 Conflict on attempt ${attempt}/${maxRetries}, retrying in ${backoff}ms`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        continue;
+      }
+      
+      // Non-retryable error or max retries exceeded
+      console.error(`❌ [PERSIST] Failed to update protectedData for tx=${txId}:`, {
+        status,
+        attempt,
+        error: error.message,
+        data: error.response?.data
+      });
+      
+      return { 
+        success: false, 
+        error: error.message,
+        status,
+        attempt 
+      };
+    }
+  }
+  
+  // Should never reach here but just in case
+  return { success: false, error: 'Max retries exceeded', attempt: maxRetries };
+}
+
+module.exports = { 
+  getIntegrationSdk, 
+  getTrustedSdk,
+  txUpdateProtectedData,
+  deepMerge // Export for testing
+};

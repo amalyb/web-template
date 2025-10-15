@@ -18,38 +18,44 @@ async function testWebhookEndpoint() {
   console.log('🧪 Testing Shippo webhook test endpoint\n');
   console.log(`📍 Endpoint: ${ENDPOINT}\n`);
   
+  // Replace with a real transaction ID from your system
+  const TEST_TX_ID = process.env.TEST_TX_ID || '00000000-0000-0000-0000-000000000000';
+  
+  console.log(`📦 Using transaction ID: ${TEST_TX_ID}`);
+  console.log(`   Set TEST_TX_ID env var to use a real transaction\n`);
+  
   const tests = [
     {
       name: 'First Scan SMS (TRANSIT)',
       payload: {
-        tracking_number: '1Z999AA10123456784',
-        carrier: 'ups',
-        status: 'TRANSIT',
-        txId: '00000000-0000-0000-0000-000000000000' // Replace with real transaction ID
+        txId: TEST_TX_ID,
+        status: 'TRANSIT'
       }
     },
     {
       name: 'First Scan SMS (IN_TRANSIT)',
       payload: {
-        tracking_number: '1Z999AA10123456785',
-        carrier: 'ups',
-        status: 'IN_TRANSIT',
-        txId: '00000000-0000-0000-0000-000000000000'
+        txId: TEST_TX_ID,
+        status: 'IN_TRANSIT'
+      }
+    },
+    {
+      name: 'First Scan SMS (ACCEPTED)',
+      payload: {
+        txId: TEST_TX_ID,
+        status: 'ACCEPTED'
       }
     },
     {
       name: 'Delivery SMS',
       payload: {
-        tracking_number: '1Z999AA10123456786',
-        carrier: 'ups',
-        status: 'DELIVERED',
-        txId: '00000000-0000-0000-0000-000000000000'
+        txId: TEST_TX_ID,
+        status: 'DELIVERED'
       }
     },
     {
-      name: 'Missing tracking_number (should fail)',
+      name: 'Missing txId (should fail)',
       payload: {
-        carrier: 'ups',
         status: 'TRANSIT'
       },
       expectError: true
@@ -102,10 +108,11 @@ async function testWebhookEndpoint() {
   
   console.log('💡 Tips:');
   console.log('  - Check server logs for [WEBHOOK:TEST] and [TEST] prefixes');
-  console.log('  - Replace txId with a real transaction ID to test SMS delivery');
+  console.log('  - Set TEST_TX_ID env var to use a real transaction: TEST_TX_ID=<uuid> node test-shippo-webhook-endpoint.js');
   console.log('  - Ensure TEST_ENDPOINTS=1 is set in your server environment');
+  console.log('  - The endpoint fetches the transaction and uses its outboundTrackingNumber');
   console.log('  - First-scan SMS goes to borrower, delivery SMS goes to borrower');
-  console.log('  - Use a return tracking number to test lender SMS\n');
+  console.log('  - Falls back to "1ZXXXXXXXXXXXXXXXX" if no tracking number found\n');
 }
 
 // Check if fetch is available (Node 18+)

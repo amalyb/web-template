@@ -37,12 +37,26 @@ if (process.env.TEST_ENDPOINTS) {
     try {
       console.log('[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body=', req.body);
       
-      // Construct a Shippo-formatted payload from test input
-      const { tracking_number, carrier = 'ups', status = 'TRANSIT', txId } = req.body;
+      const { txId, status = 'TRANSIT', carrier = 'ups' } = req.body;
       
-      if (!tracking_number) {
-        return res.status(400).json({ error: 'tracking_number required' });
+      if (!txId) {
+        return res.status(400).json({ error: 'txId required' });
       }
+      
+      // Fetch the transaction to get its tracking number
+      console.log('[WEBHOOK:TEST] Fetching transaction:', txId);
+      const sdk = await getTrustedSdk();
+      const response = await sdk.transactions.show({ 
+        id: txId,
+        include: ['customer', 'provider', 'listing']
+      });
+      const transaction = response.data.data;
+      
+      // Extract tracking number from transaction (or use fallback)
+      const protectedData = transaction.attributes.protectedData || {};
+      const tracking_number = protectedData.outboundTrackingNumber || '1ZXXXXXXXXXXXXXXXX';
+      
+      console.log('[WEBHOOK:TEST] Using tracking_number:', tracking_number);
       
       // Build payload matching Shippo's track_updated format
       const testPayload = {
@@ -57,7 +71,7 @@ if (process.env.TEST_ENDPOINTS) {
             status_details: 'Test Event',
             status_date: new Date().toISOString()
           },
-          metadata: txId ? { transactionId: txId } : {}
+          metadata: { transactionId: txId }
         }
       };
       
@@ -114,31 +128,37 @@ POST /api/webhooks/__test/shippo/track
 ### Request Body
 ```json
 {
-  "tracking_number": "1Z999AA10123456784",
-  "carrier": "ups",
-  "status": "TRANSIT",
-  "txId": "8e123456-7890-1234-5678-901234567890"
+  "txId": "8e123456-7890-1234-5678-901234567890",
+  "status": "TRANSIT"
 }
 ```
 
 ### Parameters
-- `tracking_number` (required): The tracking number to simulate
-- `carrier` (optional): Carrier name (default: "ups")
+- `txId` (required): Transaction ID - endpoint will fetch the transaction and use its tracking number
 - `status` (optional): Tracking status (default: "TRANSIT")
   - Use "TRANSIT", "IN_TRANSIT", "ACCEPTED", or "ACCEPTANCE" for first-scan (Step-4) SMS
   - Use "DELIVERED" for delivery SMS
-- `txId` (optional): Transaction ID for direct lookup (added to payload metadata)
+- `carrier` (optional): Carrier name (default: "ups")
+
+### How It Works
+1. Fetches the transaction by ID using `sdk.transactions.show()`
+2. Extracts tracking number from `tx.attributes.protectedData.outboundTrackingNumber`
+3. Falls back to `"1ZXXXXXXXXXXXXXXXX"` if no tracking number is found
+4. Constructs a Shippo-formatted webhook payload
+5. Calls the real handler with signature verification bypassed
+6. Works even with Shippo test tracking numbers!
 
 ### Example Using curl
 ```bash
+# Local testing
 curl -X POST http://localhost:3000/api/webhooks/__test/shippo/track \
   -H "Content-Type: application/json" \
-  -d '{
-    "tracking_number": "1Z999AA10123456784",
-    "carrier": "ups",
-    "status": "TRANSIT",
-    "txId": "8e123456-7890-1234-5678-901234567890"
-  }'
+  -d '{"txId":"your-transaction-id", "status":"TRANSIT"}'
+
+# Test on Render (uses the transaction's saved tracking number)
+curl -X POST https://web-template-1.onrender.com/api/webhooks/__test/shippo/track \
+  -H "Content-Type: application/json" \
+  -d '{"txId":"<YOUR_TX_ID>", "status":"TRANSIT"}'
 ```
 
 ## Environment Setup
@@ -167,11 +187,11 @@ The endpoint is accessible because:
    ```bash
    POST /api/webhooks/__test/shippo/track
    {
-     "tracking_number": "1Z999AA10123456784",
-     "status": "TRANSIT",
-     "txId": "your-transaction-id"
+     "txId": "your-transaction-id",
+     "status": "TRANSIT"
    }
    ```
+   - Fetches transaction and uses its `outboundTrackingNumber`
    - Triggers borrower SMS with tracking link
    - Message format: `Sherbrt 🍧: 🚚 "Item Title" is on its way! Track: [short-link]`
 
@@ -179,28 +199,32 @@ The endpoint is accessible because:
    ```bash
    POST /api/webhooks/__test/shippo/track
    {
-     "tracking_number": "1Z999AA10123456784",
-     "status": "DELIVERED",
-     "txId": "your-transaction-id"
+     "txId": "your-transaction-id",
+     "status": "DELIVERED"
    }
    ```
+   - Uses the transaction's saved tracking number
    - Triggers borrower delivery notification
    - Message format: `Your Sherbrt borrow was delivered! Don't forget to take pics...`
 
 3. **Return First Scan**
-   - Use a tracking number that matches `returnTrackingNumber` in transaction protectedData
-   - Sends SMS to lender (not borrower)
+   - The endpoint will detect if the tracking number matches `returnTrackingNumber`
+   - Automatically sends SMS to lender (not borrower)
+   - Works the same way - just provide the txId
 
 ## Logs to Watch
 
 When the test endpoint is hit:
 ```
-[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body= { tracking_number: '...', ... }
+[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body= { txId: '...', status: 'TRANSIT' }
+[WEBHOOK:TEST] Fetching transaction: ...
+[WEBHOOK:TEST] Using tracking_number: 1Z999AA10123456784
 [TEST] 🚀 Shippo webhook received! event=track_updated
 [TEST] 📋 Request body: { ... }
 [TEST] ⚠️ Signature verification skipped (test mode)
 ✅ Status is TRANSIT - processing first scan webhook
 🔍 Looking up transaction by metadata.transactionId: ...
+✅ Transaction found via metadata.transactionId: ...
 [STEP-4] Sending borrower SMS for tracking ..., txId=...
 ✅ [STEP-4] Borrower SMS sent for tracking ..., txId=...
 ```

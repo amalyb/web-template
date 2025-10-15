@@ -566,18 +566,38 @@ router.post('/shippo', async (req, res) => {
 });
 
 // Dev-only test route for simulating Shippo tracking webhooks
-// POST /__test/shippo/track with JSON payload
+// POST /__test/shippo/track with JSON payload: { txId, status }
 if (process.env.TEST_ENDPOINTS) {
   router.post('/__test/shippo/track', express.json(), async (req, res) => {
     try {
       console.log('[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body=', req.body);
       
-      // Construct a Shippo-formatted payload from test input
-      const { tracking_number, carrier = 'ups', status = 'TRANSIT', txId } = req.body;
+      const { txId, status = 'TRANSIT', carrier = 'ups' } = req.body;
       
-      if (!tracking_number) {
-        return res.status(400).json({ error: 'tracking_number required' });
+      if (!txId) {
+        return res.status(400).json({ error: 'txId required' });
       }
+      
+      // Fetch the transaction to get its tracking number
+      console.log('[WEBHOOK:TEST] Fetching transaction:', txId);
+      const sdk = await getTrustedSdk();
+      let transaction;
+      try {
+        const response = await sdk.transactions.show({ 
+          id: txId,
+          include: ['customer', 'provider', 'listing']
+        });
+        transaction = response.data.data;
+      } catch (error) {
+        console.error('[WEBHOOK:TEST] Failed to fetch transaction:', error.message);
+        return res.status(404).json({ error: 'Transaction not found', txId });
+      }
+      
+      // Extract tracking number from transaction (or use fallback)
+      const protectedData = transaction.attributes.protectedData || {};
+      const tracking_number = protectedData.outboundTrackingNumber || '1ZXXXXXXXXXXXXXXXX';
+      
+      console.log('[WEBHOOK:TEST] Using tracking_number:', tracking_number);
       
       // Build payload matching Shippo's track_updated format
       const testPayload = {
@@ -592,7 +612,7 @@ if (process.env.TEST_ENDPOINTS) {
             status_details: 'Test Event',
             status_date: new Date().toISOString()
           },
-          metadata: txId ? { transactionId: txId } : {}
+          metadata: { transactionId: txId }
         }
       };
       

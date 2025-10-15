@@ -7,6 +7,7 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
+const { txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
@@ -336,7 +337,8 @@ async function createShippingLabels({
     const transactionPayload = {
       rate: selectedRate.object_id,
       async: false,
-      label_file_type: 'PNG'
+      label_file_type: 'PNG',
+      metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
     };
     
     // Only request QR code for USPS (UPS doesn't support it)
@@ -346,6 +348,8 @@ async function createShippingLabels({
     } else {
       console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
     }
+    
+    console.log('📦 [SHIPPO] Added metadata.txId to transaction payload for webhook lookup');
     
     const transactionRes = await axios.post(
       'https://api.goshippo.com/transactions/',
@@ -504,17 +508,17 @@ async function createShippingLabels({
           shipByDate: shipByDate ? shipByDate.toISOString() : null
         }
       };
-      const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
+      const result = await txUpdateProtectedData(txId, patch);
       if (result && result.success === false) {
-        console.warn('📝 [SHIPPO] Persistence not available (SMS already sent):', result.reason);
+        console.warn('⚠️ [PERSIST] Failed to save outbound label (SMS already sent):', result.error);
       } else {
-        console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+        console.log('✅ [PERSIST] Stored outbound label fields:', Object.keys(patch).join(', '));
         if (shipByDate) {
-          console.log('📅 [SHIPPO] Set ship-by date:', shipByDate.toISOString());
+          console.log('📅 [PERSIST] Set ship-by date:', shipByDate.toISOString());
         }
       }
     } catch (persistError) {
-      console.error('[SHIPPO] Failed to persist outbound label details (SMS already sent):', persistError.message);
+      console.error('❌ [PERSIST] Exception saving outbound label (SMS already sent):', persistError.message);
       // Do not rethrow - persistence failure should not fail the overall flow
     }
 
@@ -597,7 +601,8 @@ async function createShippingLabels({
           const returnTransactionPayload = {
             rate: returnSelectedRate.object_id,
             async: false,
-            label_file_type: 'PNG'
+            label_file_type: 'PNG',
+            metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
           };
           
           if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
@@ -606,6 +611,8 @@ async function createShippingLabels({
           } else {
             console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
           }
+          
+          console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
           
           // Purchase return label
           const returnTransactionRes = await axios.post(
@@ -644,14 +651,14 @@ async function createShippingLabels({
                 returnQrExpiry: parseExpiresParam(returnQrUrl || ''),
                 returnPurchasedAt: timestamp(), // ← respects FORCE_NOW
               };
-              const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
+              const result = await txUpdateProtectedData(txId, patch);
               if (result && result.success === false) {
-                console.warn('📝 [SHIPPO] Return persistence not available, but SMS will continue:', result.reason);
+                console.warn('⚠️ [PERSIST] Failed to save return label:', result.error);
               } else {
-                console.log('📝 [SHIPPO] Stored return shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+                console.log('✅ [PERSIST] Stored return label fields:', Object.keys(patch).join(', '));
               }
             } catch (e) {
-              console.error('[SHIPPO] Failed to persist return label details to protectedData', e);
+              console.error('❌ [PERSIST] Exception saving return label:', e.message);
             }
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
@@ -698,21 +705,18 @@ async function createShippingLabels({
           
           // Mark as sent in protectedData
           try {
-            const notificationResult = await txUpdateProtectedData({
-              id: txId,
-              protectedData: {
-                shippingNotification: {
-                  labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
-                }
+            const notificationResult = await txUpdateProtectedData(txId, {
+              shippingNotification: {
+                labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
               }
             });
             if (notificationResult && notificationResult.success === false) {
-              console.warn('📝 [SHIPPO] Notification state update not available:', notificationResult.reason);
+              console.warn('⚠️ [PERSIST] Failed to save notification state:', notificationResult.error);
             } else {
-              console.log(`💾 Updated shippingNotification.labelCreated for transaction: ${txId}`);
+              console.log(`✅ [PERSIST] Updated shippingNotification.labelCreated`);
             }
           } catch (updateError) {
-            console.warn(`⚠️ Failed to update labelCreated notification state:`, updateError.message);
+            console.warn(`❌ [PERSIST] Exception saving notification state:`, updateError.message);
           }
         }
       } else if (borrowerPhone) {

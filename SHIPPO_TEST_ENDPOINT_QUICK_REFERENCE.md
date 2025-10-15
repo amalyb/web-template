@@ -20,19 +20,22 @@ Content-Type: application/json
 
 ```json
 {
-  "tracking_number": "1Z999AA10123456784",
-  "carrier": "ups",
-  "status": "TRANSIT",
-  "txId": "8e123456-7890-1234-5678-901234567890"
+  "txId": "8e123456-7890-1234-5678-901234567890",
+  "status": "TRANSIT"
 }
 ```
 
-- `tracking_number` (required): Tracking number
-- `carrier` (optional): Default "ups"
+- `txId` (required): Transaction ID - will fetch and use its tracking number
 - `status` (optional): Default "TRANSIT"
   - First-scan: "TRANSIT", "IN_TRANSIT", "ACCEPTED", "ACCEPTANCE"
   - Delivery: "DELIVERED"
-- `txId` (optional): Transaction ID for direct lookup
+- `carrier` (optional): Default "ups"
+
+**How it works:**
+- Fetches the transaction by ID
+- Uses `tx.attributes.protectedData.outboundTrackingNumber`
+- Falls back to `"1ZXXXXXXXXXXXXXXXX"` if not found
+- Works even with Shippo test tracking numbers
 
 ## Environment Setup
 
@@ -49,17 +52,20 @@ SHIPPO_MODE=test
 ## Quick Test
 
 ```bash
-# Test first-scan SMS
+# Test first-scan SMS (uses the transaction's saved tracking number)
 curl -X POST http://localhost:3000/api/webhooks/__test/shippo/track \
   -H "Content-Type: application/json" \
-  -d '{
-    "tracking_number": "1Z999AA10123456784",
-    "status": "TRANSIT",
-    "txId": "your-transaction-id-here"
-  }'
+  -d '{"txId":"your-transaction-id-here", "status":"TRANSIT"}'
 
-# Or use the test script
-node test-shippo-webhook-endpoint.js
+# Test delivery SMS
+curl -X POST http://localhost:3000/api/webhooks/__test/shippo/track \
+  -H "Content-Type: application/json" \
+  -d '{"txId":"your-transaction-id-here", "status":"DELIVERED"}'
+
+# Test on Render
+curl -X POST https://web-template-1.onrender.com/api/webhooks/__test/shippo/track \
+  -H "Content-Type: application/json" \
+  -d '{"txId":"<YOUR_TX_ID>", "status":"TRANSIT"}'
 ```
 
 ## Files Changed
