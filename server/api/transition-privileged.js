@@ -7,7 +7,7 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
-const { txUpdateProtectedData } = require('../api-util/integrationSdk');
+const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
@@ -61,8 +61,6 @@ const logTx = (tx) => ({
   qr_code_url: tx?.qr_code_url,
 });
 // ---------------------------------------
-
-const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
