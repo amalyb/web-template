@@ -4,6 +4,8 @@ const express = require('express');
 const { getTrustedSdk } = require('../api-util/sdk');
 const { timestamp } = require('../util/time');
 const { shortLink } = require('../api-util/shortlink');
+const { SMS_TAGS } = require('../lib/sms/tags');
+const { toCarrierPhase, isShippedStatus, isDeliveredStatus } = require('../lib/statusMap');
 
 // In-memory LRU cache for first-scan idempotency (24h TTL)
 // Format: Map<trackingNumber, timestamp>
@@ -328,10 +330,13 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     // Check if this is a return tracking number
     const protectedData = transaction.attributes.protectedData || {};
     const returnData = protectedData.return || {};
-    const isReturnTracking = trackingNumber === protectedData.returnTrackingNumber ||
-                            trackingNumber === returnData.label?.trackingNumber;
     
-    console.log(`🔍 Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'}`);
+    // Determine direction: check metadata.direction first, then fall back to tracking number matching
+    const isReturnTracking = (metadata.direction === 'return') ||
+                            (trackingNumber === protectedData.returnTrackingNumber) ||
+                            (trackingNumber === returnData.label?.trackingNumber);
+    
+    console.log(`🔍 Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'} (metadata.direction=${metadata.direction || 'none'})`);
     
     // Handle return tracking - send SMS to lender
     if (isReturnTracking && isFirstScan) {
@@ -364,7 +369,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           role: 'lender',
           transactionId: transaction.id,
           transition: 'webhook/shippo-return-first-scan',
-          tag: 'return_first_scan_to_lender',
+          tag: SMS_TAGS.RETURN_FIRST_SCAN_TO_LENDER,
           meta: { 
             listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id,
             trackingNumber: trackingNumber
@@ -499,7 +504,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           role: 'customer',
           transactionId: transaction.id,
           transition: `webhook/shippo-${smsType.replace(' ', '-')}`,
-          tag: isDelivery ? 'delivery_to_borrower' : 'first_scan_to_borrower',
+          tag: isDelivery ? SMS_TAGS.DELIVERY_TO_BORROWER : SMS_TAGS.ITEM_SHIPPED_TO_BORROWER,
           meta: { listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id }
         });
         
@@ -572,10 +577,20 @@ if (process.env.TEST_ENDPOINTS) {
     try {
       console.log('[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body=', req.body);
       
-      const { txId, status = 'TRANSIT', carrier = 'ups' } = req.body;
+      // Accept both tracking_number (Shippo format) and txId (simplified format)
+      const { 
+        txId, 
+        status = 'TRANSIT', 
+        carrier = 'ups',
+        tracking_number,
+        metadata 
+      } = req.body;
       
       if (!txId) {
-        return res.status(400).json({ error: 'txId required' });
+        return res.status(400).json({ 
+          error: 'txId required',
+          example: { txId: 'abc123-def456-...', status: 'TRANSIT', carrier: 'ups', metadata: { direction: 'outbound' } }
+        });
       }
       
       // Fetch the transaction to get its tracking number
@@ -593,11 +608,20 @@ if (process.env.TEST_ENDPOINTS) {
         return res.status(404).json({ error: 'Transaction not found', txId });
       }
       
-      // Extract tracking number from transaction (or use fallback)
+      // Extract tracking number from transaction based on direction
       const protectedData = transaction.attributes.protectedData || {};
-      const tracking_number = protectedData.outboundTrackingNumber || '1ZXXXXXXXXXXXXXXXX';
+      const direction = metadata?.direction || 'outbound'; // default to outbound
       
-      console.log('[WEBHOOK:TEST] Using tracking_number:', tracking_number);
+      let resolvedTrackingNumber = tracking_number;
+      if (!resolvedTrackingNumber) {
+        if (direction === 'return') {
+          resolvedTrackingNumber = protectedData.returnTrackingNumber || '1ZRETURN00000000';
+        } else {
+          resolvedTrackingNumber = protectedData.outboundTrackingNumber || '1ZOUTBOUND000000';
+        }
+      }
+      
+      console.log(`[WEBHOOK:TEST] Using tracking_number: ${resolvedTrackingNumber} (direction: ${direction})`);
       
       // Build payload matching Shippo's track_updated format
       const testPayload = {
@@ -605,14 +629,18 @@ if (process.env.TEST_ENDPOINTS) {
         test: true,
         mode: process.env.SHIPPO_MODE || 'test',
         data: {
-          tracking_number,
+          tracking_number: resolvedTrackingNumber,
           carrier: carrier.toLowerCase(),
           tracking_status: {
             status: status.toUpperCase(),
             status_details: 'Test Event',
             status_date: new Date().toISOString()
           },
-          metadata: { transactionId: txId }
+          metadata: { 
+            transactionId: txId,
+            direction: direction,
+            ...metadata // Allow additional metadata to be passed through
+          }
         }
       };
       
