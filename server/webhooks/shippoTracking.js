@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { getTrustedSdk } = require('../api-util/sdk');
+const { getTrustedSdk: getIntegrationSdk } = require('../api-util/integrationSdk');
 const { timestamp } = require('../util/time');
 const { shortLink } = require('../api-util/shortlink');
 const { SMS_TAGS } = require('../lib/sms/tags');
@@ -572,33 +573,29 @@ router.post('/shippo', async (req, res) => {
 
 // Dev-only test route for simulating Shippo tracking webhooks
 // POST /__test/shippo/track with JSON payload: { txId, status }
+// BYPASSES cookie/session SDKs - uses Integration SDK only
 if (process.env.TEST_ENDPOINTS) {
   router.post('/__test/shippo/track', express.json(), async (req, res) => {
     try {
-      console.log('[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body=', req.body);
+      console.log('[WEBHOOK:TEST] start path=/api/webhooks/__test/shippo/track body=', req.body);
       
-      // Accept both tracking_number (Shippo format) and txId (simplified format)
-      const { 
-        txId, 
-        status = 'TRANSIT', 
-        carrier = 'ups',
-        tracking_number,
-        metadata 
-      } = req.body;
+      const { txId, status = 'TRANSIT', metadata = {} } = req.body;
       
       if (!txId) {
         return res.status(400).json({ 
           error: 'txId required',
-          example: { txId: 'abc123-def456-...', status: 'TRANSIT', carrier: 'ups', metadata: { direction: 'outbound' } }
+          example: { txId: 'abc123-def456-...', status: 'TRANSIT', metadata: { direction: 'outbound' } }
         });
       }
       
-      // Fetch the transaction to get its tracking number
+      // Use Integration SDK (bypasses cookies/sessions)
+      const integrationSdk = getIntegrationSdk();
+      
+      // Fetch transaction
       console.log('[WEBHOOK:TEST] Fetching transaction:', txId);
-      const sdk = await getTrustedSdk();
       let transaction;
       try {
-        const response = await sdk.transactions.show({ 
+        const response = await integrationSdk.transactions.show({ 
           id: txId,
           include: ['customer', 'provider', 'listing']
         });
@@ -608,51 +605,89 @@ if (process.env.TEST_ENDPOINTS) {
         return res.status(404).json({ error: 'Transaction not found', txId });
       }
       
-      // Extract tracking number from transaction based on direction
       const protectedData = transaction.attributes.protectedData || {};
-      const direction = metadata?.direction || 'outbound'; // default to outbound
+      const direction = metadata.direction || 'outbound';
+      const upperStatus = status.toUpperCase();
       
-      let resolvedTrackingNumber = tracking_number;
-      if (!resolvedTrackingNumber) {
-        if (direction === 'return') {
-          resolvedTrackingNumber = protectedData.returnTrackingNumber || '1ZRETURN00000000';
-        } else {
-          resolvedTrackingNumber = protectedData.outboundTrackingNumber || '1ZOUTBOUND000000';
-        }
+      console.log(`[WEBHOOK:TEST] phase=${upperStatus} direction=${direction}`);
+      
+      // Skip borrower SMS for return shipments
+      if (direction === 'return') {
+        console.log('[WEBHOOK:TEST] direction=return, skipping borrower SMS');
+        return res.status(200).json({ ok: true, message: 'Return shipment - no borrower SMS' });
       }
       
-      console.log(`[WEBHOOK:TEST] Using tracking_number: ${resolvedTrackingNumber} (direction: ${direction})`);
+      // Determine SMS type based on status
+      const isShipped = ['ACCEPTED', 'IN_TRANSIT', 'TRANSIT'].includes(upperStatus);
+      const isDelivered = upperStatus === 'DELIVERED';
       
-      // Build payload matching Shippo's track_updated format
-      const testPayload = {
-        event: 'track_updated',
-        test: true,
-        mode: process.env.SHIPPO_MODE || 'test',
-        data: {
-          tracking_number: resolvedTrackingNumber,
-          carrier: carrier.toLowerCase(),
-          tracking_status: {
-            status: status.toUpperCase(),
-            status_details: 'Test Event',
-            status_date: new Date().toISOString()
-          },
-          metadata: { 
-            transactionId: txId,
-            direction: direction,
-            ...metadata // Allow additional metadata to be passed through
-          }
+      if (!isShipped && !isDelivered) {
+        console.log(`[WEBHOOK:TEST] status=${upperStatus} not SHIPPED or DELIVERED, skipping`);
+        return res.status(200).json({ ok: true, message: `Status ${upperStatus} ignored` });
+      }
+      
+      // Get borrower phone
+      const borrowerPhone = getBorrowerPhone(transaction);
+      if (!borrowerPhone) {
+        console.warn('[WEBHOOK:TEST] No borrower phone found');
+        return res.status(400).json({ error: 'No borrower phone number found' });
+      }
+      
+      let message, tag;
+      
+      if (isShipped) {
+        // Step-4 SMS: Item shipped to borrower
+        const trackingUrl = protectedData.outboundTrackingUrl;
+        if (!trackingUrl) {
+          console.warn('[WEBHOOK:TEST] No tracking URL found');
+          return res.status(400).json({ error: 'No tracking URL found' });
         }
-      };
+        
+        const listing = transaction.attributes?.listing || transaction.relationships?.listing?.data;
+        const rawTitle = listing?.title || listing?.attributes?.title || 'your item';
+        const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
+        
+        const shortTrackingUrl = await shortLink(trackingUrl);
+        message = `Sherbrt 🍧: 🚚 "${listingTitle}" is on its way! Track: ${shortTrackingUrl}`;
+        tag = SMS_TAGS.ITEM_SHIPPED_TO_BORROWER;
+        
+        console.log(`[SMS:OUT] tag=item_shipped_to_borrower to=${borrowerPhone} msg="${message}"`);
+        
+      } else if (isDelivered) {
+        // Step-6 SMS: Item delivered to borrower
+        message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
+        tag = SMS_TAGS.DELIVERY_TO_BORROWER;
+        
+        console.log(`[SMS:OUT] tag=item_delivered_to_borrower to=${borrowerPhone} msg="${message}"`);
+      }
       
-      // Create request object with test payload
-      const testReq = {
-        body: testPayload,
-        headers: req.headers,
-        rawBody: JSON.stringify(testPayload)
-      };
-      
-      // Reuse the real handler; skip signature in test
-      await handleTrackingWebhook(testReq, res, { skipSignature: true, isTest: true });
+      // Send SMS
+      try {
+        await sendSMS(borrowerPhone, message, {
+          role: 'customer',
+          transactionId: transaction.id,
+          transition: `webhook/test-${isShipped ? 'shipped' : 'delivered'}`,
+          tag,
+          meta: { 
+            listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id,
+            testWebhook: true
+          }
+        });
+        
+        console.log(`[WEBHOOK:TEST] SMS sent successfully to ${borrowerPhone}`);
+        
+        return res.status(200).json({ 
+          ok: true,
+          message: `${isShipped ? 'Shipped' : 'Delivered'} SMS sent`,
+          transactionId: transaction.id,
+          borrowerPhone,
+          tag
+        });
+        
+      } catch (smsError) {
+        console.error('[WEBHOOK:TEST] Failed to send SMS:', smsError.message);
+        return res.status(500).json({ error: 'Failed to send SMS', details: smsError.message });
+      }
       
     } catch (err) {
       console.error('[WEBHOOK:TEST] error', err);
