@@ -7,7 +7,8 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
-const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
+const { getIntegrationSdk } = require('../api-util/integrationSdk');
+const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
@@ -79,52 +80,8 @@ const redis = getRedis();
 // Log cache mode on startup
 console.log('[qr-cache] mode:', redis.status === 'mock' ? 'in-memory' : 'redis');
 
-// Robust persistence with retry logic for Shippo data
-async function persistWithRetry(id, data, { retries = 3, delayMs = 250 } = {}) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      // 1. Get latest transaction data
-      const tx = await data.sdk.transactions.show({ id });
-      const currentProtectedData = tx?.data?.data?.attributes?.protectedData || {};
-      
-      // 2. Merge with new Shippo data
-      const mergedProtectedData = {
-        ...currentProtectedData,
-        shippo: {
-          ...currentProtectedData.shippo,
-          outbound: {
-            ...currentProtectedData.shippo?.outbound,
-            ...data.shippoData
-          },
-          updatedAt: timestamp() // ← respects FORCE_NOW
-        }
-      };
-      
-      // 3. Update transaction
-      await data.sdk.transactions.update({ 
-        id, 
-        protectedData: mergedProtectedData 
-      });
-      
-      console.log(`✅ [flex-persist] Successfully persisted Shippo data for transaction ${id}`);
-      return true;
-      
-    } catch (error) {
-      const status = error?.response?.status;
-      
-      if (status === 409 && attempt < retries) {
-        console.warn(`[flex-persist] 409 conflict – retrying ${attempt}/${retries}`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        continue;
-      }
-      
-      if (attempt === retries) {
-        console.error(`❌ [flex-persist] Failed after ${retries} attempts:`, error.message);
-        return false;
-      }
-    }
-  }
-}
+// Note: Legacy persistWithRetry function has been removed.
+// Use upsertProtectedData from server/lib/txData.js instead for all Shippo label persistence.
 
 console.log('🚦 transition-privileged endpoint is wired up');
 
@@ -496,17 +453,17 @@ async function createShippingLabels({
         outboundTrackingNumber: trackingNumber,
         outboundTrackingUrl: trackingUrl,
         outboundLabelUrl: labelUrl,
-        outboundQrUrl: qrUrl,
+        outboundQrUrl: qrUrl || null,
         outboundCarrier: carrier,
         outboundService: service,
-        outboundQrExpiry: parseExpiresParam(qrUrl),
+        outboundQrExpiry: parseExpiresParam(qrUrl) || null,
         outboundPurchasedAt: timestamp(), // ← respects FORCE_NOW
         outbound: {
           ...protectedData.outbound,
           shipByDate: shipByDate ? shipByDate.toISOString() : null
         }
       };
-      const result = await txUpdateProtectedData(txId, patch);
+      const result = await upsertProtectedData(txId, patch);
       if (result && result.success === false) {
         console.warn('⚠️ [PERSIST] Failed to save outbound label (SMS already sent):', result.error);
       } else {
@@ -643,13 +600,13 @@ async function createShippingLabels({
                 returnTrackingNumber: returnTransactionRes.data.tracking_number || null,
                 returnTrackingUrl: returnTrackingUrl,
                 returnLabelUrl: returnTransactionRes.data.label_url || null,
-                returnQrUrl: returnQrUrl,
+                returnQrUrl: returnQrUrl || null,
                 returnCarrier: returnSelectedRate?.provider || null,
                 returnService: returnSelectedRate?.service?.name ?? returnSelectedRate?.servicelevel?.name ?? null,
-                returnQrExpiry: parseExpiresParam(returnQrUrl || ''),
+                returnQrExpiry: parseExpiresParam(returnQrUrl || '') || null,
                 returnPurchasedAt: timestamp(), // ← respects FORCE_NOW
               };
-              const result = await txUpdateProtectedData(txId, patch);
+              const result = await upsertProtectedData(txId, patch);
               if (result && result.success === false) {
                 console.warn('⚠️ [PERSIST] Failed to save return label:', result.error);
               } else {
@@ -703,7 +660,7 @@ async function createShippingLabels({
           
           // Mark as sent in protectedData
           try {
-            const notificationResult = await txUpdateProtectedData(txId, {
+            const notificationResult = await upsertProtectedData(txId, {
               shippingNotification: {
                 labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
               }

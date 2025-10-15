@@ -3,6 +3,7 @@
 const express = require('express');
 const { getTrustedSdk } = require('../api-util/sdk');
 const { getTrustedSdk: getIntegrationSdk } = require('../api-util/integrationSdk');
+const { upsertProtectedData } = require('../lib/txData');
 const { timestamp } = require('../util/time');
 const { shortLink } = require('../api-util/shortlink');
 const { SMS_TAGS } = require('../lib/sms/tags');
@@ -379,20 +380,19 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         
         // Update transaction with return first scan timestamp
         try {
-          const sdk = await getTrustedSdk();
-          await sdk.transactions.update({
-            id: transaction.id,
-            attributes: {
-              protectedData: {
-                ...protectedData,
-                return: {
-                  ...returnData,
-                  firstScanAt: timestamp() // ← respects FORCE_NOW
-                }
-              }
+          const txId = transaction.id.uuid || transaction.id;
+          const result = await upsertProtectedData(txId, {
+            return: {
+              ...returnData,
+              firstScanAt: timestamp() // ← respects FORCE_NOW
             }
           });
-          console.log(`💾 Updated transaction with return first scan timestamp`);
+          
+          if (result && result.success === false) {
+            console.error(`❌ Failed to update transaction with return first scan:`, result.error);
+          } else {
+            console.log(`💾 Updated transaction with return first scan timestamp`);
+          }
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }
