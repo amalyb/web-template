@@ -219,26 +219,33 @@ function getLenderPhone(transaction) {
   }
 }
 
-  // Main webhook handler
-  router.post('/shippo', async (req, res) => {
-    const eventType = req.body?.event || 'unknown';
-    console.log(`🚀 Shippo webhook received! event=${eventType}`);
-    console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
-    
-    // Verify Shippo signature (skip if not configured for test environments)
+// Main webhook handler logic (extracted for reusability)
+async function handleTrackingWebhook(req, res, opts = {}) {
+  const { skipSignature = false, isTest = false } = opts;
+  
+  const eventType = req.body?.event || 'unknown';
+  const testPrefix = isTest ? '[TEST] ' : '';
+  console.log(`${testPrefix}🚀 Shippo webhook received! event=${eventType}`);
+  console.log(`${testPrefix}📋 Request body:`, JSON.stringify(req.body, null, 2));
+  
+  // Verify Shippo signature (skip if not configured for test environments or if skipSignature is set)
+  if (!skipSignature) {
     const webhookSecret = process.env.SHIPPO_WEBHOOK_SECRET;
     if (webhookSecret) {
       if (!verifyShippoSignature(req, webhookSecret)) {
-        console.log('🚫 Invalid Shippo signature - rejecting request');
+        console.log(`${testPrefix}🚫 Invalid Shippo signature - rejecting request`);
         return res.status(403).json({ error: 'Invalid signature' });
       }
-      console.log('✅ Shippo signature verified');
+      console.log(`${testPrefix}✅ Shippo signature verified`);
     } else {
-      console.log('⚠️ SHIPPO_WEBHOOK_SECRET not set - skipping signature verification (test mode)');
+      console.log(`${testPrefix}⚠️ SHIPPO_WEBHOOK_SECRET not set - skipping signature verification (test mode)`);
     }
-    
-    try {
-      const payload = req.body;
+  } else {
+    console.log(`${testPrefix}⚠️ Signature verification skipped (test mode)`);
+  }
+  
+  try {
+    const payload = req.body;
       
       // Validate payload structure
       if (!payload || !payload.data) {
@@ -551,91 +558,60 @@ function getLenderPhone(transaction) {
     console.error('❌ Error stack:', error.stack);
     res.status(500).json({ error: 'Internal server error' });
   }
+}
+
+// Main webhook handler
+router.post('/shippo', async (req, res) => {
+  await handleTrackingWebhook(req, res, { skipSignature: false, isTest: false });
 });
 
 // Dev-only test route for simulating Shippo tracking webhooks
-// POST /__test/shippo/track with { tracking_number, carrier, status, txId }
-router.post('/__test/shippo/track', async (req, res) => {
-  // Only available in non-production environments
-  if (process.env.NODE_ENV === 'production' && process.env.ENABLE_TEST_WEBHOOKS !== '1') {
-    return res.status(404).json({ error: 'Not found' });
-  }
-  
-  console.log('[TEST] Injected track_updated webhook');
-  
-  const { tracking_number, carrier = 'ups', status = 'TRANSIT', txId } = req.body;
-  
-  if (!tracking_number) {
-    return res.status(400).json({ error: 'tracking_number required' });
-  }
-  
-  // Construct a payload matching Shippo's track_updated format
-  const testPayload = {
-    event: 'track_updated',
-    test: true,
-    data: {
-      tracking_number,
-      carrier: carrier.toLowerCase(),
-      tracking_status: {
-        status: status.toUpperCase(),
-        status_details: 'Test Event',
-        status_date: new Date().toISOString()
-      },
-      metadata: txId ? { transactionId: txId } : {}
+// POST /__test/shippo/track with JSON payload
+if (process.env.TEST_ENDPOINTS) {
+  router.post('/__test/shippo/track', express.json(), async (req, res) => {
+    try {
+      console.log('[WEBHOOK:TEST] path=/api/webhooks/__test/shippo/track body=', req.body);
+      
+      // Construct a Shippo-formatted payload from test input
+      const { tracking_number, carrier = 'ups', status = 'TRANSIT', txId } = req.body;
+      
+      if (!tracking_number) {
+        return res.status(400).json({ error: 'tracking_number required' });
+      }
+      
+      // Build payload matching Shippo's track_updated format
+      const testPayload = {
+        event: 'track_updated',
+        test: true,
+        mode: process.env.SHIPPO_MODE || 'test',
+        data: {
+          tracking_number,
+          carrier: carrier.toLowerCase(),
+          tracking_status: {
+            status: status.toUpperCase(),
+            status_details: 'Test Event',
+            status_date: new Date().toISOString()
+          },
+          metadata: txId ? { transactionId: txId } : {}
+        }
+      };
+      
+      // Create request object with test payload
+      const testReq = {
+        body: testPayload,
+        headers: req.headers,
+        rawBody: JSON.stringify(testPayload)
+      };
+      
+      // Reuse the real handler; skip signature in test
+      await handleTrackingWebhook(testReq, res, { skipSignature: true, isTest: true });
+      
+    } catch (err) {
+      console.error('[WEBHOOK:TEST] error', err);
+      res.status(500).json({ ok: false, error: String(err && err.message || err) });
     }
-  };
-  
-  console.log('[TEST] Payload:', JSON.stringify(testPayload, null, 2));
-  
-  // Create a mock request object
-  const mockReq = {
-    body: testPayload,
-    headers: {},
-    rawBody: JSON.stringify(testPayload)
-  };
-  
-  // Create a response collector
-  let statusCode = 200;
-  let responseData = null;
-  
-  const mockRes = {
-    status: (code) => {
-      statusCode = code;
-      return mockRes;
-    },
-    json: (data) => {
-      responseData = data;
-      return mockRes;
-    },
-    send: (data) => {
-      responseData = data;
-      return mockRes;
-    }
-  };
-  
-  // Call the main webhook handler by extracting its logic
-  // Since we can't easily call the POST handler directly, we simulate it
-  try {
-    // Process the webhook (reusing validation and processing logic)
-    const eventType = testPayload.event;
-    console.log(`🚀 Shippo webhook received! event=${eventType} [TEST MODE]`);
-    
-    // Skip signature verification for test
-    console.log('⚠️ Test mode - skipping signature verification');
-    
-    // Return success - the actual processing will happen through the handler
-    res.status(200).json({
-      success: true,
-      message: 'Test webhook injected',
-      payload: testPayload,
-      note: 'Check server logs for processing details'
-    });
-    
-  } catch (error) {
-    console.error('[TEST] Error processing test webhook:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
+  });
+}
 
 module.exports = router;
 
