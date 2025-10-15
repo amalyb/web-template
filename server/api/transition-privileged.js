@@ -427,52 +427,38 @@ async function createShippingLabels({
       if (!lenderPhone) {
         console.warn('[SMS][Step-3] No lender phone available, skipping SMS');
       } else {
-        // Build link using strategy
-        const strategy = (process.env.SMS_LINK_STRATEGY || 'app').toLowerCase();
-        const forceShippoLink = process.env.SMS_FORCE_SHIPPO_LINK === '1';
+        // Compute hasQr for branching logic (any carrier)
+        const hasQr = Boolean(qrUrl);
         
-        let shipUrl = null;
-        let strategyUsed = strategy;
+        // Build shipUrl using strategy
+        const linkResult = buildShipLabelLink(txId, { label_url: labelUrl, qr_code_url: qrUrl }, { strategy: process.env.SMS_LINK_STRATEGY });
+        const shipUrl = linkResult.url;
+        const strategyUsed = linkResult.strategy;
         
-        if (forceShippoLink && (qrUrl || labelUrl)) {
-          shipUrl = qrUrl || labelUrl;
-          strategyUsed = 'shippo-forced';
-          console.log('[SMS][Step-3] Using forced Shippo link (SMS_FORCE_SHIPPO_LINK=1)');
-        } else if (strategy === 'shippo' && (qrUrl || labelUrl)) {
-          shipUrl = qrUrl || labelUrl;
-          strategyUsed = 'shippo';
-        } else {
-          // Default: app strategy
-          shipUrl = makeAppUrl(`/ship/${txId}`);
-          strategyUsed = 'app';
-          if (strategy === 'shippo' && !qrUrl && !labelUrl) {
-            console.warn('[SMS][Step-3] SMS_LINK_STRATEGY=shippo but no Shippo URLs available, falling back to app');
-          }
-        }
-        
+        // Get listing title
         const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
         
-        // Build message - always include link if we have one
-        let body;
-        if (shipUrl) {
-          body = shipByStr
-            ? `Sherbrt 🍧: your QR shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
-            : `Sherbrt 🍧: your QR shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
+        // Build SMS body based on QR presence (any carrier)
+        let smsBody;
+        if (hasQr) {
+          // QR code present: use "Scan this QR at drop-off" message
+          smsBody = shipByStr
+            ? `Sherbrt 🍧: 📦 Ship "${listingTitle}" by ${shipByStr}. Scan this QR at drop-off: ${qrUrl}. Open ${shipUrl}`
+            : `Sherbrt 🍧: 📦 Ship "${listingTitle}". Scan this QR at drop-off: ${qrUrl}. Open ${shipUrl}`;
         } else {
-          // Fallback: no link available
-          body = shipByStr
-            ? `Sherbrt 🍧: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}.`
-            : `Sherbrt 🍧 : your shipping label for "${listingTitle}" is ready.`;
-          console.warn('[SMS][Step-3] sending without link (fallback) txId=' + txId + ' reason=missing_link');
+          // No QR code: use "Print & attach your label" message
+          smsBody = shipByStr
+            ? `Sherbrt 🍧: 📦 Ship "${listingTitle}" by ${shipByStr}. Print & attach your label: ${labelUrl}. Open ${shipUrl}`
+            : `Sherbrt 🍧: 📦 Ship "${listingTitle}". Print & attach your label: ${labelUrl}. Open ${shipUrl}`;
         }
         
         // Log before send
-        console.log(`[SMS][Step-3] strategy=${strategyUsed} link=${shipUrl || 'none'} txId=${txId} tracking=${trackingNumber || 'none'}`);
+        console.log(`[SMS][Step-3] strategy=${strategyUsed} link=${shipUrl} txId=${txId} tracking=${trackingNumber || 'none'} hasQr=${hasQr}`);
         
         // Send SMS
         await sendSMS(
           lenderPhone,
-          body,
+          smsBody,
           {
             role: 'lender',
             transactionId: txId,
@@ -480,7 +466,8 @@ async function createShippingLabels({
             meta: { 
               listingId: listing?.id?.uuid || listing?.id,
               strategy: strategyUsed,
-              trackingNumber: trackingNumber
+              trackingNumber: trackingNumber,
+              hasQr: hasQr
             }
           }
         );

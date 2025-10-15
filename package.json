@@ -116,6 +116,7 @@
     "start": "node server/index.js",
     "dev-server": "cross-env-shell NODE_ENV=development PORT=4000 REACT_APP_MARKETPLACE_ROOT_URL=http://localhost:4000 \"npm run build && nodemon --watch server server/index.js\"",
     "test-server": "jest ./server/**/*.test.js",
+    "webhook:ups:accepted": "node test-ups-webhook.js",
     "heroku-postbuild": "npm run build",
     "render-build": "npm run build",
     "postinstall": "patch-package",

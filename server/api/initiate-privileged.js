@@ -33,7 +33,7 @@ function buildLenderMsg(tx, listingTitle) {
   // Carrier-friendly: short, one link, no emojis
   const { makeAppUrl } = require('../util/url');
   const lenderInboxUrl = makeAppUrl('/inbox/sales');
-  const lenderMsg = `Sherbrt 🍧: new booking request for "${listingTitle}". Check your inbox: ${lenderInboxUrl}`;
+  const lenderMsg = `Sherbrt 🍧: New booking request for "${listingTitle}". Check your inbox to accept or decline now: ${lenderInboxUrl}`;
   return lenderMsg;
 }
 
