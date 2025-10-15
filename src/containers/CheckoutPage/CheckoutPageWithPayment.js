@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Form as FinalForm, FormSpy } from 'react-final-form';
-import deepEqual from 'fast-deep-equal';
+import isEqual from 'lodash/isEqual';
 
 // Import contexts and util modules
 import { FormattedMessage, intlShape } from '../../util/reactIntl';
@@ -768,8 +768,8 @@ export const CheckoutPageWithPayment = props => {
     onReSpeculate,
   } = props;
 
-  // Memoize initial values - only derive ONCE on mount to prevent form resets
-  // Do NOT include volatile deps like clientSecret, speculateStatus, or pageData
+  // Memoize initial values - only derive when stable identifiers change (not on every render)
+  // Do NOT include volatile deps like clientSecret, speculateStatus, stripe, elements, paymentElementComplete
   const seedInitialValues = useMemo(() => {
     // Build the initial values from existing protected data or defaults
     const existingPD = pageData?.transaction?.attributes?.protectedData || {};
@@ -803,13 +803,15 @@ export const CheckoutPageWithPayment = props => {
       },
     };
 
-    console.log('[QA] seedInitialValues created (should only happen once):', {
+    console.log('[QA] seedInitialValues created:', {
+      currentUserId: currentUser?.id?.uuid,
+      transactionId: pageData?.transaction?.id?.uuid,
       billing_keys: Object.keys(initialValues.billing || {}),
       shipping_keys: Object.keys(initialValues.shipping || {}),
     });
 
     return initialValues;
-  }, []); // Empty array - only derive once on mount
+  }, [currentUser?.id?.uuid, pageData?.transaction?.id?.uuid]); // Only recompute when user or transaction ID changes
 
   // Handle speculative transaction initiation with proper guards (one-shot)
   useEffect(() => {
@@ -1069,7 +1071,7 @@ export const CheckoutPageWithPayment = props => {
                 <FinalForm
                       initialValues={seedInitialValues}
                       keepDirtyOnReinitialize={true}
-                      initialValuesEqual={deepEqual}
+                      initialValuesEqual={isEqual}
                       onSubmit={(values) => {
                         // This is the unified submit handler - extract contact and call Stripe payment
                         const contactEmail = values.contactEmail;
