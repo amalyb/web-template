@@ -378,71 +378,76 @@ async function createShippingLabels({
     console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
     console.log('[label-ready] shipByStr:', shipByStr);
     
-    // ========== STEP 1: SEND SMS TO LENDER (INDEPENDENT OF PERSISTENCE) ==========
-    // SMS must happen immediately after Shippo success, before any persistence attempts
-    console.log('[SMS][Step-3] Starting lender notification flow...');
-    
+    // ──────────────────────────────────────────────────────────────────────────────
+    // STEP-3: notify lender "label ready"
+    // Runs right after outbound label purchase succeeds.
+    // ──────────────────────────────────────────────────────────────────────────────
     try {
-      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
-      
-      if (!lenderPhone) {
-        console.warn('[SMS][Step-3] No lender phone available, skipping SMS');
+      console.log('[SMS][Step-3] Starting lender notification flow...');
+
+      // Make sure we have a provider phone
+      if (!providerPhone) {
+        console.warn('[SMS][Step-3] No lender phone on file; skipping SMS');
       } else {
-        // Compute hasQr for branching logic (any carrier)
-        const hasQr = Boolean(qrUrl);
-        
-        // Prefer a short public tracking link (works for USPS/UPS/etc.)
-        const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
-        
-        // Avoid the shortener for now since Redis is noisy; use the clean public URL directly
-        const linkToSend = publicTrack || trackingUrl || labelUrl;
-        
-        // Get listing title (truncate if too long to keep SMS compact)
-        const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
-        const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-        
-        // Build SMS body based on QR presence (any carrier) - tighter copy with short links
-        let smsBody;
-        if (hasQr) {
-          // QR code present: use "Scan QR" message (more compact)
-          const shortQr = qrUrl; // Use QR URL directly (avoid shortLink for now)
-          smsBody = shipByStr
-            ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${shortQr}`
-            : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${shortQr}`;
+        // Normalize to E.164
+        const lenderPhone = normalizePhone(providerPhone);
+        if (!lenderPhone) {
+          console.warn('[SMS][Step-3] Phone normalization failed; skipping SMS');
         } else {
-          // No QR code: use "Label" message with short public tracking link
-          smsBody = shipByStr
-            ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${linkToSend}`
-            : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
-        }
-        
-        // Log before send
-        console.log('[TRACKINGLINK] Using short public link:', linkToSend);
-        console.log(`[SMS][Step-3] carrier=${carrier} tracking=${trackingNumber || 'none'} hasQr=${hasQr} txId=${txId}`);
-        
-        // Send SMS
-        await sendSMS(
-          lenderPhone,
-          smsBody,
-          {
-            role: 'lender',
-            transactionId: txId,
-            tag: 'label_ready_to_lender',
-            meta: { 
-              listingId: listing?.id?.uuid || listing?.id,
-              strategy: strategyUsed,
-              trackingNumber: trackingNumber,
-              hasQr: hasQr
-            }
+          // Compute hasQr for branching logic (any carrier)
+          const hasQr = Boolean(qrUrl);
+          
+          // Build a short, permanent carrier URL (UPS/USPS/FedEx/DHL). Fallbacks included.
+          const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
+          const linkToSend = publicTrack || trackingUrl || labelUrl; // never the long signed .png if we can avoid it
+          
+          // Get listing title (truncate if too long to keep SMS compact)
+          const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+          const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
+          
+          // Compose body (QR branch keeps whatever you prefer)
+          let body;
+          if (hasQr && qrUrl) {
+            // Keep QR copy if you want QR in Step-3
+            body = shipByStr
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${qrUrl}`
+              : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${qrUrl}`;
+          } else {
+            // Default: short carrier link
+            body = shipByStr
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${linkToSend}`
+              : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
           }
-        );
-        
-        // Log success (sendSMS returns SID in production, undefined in DRY_RUN)
-        console.log(`[SMS][Step-3] sent to=${lenderPhone.replace(/(\d{2})\d+(\d{4})/, '$1***$2')} txId=${txId}`);
+
+          console.log('[TRACKINGLINK] Using short public link:', linkToSend);
+          console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
+            carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
+
+          // Import SMS tags for consistency
+          const { SMS_TAGS } = require('../lib/sms/tags');
+
+          // IMPORTANT: send the lender SMS with the correct tag (do not share borrower dedupe)
+          await sendSMS(
+            lenderPhone,
+            body,
+            {
+              role: 'lender',
+              transactionId: txId,
+              tag: SMS_TAGS.LABEL_READY_TO_LENDER, // "label_ready_to_lender"
+              meta: {
+                listingId: listing?.id?.uuid || listing?.id,
+                carrier,
+                trackingNumber,
+                hasQr: !!hasQr
+              }
+            }
+          );
+
+          console.log('[SMS][Step-3] sent to=%s txId=%s', lenderPhone.replace(/\d(?=\d{4})/g, '*'), txId);
+        }
       }
-    } catch (smsError) {
-      console.error('[SMS][Step-3] ERROR err=' + smsError.message + ' txId=' + txId);
-      console.error('[SMS][Step-3] stack:', smsError.stack);
+    } catch (err) {
+      console.error('[SMS][Step-3] error sending lender SMS', { txId, error: err?.message });
       // Do not rethrow - SMS failure should not block persistence
     }
     
