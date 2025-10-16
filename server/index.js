@@ -22,7 +22,10 @@ require('./env').configureEnv();
 // Log presence (not values) of critical envs at boot
 const hasIC = Boolean(process.env.INTEGRATION_CLIENT_ID);
 const hasIS = Boolean(process.env.INTEGRATION_CLIENT_SECRET);
-console.log('[server] Integration creds present?', { INTEGRATION_CLIENT_ID: hasIC, INTEGRATION_CLIENT_SECRET: hasIS });
+console.log('[server] Integration creds present?', {
+  INTEGRATION_CLIENT_ID: hasIC,
+  INTEGRATION_CLIENT_SECRET: hasIS,
+});
 
 // Setup Sentry
 // Note 1: This needs to happen before other express requires
@@ -50,8 +53,11 @@ const { getExtractors } = require('./importer');
 
 // Import SSR renderer with fallback
 let renderer;
-try { renderer = require('./ssr/renderer'); }
-catch { renderer = require('./renderer'); }
+try {
+  renderer = require('./ssr/renderer');
+} catch {
+  renderer = require('./renderer');
+}
 console.log('[server] renderer keys:', Object.keys(renderer || {}));
 
 const dataLoader = require('./dataLoader');
@@ -85,7 +91,7 @@ app.get('/__ssr-info', (_req, res) => {
   if (process.env.NODE_ENV === 'production' && process.env.SHOW_SSR_INFO !== '1') {
     return res.status(404).json({ ok: false, error: 'Not found' });
   }
-  
+
   try {
     const manifest = require(path.join(buildDir, 'asset-manifest.json'));
     const files = manifest.files || {};
@@ -110,8 +116,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'https://localhost:3000',
   'https://sherbrt.com',
   'https://www.sherbrt.com',
-  'https://web-template-1.onrender.com',       // Render test client
-  'https://sherbrt-test.onrender.com'          // any other Render env we use
+  'https://web-template-1.onrender.com', // Render test client
+  'https://sherbrt-test.onrender.com', // any other Render env we use
 ];
 
 const envAllowed = (process.env.CORS_ALLOW_ORIGIN || '')
@@ -133,8 +139,8 @@ const corsOptions = {
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 };
 
 app.use(require('cors')(corsOptions));
@@ -186,7 +192,7 @@ if (cspEnabled) {
 
   // Build CSP policies
   const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
-  
+
   // Log CSP mode at startup
   console.log(`🔐 CSP mode: ${CSP_MODE}`);
 
@@ -212,7 +218,9 @@ function buildIntegrationSdk() {
       return sdk;
     }
   } catch (err) {
-    console.warn('⚠️ Missing INTEGRATION_CLIENT_ID/INTEGRATION_CLIENT_SECRET – integrationSdk not set');
+    console.warn(
+      '⚠️ Missing INTEGRATION_CLIENT_ID/INTEGRATION_CLIENT_SECRET – integrationSdk not set'
+    );
     console.warn('   Error:', err.message);
   }
   return null;
@@ -419,8 +427,8 @@ app.get('*', async (req, res, next) => {
       const shim = {
         collectChunks: x => x,
         getScriptTags: () => '',
-        getLinkTags:   () => '',
-        getStyleTags:  () => '',
+        getLinkTags: () => '',
+        getStyleTags: () => '',
       };
       const finalExtractor = extractor || shim;
       data.extractor = finalExtractor;
@@ -433,8 +441,8 @@ app.get('*', async (req, res, next) => {
       const shim = {
         collectChunks: x => x,
         getScriptTags: () => '',
-        getLinkTags:   () => '',
-        getStyleTags:  () => '',
+        getLinkTags: () => '',
+        getStyleTags: () => '',
       };
       data.extractor = shim;
       data.loadableExtractor = shim;

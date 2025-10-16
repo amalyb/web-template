@@ -23,17 +23,19 @@ const safePick = (obj, keys = []) =>
   Object.fromEntries(keys.map(k => [k, obj && typeof obj === 'object' ? obj[k] : undefined]));
 
 // Helper to check if customer has complete shipping address
-const hasCustomerShipAddress = (pd) => {
+const hasCustomerShipAddress = pd => {
   return !!(pd?.customerStreet?.trim() && pd?.customerZip?.trim());
 };
 
-
-const maskUrl = (u) => {
+const maskUrl = u => {
   try {
     if (!u) return '';
     const url = new URL(u);
     // keep origin + first 3 path signatures
-    const parts = url.pathname.split('/').filter(Boolean).slice(0, 3);
+    const parts = url.pathname
+      .split('/')
+      .filter(Boolean)
+      .slice(0, 3);
     return `${url.origin}/${parts.join('/')}${parts.length ? '/...' : ''}`;
   } catch {
     return String(u || '').split('?')[0];
@@ -54,7 +56,7 @@ function parseExpiresParam(url) {
   }
 }
 
-const logTx = (tx) => ({
+const logTx = tx => ({
   object_id: tx?.object_id,
   status: tx?.status,
   tracking_number: tx?.tracking_number,
@@ -92,7 +94,7 @@ const getBorrowerPhone = (params, tx) => {
   const txPD = tx?.protectedData || tx?.attributes?.protectedData || {};
   const cust = tx?.relationships?.customer?.attributes;
   const profilePhone = cust?.profile?.protectedData?.phone ?? cust?.protectedData?.phone;
-  
+
   // Use PD-first helper
   return contactPhoneForTx(tx, profilePhone);
 };
@@ -102,28 +104,30 @@ const getLenderPhone = (params, tx) => {
   const txPD = tx?.protectedData || tx?.attributes?.protectedData || {};
   const prov = tx?.relationships?.provider?.attributes;
   const profilePhone = prov?.profile?.protectedData?.phone ?? prov?.protectedData?.phone;
-  
+
   // Provider phone uses similar PD-first logic
   return txPD.providerPhone && String(txPD.providerPhone).trim()
     ? String(txPD.providerPhone).trim()
-    : (profilePhone && String(profilePhone).trim() ? String(profilePhone).trim() : null);
+    : profilePhone && String(profilePhone).trim()
+    ? String(profilePhone).trim()
+    : null;
 };
 
 // --- Shippo label creation logic extracted to a function ---
-async function createShippingLabels({ 
-  txId, 
-  listing, 
-  protectedData, 
-  providerPhone, 
-  integrationSdk, 
-  sendSMS, 
-  normalizePhone, 
+async function createShippingLabels({
+  txId,
+  listing,
+  protectedData,
+  providerPhone,
+  integrationSdk,
+  sendSMS,
+  normalizePhone,
   selectedRate,
-  transaction
+  transaction,
 }) {
   console.log('🚀 [SHIPPO] Starting label creation for transaction:', txId);
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
-  
+
   // Extract addresses from protectedData
   const providerAddress = {
     name: protectedData.providerName || 'Provider',
@@ -136,7 +140,7 @@ async function createShippingLabels({
     email: protectedData.providerEmail,
     phone: protectedData.providerPhone,
   };
-  
+
   const customerAddress = {
     name: protectedData.customerName || 'Customer',
     street1: protectedData.customerStreet,
@@ -148,33 +152,35 @@ async function createShippingLabels({
     email: protectedData.customerEmail,
     phone: protectedData.customerPhone,
   };
-  
+
   // Log addresses for debugging
   console.log('🏷️ [SHIPPO] Provider address:', providerAddress);
   console.log('🏷️ [SHIPPO] Customer address:', customerAddress);
-  
+
   // Validate that we have complete address information
-  const hasCompleteProviderAddress = providerAddress.street1 && providerAddress.city && providerAddress.state && providerAddress.zip;
-  const hasCompleteCustomerAddress = customerAddress.street1 && customerAddress.city && customerAddress.state && customerAddress.zip;
-  
+  const hasCompleteProviderAddress =
+    providerAddress.street1 && providerAddress.city && providerAddress.state && providerAddress.zip;
+  const hasCompleteCustomerAddress =
+    customerAddress.street1 && customerAddress.city && customerAddress.state && customerAddress.zip;
+
   if (!hasCompleteProviderAddress) {
     console.warn('⚠️ [SHIPPO] Incomplete provider address — skipping label creation');
     return { success: false, reason: 'incomplete_provider_address' };
   }
-  
+
   if (!hasCompleteCustomerAddress) {
     console.warn('⚠️ [SHIPPO] Incomplete customer address — skipping label creation');
     return { success: false, reason: 'incomplete_customer_address' };
   }
-  
+
   if (!process.env.SHIPPO_API_TOKEN) {
     console.warn('⚠️ [SHIPPO] SHIPPO_API_TOKEN missing — skipping label creation');
     return { success: false, reason: 'missing_api_token' };
   }
-  
+
   try {
     console.log('📦 [SHIPPO] Creating outbound shipment (provider → customer)...');
-    
+
     // Define the required parcel
     const parcel = {
       length: '12',
@@ -182,7 +188,7 @@ async function createShippingLabels({
       height: '1',
       distance_unit: 'in',
       weight: '0.75',
-      mass_unit: 'lb'
+      mass_unit: 'lb',
     };
 
     // Outbound shipment payload
@@ -191,130 +197,142 @@ async function createShippingLabels({
       address_from: providerAddress,
       address_to: customerAddress,
       parcels: [parcel],
-      async: false
+      async: false,
     };
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
 
     // Create outbound shipment (provider → customer)
-    const shipmentRes = await axios.post(
-      'https://api.goshippo.com/shipments/',
-      outboundPayload,
-      {
-        headers: {
-          'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
+    const shipmentRes = await axios.post('https://api.goshippo.com/shipments/', outboundPayload, {
+      headers: {
+        Authorization: `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+    });
 
     console.log('📦 [SHIPPO] Outbound shipment created successfully');
     console.log('📦 [SHIPPO] Shipment ID:', shipmentRes.data.object_id);
-    
+
     // Select a shipping rate from the available rates
     const availableRates = shipmentRes.data.rates || [];
     const shipmentData = shipmentRes.data;
-    
+
     console.log('📊 [SHIPPO] Available rates:', availableRates.length);
-    
+
     // Diagnostics if no rates returned
     if (availableRates.length === 0) {
       console.error('❌ [SHIPPO][NO-RATES] No shipping rates available for outbound shipment');
-      
+
       // Log Shippo messages for diagnostics
       if (shipmentData.messages && shipmentData.messages.length > 0) {
-        console.error('[SHIPPO][NO-RATES] messages:', JSON.stringify(shipmentData.messages, null, 2));
+        console.error(
+          '[SHIPPO][NO-RATES] messages:',
+          JSON.stringify(shipmentData.messages, null, 2)
+        );
       }
-      
+
       // Log carrier accounts if available
       if (shipmentData.carrier_accounts && shipmentData.carrier_accounts.length > 0) {
         const carriers = shipmentData.carrier_accounts.map(c => c.carrier);
         console.error('[SHIPPO][NO-RATES] carrier_accounts:', carriers);
       }
-      
+
       // Log addresses being used (masked)
       console.error('[SHIPPO][NO-RATES] address_from:', {
         street1: providerAddress.street1,
         city: providerAddress.city,
         state: providerAddress.state,
         zip: providerAddress.zip,
-        country: providerAddress.country
+        country: providerAddress.country,
       });
       console.error('[SHIPPO][NO-RATES] address_to:', {
         street1: customerAddress.street1,
         city: customerAddress.city,
         state: customerAddress.state,
         zip: customerAddress.zip,
-        country: customerAddress.country
+        country: customerAddress.country,
       });
-      
+
       // Log parcel dimensions
       console.error('[SHIPPO][NO-RATES] parcel:', parcel);
-      
+
       return { success: false, reason: 'no_shipping_rates' };
     }
-    
+
     // Rate selection logic: use provider preference from env
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
       .split(',')
       .map(p => p.trim().toUpperCase())
       .filter(Boolean);
-    
-    const providersAvailable = availableRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
-    
-    console.log('[SHIPPO][RATE-SELECT] providers_available=' + JSON.stringify(providersAvailable) + ' prefs=' + JSON.stringify(preferredProviders));
-    
+
+    const providersAvailable = availableRates
+      .map(r => r.provider)
+      .filter((v, i, a) => a.indexOf(v) === i);
+
+    console.log(
+      '[SHIPPO][RATE-SELECT] providers_available=' +
+        JSON.stringify(providersAvailable) +
+        ' prefs=' +
+        JSON.stringify(preferredProviders)
+    );
+
     // Select rate based on preference order
     let selectedRate = null;
     for (const preferredProvider of preferredProviders) {
       selectedRate = availableRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
       if (selectedRate) {
-        console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`);
+        console.log(
+          `[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`
+        );
         break;
       }
     }
-    
+
     // Fallback: use first available if no preference match
     if (!selectedRate) {
       selectedRate = availableRates[0];
-      console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`);
+      console.log(
+        `[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`
+      );
     }
-    
+
     console.log('📦 [SHIPPO] Selected rate:', {
       provider: selectedRate.provider,
       service: selectedRate.servicelevel || selectedRate.service,
       rate: selectedRate.rate,
-      object_id: selectedRate.object_id
+      object_id: selectedRate.object_id,
     });
-    
+
     // Create the actual label by purchasing the transaction
     console.log('📦 [SHIPPO] Purchasing label for selected rate...');
-    
+
     // Build transaction payload - only request QR code for USPS
     const transactionPayload = {
       rate: selectedRate.object_id,
       async: false,
       label_file_type: 'PNG',
-      metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+      metadata: JSON.stringify({ txId }), // Include transaction ID for webhook lookup
     };
-    
+
     // Only request QR code for USPS (UPS doesn't support it)
     if (selectedRate.provider.toUpperCase() === 'USPS') {
       transactionPayload.extra = { qr_code_requested: true };
       console.log('📦 [SHIPPO] Requesting QR code for USPS label');
     } else {
-      console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
+      console.log(
+        '📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)'
+      );
     }
-    
+
     console.log('📦 [SHIPPO] Added metadata.txId to transaction payload for webhook lookup');
-    
+
     const transactionRes = await axios.post(
       'https://api.goshippo.com/transactions/',
       transactionPayload,
       {
         headers: {
-          'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
+          Authorization: `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
       }
     );
 
@@ -331,7 +349,10 @@ async function createShippingLabels({
     // One-time debug log after label purchase - safe structured logging of key fields
     if (process.env.SHIPPO_DEBUG === 'true') {
       console.log('[SHIPPO][TX]', logTx(shippoTx));
-      console.log('[SHIPPO][RATE]', safePick(selectedRate || {}, ['provider', 'servicelevel', 'service', 'object_id']));
+      console.log(
+        '[SHIPPO][RATE]',
+        safePick(selectedRate || {}, ['provider', 'servicelevel', 'service', 'object_id'])
+      );
     }
     const tx = shippoTx || {};
     const trackingNumber = tx.tracking_number || null;
@@ -343,7 +364,7 @@ async function createShippingLabels({
     const service = selectedRate?.service?.name ?? selectedRate?.servicelevel?.name ?? null;
 
     const qrPayload = { trackingNumber, trackingUrl, labelUrl, qrUrl, carrier, service };
-    
+
     console.log('[SHIPPO] QR payload built:', {
       hasTrackingNumber: !!trackingNumber,
       hasTrackingUrl: !!trackingUrl,
@@ -377,7 +398,7 @@ async function createShippingLabels({
     console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
     console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
     console.log('[label-ready] shipByStr:', shipByStr);
-    
+
     // ──────────────────────────────────────────────────────────────────────────────
     // STEP-3: notify lender "label ready"
     // Runs right after outbound label purchase succeeds.
@@ -396,15 +417,15 @@ async function createShippingLabels({
         } else {
           // Compute hasQr for branching logic (any carrier)
           const hasQr = Boolean(qrUrl);
-          
+
           // Build a short, permanent carrier URL (UPS/USPS/FedEx/DHL). Fallbacks included.
           const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
           const linkToSend = publicTrack || trackingUrl || labelUrl; // never the long signed .png if we can avoid it
-          
+
           // Get listing title (truncate if too long to keep SMS compact)
           const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-          
+
           // Compose body (QR branch keeps whatever you prefer)
           let body;
           if (hasQr && qrUrl) {
@@ -420,41 +441,47 @@ async function createShippingLabels({
           }
 
           console.log('[TRACKINGLINK] Using short public link:', linkToSend);
-          console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
-            carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
+          console.log(
+            '[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
+            carrier,
+            linkToSend,
+            txId,
+            trackingNumber || 'none',
+            hasQr
+          );
 
           // Import SMS tags for consistency
           const { SMS_TAGS } = require('../lib/sms/tags');
 
           // IMPORTANT: send the lender SMS with the correct tag (do not share borrower dedupe)
-          await sendSMS(
-            lenderPhone,
-            body,
-            {
-              role: 'lender',
-              transactionId: txId,
-              tag: SMS_TAGS.LABEL_READY_TO_LENDER, // "label_ready_to_lender"
-              meta: {
-                listingId: listing?.id?.uuid || listing?.id,
-                carrier,
-                trackingNumber,
-                hasQr: !!hasQr
-              }
-            }
-          );
+          await sendSMS(lenderPhone, body, {
+            role: 'lender',
+            transactionId: txId,
+            tag: SMS_TAGS.LABEL_READY_TO_LENDER, // "label_ready_to_lender"
+            meta: {
+              listingId: listing?.id?.uuid || listing?.id,
+              carrier,
+              trackingNumber,
+              hasQr: !!hasQr,
+            },
+          });
 
-          console.log('[SMS][Step-3] sent to=%s txId=%s', lenderPhone.replace(/\d(?=\d{4})/g, '*'), txId);
+          console.log(
+            '[SMS][Step-3] sent to=%s txId=%s',
+            lenderPhone.replace(/\d(?=\d{4})/g, '*'),
+            txId
+          );
         }
       }
     } catch (err) {
       console.error('[SMS][Step-3] error sending lender SMS', { txId, error: err?.message });
       // Do not rethrow - SMS failure should not block persistence
     }
-    
+
     // ========== STEP 2: PERSIST TO FLEX (INDEPENDENT OF SMS) ==========
     // Persistence happens after SMS, and failures here don't affect SMS delivery
     console.log('[SHIPPO] Attempting to persist label data to Flex protectedData...');
-    
+
     try {
       const patch = {
         outboundTrackingNumber: trackingNumber,
@@ -467,12 +494,15 @@ async function createShippingLabels({
         outboundPurchasedAt: timestamp(), // ← respects FORCE_NOW
         outbound: {
           ...protectedData.outbound,
-          shipByDate: shipByDate ? shipByDate.toISOString() : null
-        }
+          shipByDate: shipByDate ? shipByDate.toISOString() : null,
+        },
       };
       const result = await upsertProtectedData(txId, patch);
       if (result && result.success === false) {
-        console.warn('⚠️ [PERSIST] Failed to save outbound label (SMS already sent):', result.error);
+        console.warn(
+          '⚠️ [PERSIST] Failed to save outbound label (SMS already sent):',
+          result.error
+        );
       } else {
         console.log('✅ [PERSIST] Stored outbound label fields:', Object.keys(patch).join(', '));
         if (shipByDate) {
@@ -480,7 +510,10 @@ async function createShippingLabels({
         }
       }
     } catch (persistError) {
-      console.error('❌ [PERSIST] Exception saving outbound label (SMS already sent):', persistError.message);
+      console.error(
+        '❌ [PERSIST] Exception saving outbound label (SMS already sent):',
+        persistError.message
+      );
       // Do not rethrow - persistence failure should not fail the overall flow
     }
 
@@ -495,16 +528,21 @@ async function createShippingLabels({
     let returnLabelRes = null;
     let returnQrUrl = null;
     let returnTrackingUrl = null;
-    
+
     try {
-      if (protectedData.providerStreet && protectedData.providerCity && protectedData.providerState && protectedData.providerZip) {
+      if (
+        protectedData.providerStreet &&
+        protectedData.providerCity &&
+        protectedData.providerState &&
+        protectedData.providerZip
+      ) {
         console.log('📦 [SHIPPO] Creating return shipment (customer → provider)...');
-        
+
         const returnPayload = {
           address_from: customerAddress,
           address_to: providerAddress,
           parcels: [parcel],
-          async: false
+          async: false,
         };
 
         const returnShipmentRes = await axios.post(
@@ -512,95 +550,125 @@ async function createShippingLabels({
           returnPayload,
           {
             headers: {
-              'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-              'Content-Type': 'application/json'
-            }
+              Authorization: `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+              'Content-Type': 'application/json',
+            },
           }
         );
 
         console.log('📦 [SHIPPO] Return shipment created successfully');
         console.log('📦 [SHIPPO] Return Shipment ID:', returnShipmentRes.data.object_id);
-        
+
         // Get return rates and select one
         const returnRates = returnShipmentRes.data.rates || [];
         const returnShipmentData = returnShipmentRes.data;
-        
+
         if (returnRates.length === 0) {
           console.warn('⚠️ [SHIPPO] No return rates available');
           if (returnShipmentData.messages && returnShipmentData.messages.length > 0) {
-            console.warn('[SHIPPO][NO-RATES][RETURN] messages:', JSON.stringify(returnShipmentData.messages, null, 2));
+            console.warn(
+              '[SHIPPO][NO-RATES][RETURN] messages:',
+              JSON.stringify(returnShipmentData.messages, null, 2)
+            );
           }
         }
-        
+
         if (returnRates.length > 0) {
           // Use same provider preference logic for return labels
-          const returnProvidersAvailable = returnRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
-          console.log('[SHIPPO][RATE-SELECT][RETURN] providers_available=' + JSON.stringify(returnProvidersAvailable));
-          
+          const returnProvidersAvailable = returnRates
+            .map(r => r.provider)
+            .filter((v, i, a) => a.indexOf(v) === i);
+          console.log(
+            '[SHIPPO][RATE-SELECT][RETURN] providers_available=' +
+              JSON.stringify(returnProvidersAvailable)
+          );
+
           let returnSelectedRate = null;
           for (const preferredProvider of preferredProviders) {
-            returnSelectedRate = returnRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
+            returnSelectedRate = returnRates.find(
+              rate => rate.provider.toUpperCase() === preferredProvider
+            );
             if (returnSelectedRate) {
-              console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`);
+              console.log(
+                `[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`
+              );
               break;
             }
           }
-          
+
           // Fallback to first available
           if (!returnSelectedRate) {
             returnSelectedRate = returnRates[0];
-            console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`);
+            console.log(
+              `[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`
+            );
           }
-          
+
           console.log('📦 [SHIPPO] Selected return rate:', {
             provider: returnSelectedRate.provider,
             service: returnSelectedRate.servicelevel || returnSelectedRate.service,
             rate: returnSelectedRate.rate,
-            object_id: returnSelectedRate.object_id
+            object_id: returnSelectedRate.object_id,
           });
-          
+
           // Build return transaction payload - only request QR for USPS
           const returnTransactionPayload = {
             rate: returnSelectedRate.object_id,
             async: false,
             label_file_type: 'PNG',
-            metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+            metadata: JSON.stringify({ txId }), // Include transaction ID for webhook lookup
           };
-          
+
           if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
             returnTransactionPayload.extra = { qr_code_requested: true };
             console.log('📦 [SHIPPO] Requesting QR code for USPS return label');
           } else {
-            console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
+            console.log(
+              '📦 [SHIPPO] Skipping QR code request for ' +
+                returnSelectedRate.provider +
+                ' return label'
+            );
           }
-          
-          console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
-          
+
+          console.log(
+            '📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup'
+          );
+
           // Purchase return label
           const returnTransactionRes = await axios.post(
             'https://api.goshippo.com/transactions/',
             returnTransactionPayload,
             {
               headers: {
-                'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-                'Content-Type': 'application/json'
-              }
+                Authorization: `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+                'Content-Type': 'application/json',
+              },
             }
           );
-          
+
           if (returnTransactionRes.data.status === 'SUCCESS') {
             // One-time debug log for return label purchase
             if (process.env.SHIPPO_DEBUG === 'true') {
               console.log('[SHIPPO][RETURN_TX]', logTx(returnTransactionRes.data));
-              console.log('[SHIPPO][RETURN_RATE]', safePick(returnSelectedRate || {}, ['provider', 'servicelevel', 'service', 'object_id']));
+              console.log(
+                '[SHIPPO][RETURN_RATE]',
+                safePick(returnSelectedRate || {}, [
+                  'provider',
+                  'servicelevel',
+                  'service',
+                  'object_id',
+                ])
+              );
             }
-            
+
             returnQrUrl = returnTransactionRes.data.qr_code_url;
-            returnTrackingUrl = returnTransactionRes.data.tracking_url_provider || returnTransactionRes.data.tracking_url;
-            
+            returnTrackingUrl =
+              returnTransactionRes.data.tracking_url_provider ||
+              returnTransactionRes.data.tracking_url;
+
             console.log('📦 [SHIPPO] Return label purchased successfully!');
             console.log('📦 [SHIPPO] Return Transaction ID:', returnTransactionRes.data.object_id);
-            
+
             // Persist return label details to Flex protectedData
             try {
               const patch = {
@@ -609,7 +677,10 @@ async function createShippingLabels({
                 returnLabelUrl: returnTransactionRes.data.label_url || null,
                 returnQrUrl: returnQrUrl || null,
                 returnCarrier: returnSelectedRate?.provider || null,
-                returnService: returnSelectedRate?.service?.name ?? returnSelectedRate?.servicelevel?.name ?? null,
+                returnService:
+                  returnSelectedRate?.service?.name ??
+                  returnSelectedRate?.servicelevel?.name ??
+                  null,
                 returnQrExpiry: parseExpiresParam(returnQrUrl || '') || null,
                 returnPurchasedAt: timestamp(), // ← respects FORCE_NOW
               };
@@ -617,13 +688,19 @@ async function createShippingLabels({
               if (result && result.success === false) {
                 console.warn('⚠️ [PERSIST] Failed to save return label:', result.error);
               } else {
-                console.log('✅ [PERSIST] Stored return label fields:', Object.keys(patch).join(', '));
+                console.log(
+                  '✅ [PERSIST] Stored return label fields:',
+                  Object.keys(patch).join(', ')
+                );
               }
             } catch (e) {
               console.error('❌ [PERSIST] Exception saving return label:', e.message);
             }
           } else {
-            console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
+            console.warn(
+              '⚠️ [SHIPPO] Return label purchase failed:',
+              returnTransactionRes.data.messages
+            );
           }
         }
       }
@@ -638,42 +715,49 @@ async function createShippingLabels({
       // Do not rethrow — allow the HTTP handler to finish normally.
     }
 
-
-    
     // Send borrower SMS notification (lender SMS already sent immediately after outbound label success)
     try {
       // Extract phone numbers from protectedData (more reliable than nested objects)
       const borrowerPhone = protectedData.customerPhone;
-      
+
       // Optional: Send borrower "Label created" message (idempotent)
       if (borrowerPhone && trackingUrl) {
         // Check if we've already sent this notification
         const existingNotification = protectedData.shippingNotification?.labelCreated;
         if (existingNotification?.sent === true) {
-          console.log(`📱 Label created SMS already sent to borrower (${maskPhone(borrowerPhone)}) - skipping`);
+          console.log(
+            `📱 Label created SMS already sent to borrower (${maskPhone(borrowerPhone)}) - skipping`
+          );
         } else {
           await sendSMS(
             borrowerPhone,
             `Sherbrt: your item will ship soon. Track at ${trackingUrl}`,
-            { 
+            {
               role: 'customer',
               transactionId: txId,
               transition: 'transition/accept',
               tag: 'label_created_to_borrower',
-              meta: { listingId: listing?.id?.uuid || listing?.id }
+              meta: { listingId: listing?.id?.uuid || listing?.id },
             }
           );
-          console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for label created with tracking: ${maskUrl(trackingUrl)}`);
-          
+          console.log(
+            `📱 SMS sent to borrower (${maskPhone(
+              borrowerPhone
+            )}) for label created with tracking: ${maskUrl(trackingUrl)}`
+          );
+
           // Mark as sent in protectedData
           try {
             const notificationResult = await upsertProtectedData(txId, {
               shippingNotification: {
-                labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
-              }
+                labelCreated: { sent: true, sentAt: timestamp() }, // ← respects FORCE_NOW
+              },
             });
             if (notificationResult && notificationResult.success === false) {
-              console.warn('⚠️ [PERSIST] Failed to save notification state:', notificationResult.error);
+              console.warn(
+                '⚠️ [PERSIST] Failed to save notification state:',
+                notificationResult.error
+              );
             } else {
               console.log(`✅ [PERSIST] Updated shippingNotification.labelCreated`);
             }
@@ -682,41 +766,45 @@ async function createShippingLabels({
           }
         }
       } else if (borrowerPhone) {
-        console.log(`📱 Borrower phone found but no tracking URL available - no immediate notification sent`);
+        console.log(
+          `📱 Borrower phone found but no tracking URL available - no immediate notification sent`
+        );
       } else {
         console.log(`📱 Borrower phone number not found - no immediate notification sent`);
       }
-      
     } catch (smsError) {
       console.error('❌ Failed to send borrower SMS notification:', smsError.message);
       // Don't fail the label creation if SMS fails
     }
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       outboundLabel: {
         label_url: labelUrl,
         qr_code_url: qrUrl,
-        tracking_url_provider: trackingUrl
-      }, 
-      returnLabel: returnQrUrl ? {
-        qr_code_url: returnQrUrl,
-        tracking_url_provider: returnTrackingUrl
-      } : null
+        tracking_url_provider: trackingUrl,
+      },
+      returnLabel: returnQrUrl
+        ? {
+            qr_code_url: returnQrUrl,
+            tracking_url_provider: returnTrackingUrl,
+          }
+        : null,
     };
-    
   } catch (err) {
     // Check if this is a Shippo API error (actual label creation failure)
     const isShippoError = err?.response?.status || err?.status;
     const isNetworkError = err?.code === 'ECONNRESET' || err?.code === 'ETIMEDOUT';
-    
+
     if (isShippoError || isNetworkError) {
       const details = {
         name: err?.name,
         message: err?.message,
         status: err?.status || err?.response?.status,
         statusText: err?.statusText || err?.response?.statusText,
-        data: err?.response?.data ? safePick(err.response.data, ['error', 'message', 'code']) : undefined,
+        data: err?.response?.data
+          ? safePick(err.response.data, ['error', 'message', 'code'])
+          : undefined,
       };
       console.error('[SHIPPO] Label creation failed (Shippo API error)', details);
       return { success: false, reason: 'shippo_api_error', error: err.message };
@@ -736,19 +824,19 @@ module.exports = async (req, res) => {
   console.log('🚀 transition-privileged endpoint HIT!');
   console.log('📋 Request method:', req.method);
   console.log('📋 Request URL:', req.url);
-  
+
   // STEP 1: Confirm the endpoint is hit
   console.log('🚦 transition-privileged endpoint is wired up');
-  
+
   const { isSpeculative, orderData, bodyParams, queryParams } = req.body;
-  
+
   // STEP 2: Log the transition type
   console.log('🔁 Transition received:', bodyParams?.transition);
-  
+
   // STEP 3: Check that sendSMS is properly imported
   console.log('📱 sendSMS function available:', !!sendSMS);
   console.log('📱 sendSMS function type:', typeof sendSMS);
-  
+
   // Debug log for full request body
   console.log('🔍 Full request body:', {
     isSpeculative,
@@ -757,7 +845,7 @@ module.exports = async (req, res) => {
     queryParams,
     params: bodyParams?.params,
     rawBody: req.body,
-    headers: req.headers
+    headers: req.headers,
   });
 
   // Log protectedData received from frontend
@@ -771,7 +859,8 @@ module.exports = async (req, res) => {
 
   // Extract uuid from listingId if needed
   const listingId = bodyParams?.params?.listingId?.uuid || bodyParams?.params?.listingId;
-  const transactionId = bodyParams?.params?.transactionId?.uuid || bodyParams?.params?.transactionId;
+  const transactionId =
+    bodyParams?.params?.transactionId?.uuid || bodyParams?.params?.transactionId;
   console.log('🟠 About to call sdk.listings.show with listingId:', listingId);
 
   // Debug log for listingId and transaction details
@@ -781,7 +870,7 @@ module.exports = async (req, res) => {
     transition: bodyParams?.transition,
     params: bodyParams?.params,
     transactionId: transactionId,
-    hasTransactionId: !!transactionId
+    hasTransactionId: !!transactionId,
   });
 
   // Verify we have the required parameters before making the API call
@@ -789,29 +878,34 @@ module.exports = async (req, res) => {
   if (!listingId && bodyParams?.transition !== 'transition/accept') {
     console.error('❌ EARLY RETURN: Missing required listingId parameter');
     return res.status(400).json({
-      errors: [{
-        status: 400,
-        code: 'validation-missing-key',
-        title: 'Missing required listingId parameter'
-      }]
+      errors: [
+        {
+          status: 400,
+          code: 'validation-missing-key',
+          title: 'Missing required listingId parameter',
+        },
+      ],
     });
   }
 
   const listingPromise = () => {
     console.log('📡 Making listing API call with params:', {
       listingId: listingId,
-      url: '/v1/api/listings/show'
+      url: '/v1/api/listings/show',
     });
     return sdk.listings.show({ id: listingId });
   };
 
   try {
-    const [showListingResponse, fetchAssetsResponse] = await Promise.all([listingPromise(), fetchCommission(sdk)]);
-    
+    const [showListingResponse, fetchAssetsResponse] = await Promise.all([
+      listingPromise(),
+      fetchCommission(sdk),
+    ]);
+
     console.log('✅ Listing API response:', {
       status: showListingResponse?.status,
       hasData: !!showListingResponse?.data?.data,
-      listingId: showListingResponse?.data?.data?.id
+      listingId: showListingResponse?.data?.data?.id,
     });
 
     const listing = showListingResponse.data.data;
@@ -821,7 +915,7 @@ module.exports = async (req, res) => {
       commissionAsset?.type === 'jsonAsset' ? commissionAsset.attributes.data : {};
 
     // Debug log for orderData
-    console.log("📦 orderData for lineItems:", orderData);
+    console.log('📦 orderData for lineItems:', orderData);
 
     // Only calculate lineItems here if not transition/accept
     let transition = bodyParams?.transition;
@@ -834,10 +928,12 @@ module.exports = async (req, res) => {
           customerCommission
         );
       } else {
-        console.warn("⚠️ No orderData provided for non-accept transition. This may cause issues.");
+        console.warn('⚠️ No orderData provided for non-accept transition. This may cause issues.');
       }
     } else {
-      console.log("ℹ️ Skipping lineItems generation — transition/accept will calculate from booking.");
+      console.log(
+        'ℹ️ Skipping lineItems generation — transition/accept will calculate from booking.'
+      );
     }
 
     // Debug log for lineItems
@@ -846,7 +942,7 @@ module.exports = async (req, res) => {
       lineItemsCount: lineItems?.length,
       lineItems,
       params: bodyParams?.params,
-      listingId: listing?.id
+      listingId: listing?.id,
     });
 
     // Omit listingId from params (transition/request-payment-after-inquiry does not need it)
@@ -865,19 +961,28 @@ module.exports = async (req, res) => {
     // Set id for transition/request-payment and transition/accept
     let id = null;
     // Defensive check for bodyParams and .transition
-    if (bodyParams && (bodyParams.transition === 'transition/request-payment' || bodyParams.transition === 'transition/confirm-payment')) {
+    if (
+      bodyParams &&
+      (bodyParams.transition === 'transition/request-payment' ||
+        bodyParams.transition === 'transition/confirm-payment')
+    ) {
       id = transactionId;
-      
+
       // Sanitize incoming protectedData for request-payment to avoid blank strings overwriting existing values
       if (params.protectedData) {
         const cleaned = Object.fromEntries(
-          Object.entries(params.protectedData).filter(([, v]) => v != null && String(v).trim() !== '')
+          Object.entries(params.protectedData).filter(
+            ([, v]) => v != null && String(v).trim() !== ''
+          )
         );
-        
+
         // Server-side phone normalization (safety net for E.164)
         if (cleaned.customerPhone) {
           cleaned.customerPhone = normalizePhoneE164(cleaned.customerPhone, 'US');
-          console.log('📞 [request-payment] Normalized customerPhone to E.164:', cleaned.customerPhone);
+          console.log(
+            '📞 [request-payment] Normalized customerPhone to E.164:',
+            cleaned.customerPhone
+          );
         }
         if (cleaned.providerPhone) {
           cleaned.providerPhone = normalizePhoneE164(cleaned.providerPhone, 'US');
@@ -885,7 +990,7 @@ module.exports = async (req, res) => {
         if (cleaned.customerPhoneShipping) {
           cleaned.customerPhoneShipping = normalizePhoneE164(cleaned.customerPhoneShipping, 'US');
         }
-        
+
         params.protectedData = cleaned;
         console.log('🧹 [request-payment] Sanitized protectedData keys:', Object.keys(cleaned));
       }
@@ -893,8 +998,8 @@ module.exports = async (req, res) => {
       id = transactionId;
       // --- [AI EDIT] Fetch protectedData from transaction and robustly merge with incoming params ---
       const transactionIdUUID =
-        (bodyParams?.params?.transactionId?.uuid) ||
-        (transactionId?.uuid) ||
+        bodyParams?.params?.transactionId?.uuid ||
+        transactionId?.uuid ||
         (typeof transactionId === 'string' ? transactionId : null);
       if (bodyParams?.transition === 'transition/accept' && transactionIdUUID) {
         try {
@@ -904,31 +1009,45 @@ module.exports = async (req, res) => {
           });
           const txProtectedData = transaction?.data?.data?.attributes?.protectedData || {};
           const incomingProtectedData = bodyParams?.params?.protectedData || {};
-          
+
           // Debug logging to understand the data flow
           console.log('🔍 [DEBUG] Transaction protectedData:', txProtectedData);
           console.log('🔍 [DEBUG] Incoming protectedData:', incomingProtectedData);
-          console.log('🔍 [DEBUG] Transaction customer relationship:', transaction?.data?.data?.relationships?.customer);
-          
+          console.log(
+            '🔍 [DEBUG] Transaction customer relationship:',
+            transaction?.data?.data?.relationships?.customer
+          );
+
           // Remove blank updates from incoming data
           const cleaned = Object.fromEntries(
-            Object.entries(incomingProtectedData).filter(([, v]) => v != null && String(v).trim() !== '')
+            Object.entries(incomingProtectedData).filter(
+              ([, v]) => v != null && String(v).trim() !== ''
+            )
           );
-          
+
           // Now merge: transaction first, then cleaned updates
           const mergedProtectedData = { ...txProtectedData, ...cleaned };
-          
+
           // Explicitly protect customer* fields from being overwritten by blank strings:
           const CUSTOMER_KEYS = [
-            'customerName','customerStreet','customerStreet2','customerCity',
-            'customerState','customerZip','customerEmail','customerPhone'
+            'customerName',
+            'customerStreet',
+            'customerStreet2',
+            'customerCity',
+            'customerState',
+            'customerZip',
+            'customerEmail',
+            'customerPhone',
           ];
           for (const k of CUSTOMER_KEYS) {
-            if ((mergedProtectedData[k] == null || mergedProtectedData[k] === '') && txProtectedData[k]) {
+            if (
+              (mergedProtectedData[k] == null || mergedProtectedData[k] === '') &&
+              txProtectedData[k]
+            ) {
               mergedProtectedData[k] = txProtectedData[k];
             }
           }
-          
+
           console.log('[server accept] merged PD keys:', Object.keys(mergedProtectedData));
 
           // Set both params.protectedData and top-level fields from mergedProtectedData
@@ -943,16 +1062,24 @@ module.exports = async (req, res) => {
             providerState: mergedProtectedData.providerState,
             providerZip: mergedProtectedData.providerZip,
             providerEmail: mergedProtectedData.providerEmail,
-            providerPhone: mergedProtectedData.providerPhone
+            providerPhone: mergedProtectedData.providerPhone,
           });
         } catch (err) {
           console.error('❌ Failed to fetch or apply protectedData from transaction:', err.message);
         }
       }
-    } else if (bodyParams && (bodyParams.transition === 'transition/decline' || bodyParams.transition === 'transition/expire' || bodyParams.transition === 'transition/cancel')) {
+    } else if (
+      bodyParams &&
+      (bodyParams.transition === 'transition/decline' ||
+        bodyParams.transition === 'transition/expire' ||
+        bodyParams.transition === 'transition/cancel')
+    ) {
       // Use transactionId for transaction-based transitions
       id = transactionId;
-      console.log('🔧 Using transactionId for transaction-based transition:', bodyParams.transition);
+      console.log(
+        '🔧 Using transactionId for transaction-based transition:',
+        bodyParams.transition
+      );
     } else {
       id = listingId;
     }
@@ -982,10 +1109,10 @@ module.exports = async (req, res) => {
     // Add error handling around validation logic
     try {
       console.log('🔍 [DEBUG] Starting validation checks...');
-      
+
       const ACCEPT_TRANSITION = 'transition/accept';
       const transition = bodyParams?.transition;
-      
+
       // Validate required provider and customer address fields before making the SDK call
       const requiredProviderFields = [
         'providerStreet',
@@ -997,7 +1124,7 @@ module.exports = async (req, res) => {
       ];
       // Customer fields are NOT required at accept; they're optional.
       const requiredCustomerFields = [];
-      
+
       console.log('🔍 [DEBUG] Required provider fields:', requiredProviderFields);
       console.log('🔍 [DEBUG] Required customer fields:', requiredCustomerFields);
       console.log('🔍 [DEBUG] Provider field values:', {
@@ -1006,7 +1133,7 @@ module.exports = async (req, res) => {
         providerState: params.providerState,
         providerZip: params.providerZip,
         providerEmail: params.providerEmail,
-        providerPhone: params.providerPhone
+        providerPhone: params.providerPhone,
       });
       console.log('🔍 [DEBUG] Customer field values:', {
         customerName: params.customerName,
@@ -1015,17 +1142,15 @@ module.exports = async (req, res) => {
         customerCity: params.customerCity,
         customerState: params.customerState,
         customerZip: params.customerZip,
-        customerPhone: params.customerPhone
+        customerPhone: params.customerPhone,
       });
-      
+
       // Validate only PROVIDER fields on accept.
       if (transition === ACCEPT_TRANSITION) {
         console.log('🔍 [DEBUG] Validating provider fields for transition/accept');
         // Check both the flattened params and params.protectedData
         const pd = params?.protectedData || {};
-        const missingProvider = requiredProviderFields.filter(
-          k => !(params?.[k] ?? pd?.[k])
-        );
+        const missingProvider = requiredProviderFields.filter(k => !(params?.[k] ?? pd?.[k]));
         if (missingProvider.length) {
           console.error('❌ [server][accept] missing provider fields:', missingProvider);
           return res.status(422).json({
@@ -1035,7 +1160,7 @@ module.exports = async (req, res) => {
           });
         }
       }
-      
+
       console.log('✅ Validation completed successfully');
     } catch (validationError) {
       console.error('❌ Validation error:', validationError);
@@ -1049,9 +1174,9 @@ module.exports = async (req, res) => {
       console.log('🎯 About to make SDK transition call:', {
         transition: bodyParams?.transition,
         id: id,
-        isSpeculative: isSpeculative
+        isSpeculative: isSpeculative,
       });
-      
+
       // If this is transition/accept, log the transaction state before attempting
       if (bodyParams && bodyParams.transition === 'transition/accept') {
         try {
@@ -1059,63 +1184,78 @@ module.exports = async (req, res) => {
           console.log('🔎 Current state:', transactionShow.data.data.attributes.state);
           console.log('🔎 Last transition:', transactionShow.data.data.attributes.lastTransition);
           // Log protectedData from transaction entity
-          console.log('🔎 [BACKEND] Transaction protectedData:', transactionShow.data.data.attributes.protectedData);
+          console.log(
+            '🔎 [BACKEND] Transaction protectedData:',
+            transactionShow.data.data.attributes.protectedData
+          );
           // If params.protectedData is missing or empty, fallback to transaction's protectedData
-          if (!params.protectedData || Object.values(params.protectedData).every(v => v === '' || v === undefined)) {
+          if (
+            !params.protectedData ||
+            Object.values(params.protectedData).every(v => v === '' || v === undefined)
+          ) {
             params.protectedData = transactionShow.data.data.attributes.protectedData || {};
-            console.log('🔁 [BACKEND] Fallback: Using transaction protectedData for accept:', params.protectedData);
+            console.log(
+              '🔁 [BACKEND] Fallback: Using transaction protectedData for accept:',
+              params.protectedData
+            );
           }
         } catch (showErr) {
           console.error('❌ Failed to fetch transaction before accept:', showErr.message);
         }
       }
-      
+
       console.log('🚀 Making final SDK transition call...');
       const response = isSpeculative
         ? await sdk.transactions.transitionSpeculative(body, queryParams)
         : await sdk.transactions.transition(body, queryParams);
-      
+
       console.log('✅ SDK transition call SUCCESSFUL:', {
         status: response?.status,
         hasData: !!response?.data,
-        transition: response?.data?.data?.attributes?.transition
+        transition: response?.data?.data?.attributes?.transition,
       });
-      
+
       // After successful transition, fetch fully expanded transaction for ship-by calculations
       let expandedTx = response?.data?.data;
       if (bodyParams?.transition === 'transition/accept') {
         try {
           const txId = bodyParams?.params?.transactionId?.uuid || bodyParams?.id || id;
           console.log('🔍 Fetching expanded transaction for ship-by calculations:', txId);
-          
-          const { data: expandedResponse } = await sdk.transactions.show({ id: txId }, { 
-            include: ['booking', 'listing', 'provider', 'customer'], 
-            expand: true 
-          });
-          
+
+          const { data: expandedResponse } = await sdk.transactions.show(
+            { id: txId },
+            {
+              include: ['booking', 'listing', 'provider', 'customer'],
+              expand: true,
+            }
+          );
+
           expandedTx = expandedResponse?.data;
           console.log('✅ Expanded transaction fetched successfully for ship-by calculations');
         } catch (expandError) {
-          console.warn('⚠️ Failed to fetch expanded transaction, using original response:', expandError.message);
+          console.warn(
+            '⚠️ Failed to fetch expanded transaction, using original response:',
+            expandError.message
+          );
         }
       }
-      
+
       // Set acceptedAt for transition/accept if not already set
       if (bodyParams?.transition === 'transition/accept' && response?.data?.data) {
         const transaction = response.data.data;
         const protectedData = transaction.attributes.protectedData || {};
         const outbound = protectedData.outbound || {};
-        
+
         if (!outbound.acceptedAt) {
           try {
             const txId = transaction.id.uuid || transaction.id;
             const result = await upsertProtectedData(txId, {
               outbound: {
                 ...outbound,
-                acceptedAt: timestamp() // ← respects FORCE_NOW
-              }
+                acceptedAt: timestamp(), // ← respects FORCE_NOW
+              },
             });
-            
+
             if (result && result.success === false) {
               console.error('❌ Failed to set acceptedAt (non-critical):', result.error);
             } else {
@@ -1127,12 +1267,22 @@ module.exports = async (req, res) => {
           }
         }
       }
-      
+
       // After booking (request-payment), log the transaction's protectedData
-      if (bodyParams && bodyParams.transition === 'transition/request-payment' && response && response.data && response.data.data && response.data.data.attributes) {
-        console.log('🧾 Booking complete. Transaction protectedData:', response.data.data.attributes.protectedData);
+      if (
+        bodyParams &&
+        bodyParams.transition === 'transition/request-payment' &&
+        response &&
+        response.data &&
+        response.data.data &&
+        response.data.data.attributes
+      ) {
+        console.log(
+          '🧾 Booking complete. Transaction protectedData:',
+          response.data.data.attributes.protectedData
+        );
       }
-      
+
       // Defensive: Only access .transition if response and response.data are defined
       if (
         response &&
@@ -1143,63 +1293,64 @@ module.exports = async (req, res) => {
       ) {
         transitionName = response.data.data.attributes.transition;
       }
-      
+
       // Debug transitionName
       console.log('🔍 transitionName after response:', transitionName);
       console.log('🔍 bodyParams.transition:', bodyParams?.transition);
-      
+
       // STEP 4: Add a forced test log
       console.log('🧪 Inside transition-privileged — beginning SMS evaluation');
-      
+
       // Dynamic provider SMS for booking requests - replace hardcoded test SMS
       const effectiveTransition = transitionName || bodyParams?.transition;
       console.log('🔍 Using effective transition for SMS:', effectiveTransition);
-      
+
       if (effectiveTransition === 'transition/accept') {
         console.log('📨 Preparing to send SMS for transition/accept');
-        
+
         // Skip SMS on speculative calls
         if (isSpeculative) {
           console.log('⏭️ Skipping SMS - speculative call');
           return;
         }
-        
+
         try {
           // Resolve phone numbers with robust fallbacks
           const pd = params?.protectedData || {};
           const txPD = response?.data?.data?.protectedData || {};
           const tx = response?.data?.data;
-          
+
           const borrowerPhone = getBorrowerPhone(params, tx);
           const lenderPhone = getLenderPhone(params, tx);
-          
-          console.log('[sms] resolved phones:', { 
-            borrowerPhone: maskPhone(borrowerPhone), 
-            lenderPhone: maskPhone(lenderPhone) 
+
+          console.log('[sms] resolved phones:', {
+            borrowerPhone: maskPhone(borrowerPhone),
+            lenderPhone: maskPhone(lenderPhone),
           });
-          
+
           // Get listing info for messages
           const listingTitle = listing?.attributes?.title || 'your item';
           const providerName = params?.protectedData?.providerName || 'the lender';
-          
+
           // Build site base for borrower inbox link
-          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
+          const siteBase =
+            process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
           const buyerLink = siteBase ? `${siteBase}/inbox/purchases` : '';
-          
+
           // Borrower acceptance SMS: always try if borrowerPhone exists
           if (borrowerPhone) {
             console.log('[sms] sending borrower_accept ...');
             const borrowerMessage = `🎉 Your Sherbrt request was accepted! 🍧
 "${listingTitle}" from ${providerName} is confirmed. 
 You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
-            
+
             try {
-              await sendSMS(borrowerPhone, borrowerMessage, { 
+              await sendSMS(borrowerPhone, borrowerMessage, {
                 role: 'customer',
                 transactionId: transactionId,
                 transition: 'transition/accept',
                 tag: 'accept_to_borrower',
-                meta: { listingId: listing?.id?.uuid || listing?.id }
+                meta: { listingId: listing?.id?.uuid || listing?.id },
               });
               console.log('✅ SMS sent successfully to borrower');
             } catch (err) {
@@ -1208,20 +1359,20 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           } else {
             console.warn('[sms] borrower phone not found; skipped borrower accept SMS');
           }
-          
+
           // Lender SMS: only send on accept if explicitly enabled
           if (process.env.SMS_LENDER_ON_ACCEPT === '1') {
             if (lenderPhone) {
               console.log('[sms] sending lender_accept_no_label ...');
               const lenderMessage = `✅ Your Sherbrt item "${listingTitle}" was accepted! Please prepare for shipping.`;
-              
+
               try {
-                await sendSMS(lenderPhone, lenderMessage, { 
+                await sendSMS(lenderPhone, lenderMessage, {
                   role: 'lender',
                   transactionId: transactionId,
                   transition: 'transition/accept',
                   tag: 'accept_to_lender',
-                  meta: { listingId: listing?.id?.uuid || listing?.id }
+                  meta: { listingId: listing?.id?.uuid || listing?.id },
                 });
                 console.log('✅ SMS sent successfully to lender');
               } catch (err) {
@@ -1233,7 +1384,6 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           } else {
             console.log('[sms] lender-on-accept suppressed (by flag).');
           }
-          
         } catch (smsError) {
           console.error('❌ Failed to send SMS notification:', smsError.message);
           console.error('❌ SMS error stack:', smsError.stack);
@@ -1243,36 +1393,38 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
 
       if (effectiveTransition === 'transition/decline') {
         console.log('📨 Preparing to send SMS for transition/decline');
-        
+
         // Skip SMS on speculative calls
         if (isSpeculative) {
           console.log('⏭️ Skipping SMS - speculative call');
           return;
         }
-        
+
         try {
           // Use the helper function to get borrower phone with fallbacks
           const borrowerPhone = getBorrowerPhone(params, response?.data?.data);
-          
+
           // Log the selected phone number and role for debugging
           console.log('📱 Selected borrower phone:', maskPhone(borrowerPhone));
           console.log('📱 SMS role: customer');
           console.log('🔍 Transition: transition/decline');
-          
+
           if (borrowerPhone) {
             const message = `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed!`;
-            
+
             // Wrap sendSMS in try/catch with logs
             try {
-              await sendSMS(borrowerPhone, message, { 
+              await sendSMS(borrowerPhone, message, {
                 role: 'customer',
                 transactionId: transactionId,
                 transition: 'transition/decline',
                 tag: 'reject_to_borrower',
-                meta: { listingId: listing?.id?.uuid || listing?.id }
+                meta: { listingId: listing?.id?.uuid || listing?.id },
               });
               console.log('✅ SMS sent successfully to borrower');
-              console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for declined request`);
+              console.log(
+                `📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for declined request`
+              );
             } catch (err) {
               console.error('❌ SMS send error:', err.message);
               console.error('❌ SMS error stack:', err.stack);
@@ -1287,29 +1439,33 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           // Don't fail the transaction if SMS fails
         }
       }
-      
+
       // Shippo label creation - only for transition/accept after successful transition
       if (bodyParams?.transition === 'transition/accept' && !isSpeculative) {
         console.log('🚀 [SHIPPO] Transition successful, triggering Shippo label creation...');
-        
+
         // Use the validated and merged protectedData from params
         const finalProtectedData = params.protectedData || {};
         console.log('📋 [SHIPPO] Final protectedData for label creation:', finalProtectedData);
-        
+
         // Hard guard: Check for required customer address fields before Shippo
         if (!hasCustomerShipAddress(finalProtectedData)) {
           const missingFields = [];
           if (!finalProtectedData.customerStreet?.trim()) missingFields.push('customerStreet');
           if (!finalProtectedData.customerZip?.trim()) missingFields.push('customerZip');
-          
-          console.log(`[SHIPPO] Missing address fields; aborting label creation and transition: ${missingFields.join(', ')}`);
-          return res.status(400).json({ 
+
+          console.log(
+            `[SHIPPO] Missing address fields; aborting label creation and transition: ${missingFields.join(
+              ', '
+            )}`
+          );
+          return res.status(400).json({
             code: 'incomplete_customer_address',
             message: 'Customer address is incomplete for shipping',
-            missingFields 
+            missingFields,
           });
         }
-        
+
         // Trigger Shippo label creation asynchronously (don't await to avoid blocking response)
         createShippingLabels({
           txId: transactionId,
@@ -1318,13 +1474,13 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           providerPhone: finalProtectedData?.providerPhone,
           integrationSdk: sdk,
           sendSMS,
-          normalizePhone: (p) => {
+          normalizePhone: p => {
             const digits = (p || '').replace(/\D/g, '');
             if (!digits) return null;
             return digits.startsWith('1') ? `+${digits}` : `+1${digits}`;
           },
           selectedRate: null, // Will be set inside the function
-          transaction: expandedTx || response?.data?.data
+          transaction: expandedTx || response?.data?.data,
         })
           .then(result => {
             if (result.success) {
@@ -1337,7 +1493,7 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             console.error('❌ [SHIPPO] Unexpected error in label creation:', err.message);
           });
       }
-      
+
       // 🔧 FIXED: Lender notification SMS for booking requests - ensure provider phone only
       if (
         bodyParams?.transition === 'transition/request-payment' &&
@@ -1348,14 +1504,15 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
 
         try {
           const transaction = response?.data?.data;
-          
+
           // Helpers for ID and phone resolution
-          const asId = v => (v && v.uuid) ? v.uuid : (typeof v === 'string' ? v : null);
+          const asId = v => (v && v.uuid ? v.uuid : typeof v === 'string' ? v : null);
           const getPhone = u =>
             u?.attributes?.profile?.protectedData?.phone ??
             u?.attributes?.profile?.protectedData?.phoneNumber ??
             u?.attributes?.profile?.publicData?.phone ??
-            u?.attributes?.profile?.publicData?.phoneNumber ?? null;
+            u?.attributes?.profile?.publicData?.phoneNumber ??
+            null;
 
           // Resolve provider (lender) and customer (borrower) IDs defensively
           const providerId =
@@ -1364,8 +1521,7 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             asId(listing?.relationships?.author?.data?.id);
 
           const customerId =
-            asId(transaction?.customer?.id) ||
-            asId(transaction?.relationships?.customer?.data?.id);
+            asId(transaction?.customer?.id) || asId(transaction?.relationships?.customer?.data?.id);
 
           if (!providerId) {
             console.warn('[SMS][booking-request] No provider ID found; not sending SMS');
@@ -1384,49 +1540,60 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
             borrowerPhone = getPhone(customerRes?.data?.data);
           }
 
-          console.log('[SMS][booking-request]', { 
-            txId: transaction?.id?.uuid || transaction?.id, 
-            providerId, 
-            customerId, 
-            providerPhone, 
-            borrowerPhone 
+          console.log('[SMS][booking-request]', {
+            txId: transaction?.id?.uuid || transaction?.id,
+            providerId,
+            customerId,
+            providerPhone,
+            borrowerPhone,
           });
 
           if (!providerPhone) {
-            console.warn('[SMS][booking-request] Provider missing phone; not sending', { 
-              txId: transaction?.id?.uuid || transaction?.id, 
-              providerId 
+            console.warn('[SMS][booking-request] Provider missing phone; not sending', {
+              txId: transaction?.id?.uuid || transaction?.id,
+              providerId,
             });
             return;
           }
 
           if (borrowerPhone && providerPhone === borrowerPhone) {
-            console.error('[SMS][booking-request] Borrower phone detected for lender notice; aborting', { 
-              txId: transaction?.id?.uuid || transaction?.id 
-            });
+            console.error(
+              '[SMS][booking-request] Borrower phone detected for lender notice; aborting',
+              {
+                txId: transaction?.id?.uuid || transaction?.id,
+              }
+            );
             return;
           }
 
           if (sendSMS) {
-            const message = `👗🍧 New Sherbrt booking request! Someone wants to borrow your item "${listing?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
-            
-            await sendSMS(providerPhone, message, { 
+            const message = `👗🍧 New Sherbrt booking request! Someone wants to borrow your item "${listing
+              ?.attributes?.title || 'your listing'}". Tap your dashboard to respond.`;
+
+            await sendSMS(providerPhone, message, {
               role: 'lender',
               transactionId: transaction?.id?.uuid || transaction?.id,
               transition: 'transition/request-payment',
               tag: 'booking_request_to_lender',
-              meta: { listingId: listing?.id?.uuid || listing?.id }
+              meta: { listingId: listing?.id?.uuid || listing?.id },
             });
-            console.log(`✅ [SMS][booking-request] SMS sent to provider ${maskPhone(providerPhone)}`);
+            console.log(
+              `✅ [SMS][booking-request] SMS sent to provider ${maskPhone(providerPhone)}`
+            );
           } else {
             console.warn('⚠️ [SMS][booking-request] sendSMS unavailable');
           }
         } catch (err) {
-          console.error('❌ [SMS][booking-request] Error in lender notification logic:', err.message);
+          console.error(
+            '❌ [SMS][booking-request] Error in lender notification logic:',
+            err.message
+          );
         }
       }
-      
-      console.log('✅ Transition completed successfully, returning:', { transition: transitionName });
+
+      console.log('✅ Transition completed successfully, returning:', {
+        transition: transitionName,
+      });
       return res.status(200).json({ transition: transitionName });
     } catch (err) {
       console.error('❌ SDK transition call FAILED:', {
@@ -1435,16 +1602,16 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
         errorResponse: err.response?.data,
         errorStatus: err.response?.status,
         errorStatusText: err.response?.statusText,
-        fullError: JSON.stringify(err, null, 2)
+        fullError: JSON.stringify(err, null, 2),
       });
       return res.status(500).json({ error: 'Transition failed' });
     }
   } catch (e) {
     const errorData = e.response?.data;
-    console.error("❌ Flex API error:", errorData || e);
-    return res.status(500).json({ 
-      error: "Flex API error",
-      details: errorData || e.message
+    console.error('❌ Flex API error:', errorData || e);
+    return res.status(500).json({
+      error: 'Flex API error',
+      details: errorData || e.message,
     });
   }
 };
@@ -1455,4 +1622,3 @@ process.on('unhandledRejection', (reason, promise) => {
   // Optionally exit the process if desired:
   // process.exit(1);
 });
-
