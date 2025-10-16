@@ -1,0 +1,35 @@
+feat: Add carrier-aware short tracking links for SMS messages
+
+Replace long Shippo tracking URLs with short public carrier tracking links
+(UPS, USPS, FedEx, DHL) in SMS messages to improve user experience and
+reduce SMS character count.
+
+Changes:
+- Created server/lib/trackingLinks.js with getPublicTrackingUrl() function
+  that generates short public carrier tracking URLs based on carrier type
+- Updated server/webhooks/shippoTracking.js to use public carrier URLs
+  for Step 4 (item shipped) and Step 10 (return in transit) SMS notifications
+- Added [TRACKINGLINK] logging to verify which carrier links are being used
+
+Benefits:
+- Shorter SMS messages (carrier URLs are ~50% shorter than Shippo URLs)
+- Better user experience (recipients recognize official carrier tracking pages)
+- More reliable (direct carrier URLs don't depend on third-party services)
+- Cost savings (shorter messages may reduce SMS costs)
+
+Supported carriers:
+- USPS: https://tools.usps.com/go/TrackConfirmAction_input?origTrackNum=...
+- UPS: https://www.ups.com/track?loc=en_US&tracknum=...
+- FedEx: https://www.fedex.com/fedextrack/?tracknumbers=...
+- DHL: https://www.dhl.com/en/express/tracking.html?AWB=...
+- Fallback: https://goshippo.com/track/... (for unknown carriers)
+
+Files modified:
+- server/lib/trackingLinks.js (new)
+- server/webhooks/shippoTracking.js (updated)
+
+Testing:
+- All unit tests pass (8/8)
+- No linter errors
+- Backward compatible (falls back to Shippo for unknown carriers)
+

@@ -8,6 +8,7 @@ const { timestamp } = require('../util/time');
 const { shortLink } = require('../api-util/shortlink');
 const { SMS_TAGS } = require('../lib/sms/tags');
 const { toCarrierPhase, isShippedStatus, isDeliveredStatus } = require('../lib/statusMap');
+const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 
 // In-memory LRU cache for first-scan idempotency (24h TTL)
 // Format: Map<trackingNumber, timestamp>
@@ -360,10 +361,14 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       // Get listing title (truncate if too long)
       const rawTitle = transaction.attributes.listing?.title || 'your item';
       const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-      const trackingUrl = protectedData.returnTrackingUrl || `https://track.shippo.com/${trackingNumber}`;
       
-      // Use short link for compact SMS
-      const shortTrackingUrl = await shortLink(trackingUrl);
+      // Generate public carrier tracking URL (shorter than Shippo URLs)
+      const returnCarrier = protectedData.returnCarrier;
+      const publicTrackingUrl = getPublicTrackingUrl(returnCarrier, trackingNumber);
+      console.log(`[TRACKINGLINK] Using short public link for return: ${publicTrackingUrl} (carrier: ${returnCarrier || 'unknown'})`);
+      
+      // Use short link for even more compact SMS
+      const shortTrackingUrl = await shortLink(publicTrackingUrl);
       const message = `📬 Return in transit: "${listingTitle}". Track: ${shortTrackingUrl}`;
       
       try {
@@ -465,19 +470,25 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         };
       } else if (isFirstScan) {
         // Send first scan SMS (Step-4: borrower notification)
-        const trackingUrl = protectedData.outboundTrackingUrl;
-        if (!trackingUrl) {
-          console.warn('⚠️ [STEP-4] No tracking URL found for first scan notification');
-          return res.status(400).json({ error: 'No tracking URL found for first scan notification' });
+        const carrier = protectedData.outboundCarrier;
+        const trackingNum = protectedData.outboundTrackingNumber;
+        
+        if (!trackingNum) {
+          console.warn('⚠️ [STEP-4] No tracking number found for first scan notification');
+          return res.status(400).json({ error: 'No tracking number found for first scan notification' });
         }
+        
+        // Generate public carrier tracking URL (shorter than Shippo URLs)
+        const publicTrackingUrl = getPublicTrackingUrl(carrier, trackingNum);
+        console.log(`[TRACKINGLINK] Using short public link: ${publicTrackingUrl} (carrier: ${carrier || 'unknown'})`);
         
         // Get listing title for personalized message
         const listing = transaction.attributes?.listing || transaction.relationships?.listing?.data;
         const rawTitle = listing?.title || listing?.attributes?.title || 'your item';
         const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
         
-        // Use short link for compact SMS
-        const shortTrackingUrl = await shortLink(trackingUrl);
+        // Use short link for even more compact SMS
+        const shortTrackingUrl = await shortLink(publicTrackingUrl);
         message = `Sherbrt 🍧: 🚚 "${listingTitle}" is on its way! Track: ${shortTrackingUrl}`;
         smsType = 'first scan';
         
@@ -637,17 +648,23 @@ if (process.env.TEST_ENDPOINTS) {
       
       if (isShipped) {
         // Step-4 SMS: Item shipped to borrower
-        const trackingUrl = protectedData.outboundTrackingUrl;
-        if (!trackingUrl) {
-          console.warn('[WEBHOOK:TEST] No tracking URL found');
-          return res.status(400).json({ error: 'No tracking URL found' });
+        const carrier = protectedData.outboundCarrier;
+        const trackingNum = protectedData.outboundTrackingNumber;
+        
+        if (!trackingNum) {
+          console.warn('[WEBHOOK:TEST] No tracking number found');
+          return res.status(400).json({ error: 'No tracking number found' });
         }
+        
+        // Generate public carrier tracking URL (shorter than Shippo URLs)
+        const publicTrackingUrl = getPublicTrackingUrl(carrier, trackingNum);
+        console.log(`[TRACKINGLINK] Using short public link: ${publicTrackingUrl} (carrier: ${carrier || 'unknown'})`);
         
         const listing = transaction.attributes?.listing || transaction.relationships?.listing?.data;
         const rawTitle = listing?.title || listing?.attributes?.title || 'your item';
         const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
         
-        const shortTrackingUrl = await shortLink(trackingUrl);
+        const shortTrackingUrl = await shortLink(publicTrackingUrl);
         message = `Sherbrt 🍧: 🚚 "${listingTitle}" is on its way! Track: ${shortTrackingUrl}`;
         tag = SMS_TAGS.ITEM_SHIPPED_TO_BORROWER;
         
