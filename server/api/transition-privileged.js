@@ -7,10 +7,16 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
+const { getIntegrationSdk } = require('../api-util/integrationSdk');
+const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
+const { buildShipLabelLink } = require('../util/url');
+const { shortLink } = require('../api-util/shortlink');
+const { timestamp } = require('../util/time');
+const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -58,8 +64,6 @@ const logTx = (tx) => ({
 });
 // ---------------------------------------
 
-const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
-
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
 try {
@@ -77,52 +81,8 @@ const redis = getRedis();
 // Log cache mode on startup
 console.log('[qr-cache] mode:', redis.status === 'mock' ? 'in-memory' : 'redis');
 
-// Robust persistence with retry logic for Shippo data
-async function persistWithRetry(id, data, { retries = 3, delayMs = 250 } = {}) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      // 1. Get latest transaction data
-      const tx = await data.sdk.transactions.show({ id });
-      const currentProtectedData = tx?.data?.data?.attributes?.protectedData || {};
-      
-      // 2. Merge with new Shippo data
-      const mergedProtectedData = {
-        ...currentProtectedData,
-        shippo: {
-          ...currentProtectedData.shippo,
-          outbound: {
-            ...currentProtectedData.shippo?.outbound,
-            ...data.shippoData
-          },
-          updatedAt: new Date().toISOString()
-        }
-      };
-      
-      // 3. Update transaction
-      await data.sdk.transactions.update({ 
-        id, 
-        protectedData: mergedProtectedData 
-      });
-      
-      console.log(`✅ [flex-persist] Successfully persisted Shippo data for transaction ${id}`);
-      return true;
-      
-    } catch (error) {
-      const status = error?.response?.status;
-      
-      if (status === 409 && attempt < retries) {
-        console.warn(`[flex-persist] 409 conflict – retrying ${attempt}/${retries}`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        continue;
-      }
-      
-      if (attempt === retries) {
-        console.error(`❌ [flex-persist] Failed after ${retries} attempts:`, error.message);
-        return false;
-      }
-    }
-  }
-}
+// Note: Legacy persistWithRetry function has been removed.
+// Use upsertProtectedData from server/lib/txData.js instead for all Shippo label persistence.
 
 console.log('🚦 transition-privileged endpoint is wired up');
 
@@ -226,11 +186,11 @@ async function createShippingLabels({
     };
 
     // Outbound shipment payload
+    // Note: QR code will be requested per-carrier at purchase time (USPS only)
     const outboundPayload = {
       address_from: providerAddress,
       address_to: customerAddress,
       parcels: [parcel],
-      extra: { qr_code_requested: true },
       async: false
     };
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
@@ -252,20 +212,71 @@ async function createShippingLabels({
     
     // Select a shipping rate from the available rates
     const availableRates = shipmentRes.data.rates || [];
+    const shipmentData = shipmentRes.data;
+    
     console.log('📊 [SHIPPO] Available rates:', availableRates.length);
     
+    // Diagnostics if no rates returned
     if (availableRates.length === 0) {
-      console.error('❌ [SHIPPO] No shipping rates available for outbound shipment');
+      console.error('❌ [SHIPPO][NO-RATES] No shipping rates available for outbound shipment');
+      
+      // Log Shippo messages for diagnostics
+      if (shipmentData.messages && shipmentData.messages.length > 0) {
+        console.error('[SHIPPO][NO-RATES] messages:', JSON.stringify(shipmentData.messages, null, 2));
+      }
+      
+      // Log carrier accounts if available
+      if (shipmentData.carrier_accounts && shipmentData.carrier_accounts.length > 0) {
+        const carriers = shipmentData.carrier_accounts.map(c => c.carrier);
+        console.error('[SHIPPO][NO-RATES] carrier_accounts:', carriers);
+      }
+      
+      // Log addresses being used (masked)
+      console.error('[SHIPPO][NO-RATES] address_from:', {
+        street1: providerAddress.street1,
+        city: providerAddress.city,
+        state: providerAddress.state,
+        zip: providerAddress.zip,
+        country: providerAddress.country
+      });
+      console.error('[SHIPPO][NO-RATES] address_to:', {
+        street1: customerAddress.street1,
+        city: customerAddress.city,
+        state: customerAddress.state,
+        zip: customerAddress.zip,
+        country: customerAddress.country
+      });
+      
+      // Log parcel dimensions
+      console.error('[SHIPPO][NO-RATES] parcel:', parcel);
+      
       return { success: false, reason: 'no_shipping_rates' };
     }
     
-    // Rate selection logic: prefer USPS, fallback to first available
-    let selectedRate = availableRates.find(rate => rate.provider === 'USPS');
+    // Rate selection logic: use provider preference from env
+    const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
+      .split(',')
+      .map(p => p.trim().toUpperCase())
+      .filter(Boolean);
+    
+    const providersAvailable = availableRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
+    
+    console.log('[SHIPPO][RATE-SELECT] providers_available=' + JSON.stringify(providersAvailable) + ' prefs=' + JSON.stringify(preferredProviders));
+    
+    // Select rate based on preference order
+    let selectedRate = null;
+    for (const preferredProvider of preferredProviders) {
+      selectedRate = availableRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
+      if (selectedRate) {
+        console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`);
+        break;
+      }
+    }
+    
+    // Fallback: use first available if no preference match
     if (!selectedRate) {
       selectedRate = availableRates[0];
-      console.log('⚠️ [SHIPPO] USPS rate not found, using first available:', selectedRate.provider);
-    } else {
-      console.log('✅ [SHIPPO] Selected USPS rate:', selectedRate.provider, selectedRate.servicelevel);
+      console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`);
     }
     
     console.log('📦 [SHIPPO] Selected rate:', {
@@ -277,14 +288,28 @@ async function createShippingLabels({
     
     // Create the actual label by purchasing the transaction
     console.log('📦 [SHIPPO] Purchasing label for selected rate...');
+    
+    // Build transaction payload - only request QR code for USPS
+    const transactionPayload = {
+      rate: selectedRate.object_id,
+      async: false,
+      label_file_type: 'PNG',
+      metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+    };
+    
+    // Only request QR code for USPS (UPS doesn't support it)
+    if (selectedRate.provider.toUpperCase() === 'USPS') {
+      transactionPayload.extra = { qr_code_requested: true };
+      console.log('📦 [SHIPPO] Requesting QR code for USPS label');
+    } else {
+      console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
+    }
+    
+    console.log('📦 [SHIPPO] Added metadata.txId to transaction payload for webhook lookup');
+    
     const transactionRes = await axios.post(
       'https://api.goshippo.com/transactions/',
-      {
-        rate: selectedRate.object_id,
-        async: false,
-        label_file_type: 'PNG',
-        qr_code_requested: true,
-      },
+      transactionPayload,
       {
         headers: {
           'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
@@ -353,68 +378,110 @@ async function createShippingLabels({
     console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
     console.log('[label-ready] shipByStr:', shipByStr);
     
-    // Persist to Flex protectedData using txId
+    // ──────────────────────────────────────────────────────────────────────────────
+    // STEP-3: notify lender "label ready"
+    // Runs right after outbound label purchase succeeds.
+    // ──────────────────────────────────────────────────────────────────────────────
+    try {
+      console.log('[SMS][Step-3] Starting lender notification flow...');
+
+      // Make sure we have a provider phone
+      if (!providerPhone) {
+        console.warn('[SMS][Step-3] No lender phone on file; skipping SMS');
+      } else {
+        // Normalize to E.164
+        const lenderPhone = normalizePhone(providerPhone);
+        if (!lenderPhone) {
+          console.warn('[SMS][Step-3] Phone normalization failed; skipping SMS');
+        } else {
+          // Compute hasQr for branching logic (any carrier)
+          const hasQr = Boolean(qrUrl);
+          
+          // Build a short, permanent carrier URL (UPS/USPS/FedEx/DHL). Fallbacks included.
+          const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
+          const linkToSend = publicTrack || trackingUrl || labelUrl; // never the long signed .png if we can avoid it
+          
+          // Get listing title (truncate if too long to keep SMS compact)
+          const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
+          const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
+          
+          // Compose body (QR branch keeps whatever you prefer)
+          let body;
+          if (hasQr && qrUrl) {
+            // Keep QR copy if you want QR in Step-3
+            body = shipByStr
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${qrUrl}`
+              : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${qrUrl}`;
+          } else {
+            // Default: short carrier link
+            body = shipByStr
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${linkToSend}`
+              : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
+          }
+
+          console.log('[TRACKINGLINK] Using short public link:', linkToSend);
+          console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
+            carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
+
+          // Import SMS tags for consistency
+          const { SMS_TAGS } = require('../lib/sms/tags');
+
+          // IMPORTANT: send the lender SMS with the correct tag (do not share borrower dedupe)
+          await sendSMS(
+            lenderPhone,
+            body,
+            {
+              role: 'lender',
+              transactionId: txId,
+              tag: SMS_TAGS.LABEL_READY_TO_LENDER, // "label_ready_to_lender"
+              meta: {
+                listingId: listing?.id?.uuid || listing?.id,
+                carrier,
+                trackingNumber,
+                hasQr: !!hasQr
+              }
+            }
+          );
+
+          console.log('[SMS][Step-3] sent to=%s txId=%s', lenderPhone.replace(/\d(?=\d{4})/g, '*'), txId);
+        }
+      }
+    } catch (err) {
+      console.error('[SMS][Step-3] error sending lender SMS', { txId, error: err?.message });
+      // Do not rethrow - SMS failure should not block persistence
+    }
+    
+    // ========== STEP 2: PERSIST TO FLEX (INDEPENDENT OF SMS) ==========
+    // Persistence happens after SMS, and failures here don't affect SMS delivery
+    console.log('[SHIPPO] Attempting to persist label data to Flex protectedData...');
+    
     try {
       const patch = {
         outboundTrackingNumber: trackingNumber,
         outboundTrackingUrl: trackingUrl,
         outboundLabelUrl: labelUrl,
-        outboundQrUrl: qrUrl,
+        outboundQrUrl: qrUrl || null,
         outboundCarrier: carrier,
         outboundService: service,
-        outboundQrExpiry: parseExpiresParam(qrUrl),
-        outboundPurchasedAt: new Date().toISOString(),
+        outboundQrExpiry: parseExpiresParam(qrUrl) || null,
+        outboundPurchasedAt: timestamp(), // ← respects FORCE_NOW
         outbound: {
           ...protectedData.outbound,
           shipByDate: shipByDate ? shipByDate.toISOString() : null
         }
       };
-      const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
+      const result = await upsertProtectedData(txId, patch);
       if (result && result.success === false) {
-        console.warn('📝 [SHIPPO] Persistence not available, but SMS will continue:', result.reason);
+        console.warn('⚠️ [PERSIST] Failed to save outbound label (SMS already sent):', result.error);
       } else {
-        console.log('📝 [SHIPPO] Stored outbound shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+        console.log('✅ [PERSIST] Stored outbound label fields:', Object.keys(patch).join(', '));
         if (shipByDate) {
-          console.log('📅 [SHIPPO] Set ship-by date:', shipByDate.toISOString());
+          console.log('📅 [PERSIST] Set ship-by date:', shipByDate.toISOString());
         }
       }
-    } catch (e) {
-      console.error('[SHIPPO] Failed to persist outbound label details to protectedData', e);
-    }
-
-    // Lender SMS block – carrier-friendly messaging
-    try {
-      const lenderPhone = normalizePhone(providerPhone); // must return E.164 like +1415...
-      
-      // Build message defensively: omit "Please ship by …" if unknown
-      const shipUrl = `${process.env.SITE_URL || 'https://sherbrt.com'}/ship/${txId}`;
-      const listingTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
-
-      const body = shipByStr
-        ? `Sherbrt: your shipping label for "${listingTitle}" is ready. Please ship by ${shipByStr}. Open ${shipUrl}`
-        : `Sherbrt: your shipping label for "${listingTitle}" is ready. Open ${shipUrl}`;
-
-      console.log('[label-ready] sms body preview:', body);
-
-      console.log('[sms] sending lender_label_ready', { txId, shipUrl });
-
-      if (!lenderPhone || !body) {
-        console.warn('[SHIPPO][SMS] Missing phone or message for lender SMS', { hasPhone: !!lenderPhone, hasMsg: !!body });
-      } else {
-        await sendSMS(
-          lenderPhone,
-          body,
-          {
-            role: 'lender',
-            transactionId: txId,
-            tag: 'label_ready_to_lender',
-            meta: { listingId: listing?.id?.uuid || listing?.id }
-          }
-        );
-        console.log('📦 [SMS] label_ready sent to lender (or DRY_RUN logged)');
-      }
-    } catch (e) {
-      console.error('[SHIPPO][SMS] Failed to send provider SMS', e);
+    } catch (persistError) {
+      console.error('❌ [PERSIST] Exception saving outbound label (SMS already sent):', persistError.message);
+      // Do not rethrow - persistence failure should not fail the overall flow
     }
 
     // Parse expiry from QR code URL (keep existing logic)
@@ -437,7 +504,6 @@ async function createShippingLabels({
           address_from: customerAddress,
           address_to: providerAddress,
           parcels: [parcel],
-          extra: { qr_code_requested: true },
           async: false
         };
 
@@ -457,10 +523,33 @@ async function createShippingLabels({
         
         // Get return rates and select one
         const returnRates = returnShipmentRes.data.rates || [];
+        const returnShipmentData = returnShipmentRes.data;
+        
+        if (returnRates.length === 0) {
+          console.warn('⚠️ [SHIPPO] No return rates available');
+          if (returnShipmentData.messages && returnShipmentData.messages.length > 0) {
+            console.warn('[SHIPPO][NO-RATES][RETURN] messages:', JSON.stringify(returnShipmentData.messages, null, 2));
+          }
+        }
+        
         if (returnRates.length > 0) {
-          let returnSelectedRate = returnRates.find(rate => rate.provider === 'USPS');
+          // Use same provider preference logic for return labels
+          const returnProvidersAvailable = returnRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
+          console.log('[SHIPPO][RATE-SELECT][RETURN] providers_available=' + JSON.stringify(returnProvidersAvailable));
+          
+          let returnSelectedRate = null;
+          for (const preferredProvider of preferredProviders) {
+            returnSelectedRate = returnRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
+            if (returnSelectedRate) {
+              console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`);
+              break;
+            }
+          }
+          
+          // Fallback to first available
           if (!returnSelectedRate) {
             returnSelectedRate = returnRates[0];
+            console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`);
           }
           
           console.log('📦 [SHIPPO] Selected return rate:', {
@@ -470,15 +559,27 @@ async function createShippingLabels({
             object_id: returnSelectedRate.object_id
           });
           
+          // Build return transaction payload - only request QR for USPS
+          const returnTransactionPayload = {
+            rate: returnSelectedRate.object_id,
+            async: false,
+            label_file_type: 'PNG',
+            metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+          };
+          
+          if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
+            returnTransactionPayload.extra = { qr_code_requested: true };
+            console.log('📦 [SHIPPO] Requesting QR code for USPS return label');
+          } else {
+            console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
+          }
+          
+          console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
+          
           // Purchase return label
           const returnTransactionRes = await axios.post(
             'https://api.goshippo.com/transactions/',
-            {
-              rate: returnSelectedRate.object_id,
-              async: false,
-              label_file_type: 'PNG',
-              qr_code_requested: true,
-            },
+            returnTransactionPayload,
             {
               headers: {
                 'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
@@ -506,20 +607,20 @@ async function createShippingLabels({
                 returnTrackingNumber: returnTransactionRes.data.tracking_number || null,
                 returnTrackingUrl: returnTrackingUrl,
                 returnLabelUrl: returnTransactionRes.data.label_url || null,
-                returnQrUrl: returnQrUrl,
+                returnQrUrl: returnQrUrl || null,
                 returnCarrier: returnSelectedRate?.provider || null,
                 returnService: returnSelectedRate?.service?.name ?? returnSelectedRate?.servicelevel?.name ?? null,
-                returnQrExpiry: parseExpiresParam(returnQrUrl || ''),
-                returnPurchasedAt: new Date().toISOString(),
+                returnQrExpiry: parseExpiresParam(returnQrUrl || '') || null,
+                returnPurchasedAt: timestamp(), // ← respects FORCE_NOW
               };
-              const result = await txUpdateProtectedData({ id: txId, protectedData: patch });
+              const result = await upsertProtectedData(txId, patch);
               if (result && result.success === false) {
-                console.warn('📝 [SHIPPO] Return persistence not available, but SMS will continue:', result.reason);
+                console.warn('⚠️ [PERSIST] Failed to save return label:', result.error);
               } else {
-                console.log('📝 [SHIPPO] Stored return shipping artifacts in protectedData', { txId, fields: Object.keys(patch) });
+                console.log('✅ [PERSIST] Stored return label fields:', Object.keys(patch).join(', '));
               }
             } catch (e) {
-              console.error('[SHIPPO] Failed to persist return label details to protectedData', e);
+              console.error('❌ [PERSIST] Exception saving return label:', e.message);
             }
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
@@ -566,21 +667,18 @@ async function createShippingLabels({
           
           // Mark as sent in protectedData
           try {
-            const notificationResult = await txUpdateProtectedData({
-              id: txId,
-              protectedData: {
-                shippingNotification: {
-                  labelCreated: { sent: true, sentAt: new Date().toISOString() }
-                }
+            const notificationResult = await upsertProtectedData(txId, {
+              shippingNotification: {
+                labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
               }
             });
             if (notificationResult && notificationResult.success === false) {
-              console.warn('📝 [SHIPPO] Notification state update not available:', notificationResult.reason);
+              console.warn('⚠️ [PERSIST] Failed to save notification state:', notificationResult.error);
             } else {
-              console.log(`💾 Updated shippingNotification.labelCreated for transaction: ${txId}`);
+              console.log(`✅ [PERSIST] Updated shippingNotification.labelCreated`);
             }
           } catch (updateError) {
-            console.warn(`⚠️ Failed to update labelCreated notification state:`, updateError.message);
+            console.warn(`❌ [PERSIST] Exception saving notification state:`, updateError.message);
           }
         }
       } else if (borrowerPhone) {
@@ -1010,21 +1108,22 @@ module.exports = async (req, res) => {
         
         if (!outbound.acceptedAt) {
           try {
-            await sdk.transactions.update({
-              id: transaction.id,
-              attributes: {
-                protectedData: {
-                  ...protectedData,
-                  outbound: {
-                    ...outbound,
-                    acceptedAt: new Date().toISOString()
-                  }
-                }
+            const txId = transaction.id.uuid || transaction.id;
+            const result = await upsertProtectedData(txId, {
+              outbound: {
+                ...outbound,
+                acceptedAt: timestamp() // ← respects FORCE_NOW
               }
             });
-            console.log('💾 Set outbound.acceptedAt for transition/accept');
+            
+            if (result && result.success === false) {
+              console.error('❌ Failed to set acceptedAt (non-critical):', result.error);
+            } else {
+              console.log('💾 Set outbound.acceptedAt for transition/accept');
+            }
           } catch (updateError) {
-            console.error('❌ Failed to set acceptedAt:', updateError.message);
+            console.error('❌ Failed to set acceptedAt (non-critical):', updateError.message);
+            // Do not rethrow - this is a non-essential update
           }
         }
       }
