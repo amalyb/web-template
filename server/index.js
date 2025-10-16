@@ -282,6 +282,21 @@ if (!dev) {
 // a 3rd party identity provider (e.g. Facebook or Google)
 app.use(passport.initialize());
 
+// Short link redirect handler
+// Decodes compact tokens and redirects to long URLs (Shippo labels, tracking, etc.)
+const { expandShortToken } = require('./api-util/shortlink');
+
+app.get('/r/:token', async (req, res) => {
+  try {
+    const url = await expandShortToken(req.params.token);
+    console.log('[SHORTLINK] Redirecting to:', url.substring(0, 50) + '...');
+    res.redirect(302, url);
+  } catch (e) {
+    console.error('[SHORTLINK] Invalid token:', e.message);
+    res.status(400).send('Invalid or expired link');
+  }
+});
+
 // Server-side routes that do not render the application
 app.use('/api', apiRouter);
 
