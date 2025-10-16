@@ -16,6 +16,7 @@ const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink } = require('../util/url');
 const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
+const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -390,10 +391,11 @@ async function createShippingLabels({
         // Compute hasQr for branching logic (any carrier)
         const hasQr = Boolean(qrUrl);
         
-        // Build shipUrl using strategy
-        const linkResult = buildShipLabelLink(txId, { label_url: labelUrl, qr_code_url: qrUrl }, { strategy: process.env.SMS_LINK_STRATEGY });
-        const shipUrl = await shortLink(linkResult.url);
-        const strategyUsed = linkResult.strategy;
+        // Prefer a short public tracking link (works for USPS/UPS/etc.)
+        const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
+        
+        // Avoid the shortener for now since Redis is noisy; use the clean public URL directly
+        const linkToSend = publicTrack || trackingUrl || labelUrl;
         
         // Get listing title (truncate if too long to keep SMS compact)
         const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
@@ -403,20 +405,20 @@ async function createShippingLabels({
         let smsBody;
         if (hasQr) {
           // QR code present: use "Scan QR" message (more compact)
-          const shortQr = await shortLink(qrUrl);
+          const shortQr = qrUrl; // Use QR URL directly (avoid shortLink for now)
           smsBody = shipByStr
             ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${shortQr}`
             : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${shortQr}`;
         } else {
-          // No QR code: use "Label" message (more compact)
-          const shortLabel = await shortLink(labelUrl);
+          // No QR code: use "Label" message with short public tracking link
           smsBody = shipByStr
-            ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${shortLabel}`
-            : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${shortLabel}`;
+            ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${linkToSend}`
+            : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
         }
         
         // Log before send
-        console.log(`[SMS][Step-3] strategy=${strategyUsed} link=${shipUrl} txId=${txId} tracking=${trackingNumber || 'none'} hasQr=${hasQr}`);
+        console.log('[TRACKINGLINK] Using short public link:', linkToSend);
+        console.log(`[SMS][Step-3] carrier=${carrier} tracking=${trackingNumber || 'none'} hasQr=${hasQr} txId=${txId}`);
         
         // Send SMS
         await sendSMS(
