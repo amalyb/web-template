@@ -1,4 +1,5 @@
 const { getTrustedSdk } = require('../api-util/sdk');
+const { upsertProtectedData } = require('../lib/txData');
 const { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { makeAppUrl } = require('../util/url');
@@ -245,16 +246,16 @@ async function sendOverdueReminders() {
         }
         
         try {
-          await sdk.transactions.update({
-            id: tx.id,
-            attributes: {
-              protectedData: {
-                ...protectedData,
-                return: updatedReturnData
-              }
-            }
+          const txId = tx?.id?.uuid || tx?.id;
+          const result = await upsertProtectedData(txId, {
+            return: updatedReturnData
           });
-          console.log(`💾 Updated transaction fees and overdue tracking for tx ${tx?.id?.uuid || '(no id)'}`);
+          
+          if (result && result.success === false) {
+            console.error(`❌ Failed to update transaction fees and overdue tracking:`, result.error);
+          } else {
+            console.log(`💾 Updated transaction fees and overdue tracking for tx ${tx?.id?.uuid || '(no id)'}`);
+          }
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }

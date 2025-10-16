@@ -12,6 +12,7 @@ try {
 
 // ✅ Use the correct SDK helper
 const { getTrustedSdk } = require('../api-util/sdk');
+const { upsertProtectedData } = require('../lib/txData');
 const { getToday, getTomorrow, yyyymmdd, timestamp, logTimeState } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
@@ -155,22 +156,22 @@ async function sendReturnReminders() {
           
           // Update protectedData with return label info
           try {
-            await sdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...pd,
-                  return: {
-                    ...returnData,
-                    label: {
-                      url: returnLabelUrl,
-                      createdAt: timestamp() // ← respects FORCE_NOW
-                    }
-                  }
+            const txId = tx?.id?.uuid || tx?.id;
+            const result = await upsertProtectedData(txId, {
+              return: {
+                ...returnData,
+                label: {
+                  url: returnLabelUrl,
+                  createdAt: timestamp() // ← respects FORCE_NOW
                 }
               }
             });
-            console.log(`💾 Created return label for tx ${tx?.id?.uuid || '(no id)'}`);
+            
+            if (result && result.success === false) {
+              console.error(`❌ Failed to create return label:`, result.error);
+            } else {
+              console.log(`💾 Created return label for tx ${tx?.id?.uuid || '(no id)'}`);
+            }
           } catch (updateError) {
             console.error(`❌ Failed to create return label:`, updateError.message);
           }
@@ -213,19 +214,19 @@ async function sendReturnReminders() {
         // Mark T-1 as sent for idempotency
         if (deliveryEnd === tMinus1) {
           try {
-            await sdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...pd,
-                  return: {
-                    ...returnData,
-                    tMinus1SentAt: timestamp() // ← respects FORCE_NOW
-                  }
-                }
+            const txId = tx?.id?.uuid || tx?.id;
+            const result = await upsertProtectedData(txId, {
+              return: {
+                ...returnData,
+                tMinus1SentAt: timestamp() // ← respects FORCE_NOW
               }
             });
-            console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+            
+            if (result && result.success === false) {
+              console.error(`❌ Failed to mark T-1 as sent:`, result.error);
+            } else {
+              console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+            }
           } catch (updateError) {
             console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
           }

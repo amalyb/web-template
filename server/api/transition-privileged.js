@@ -1101,23 +1101,18 @@ module.exports = async (req, res) => {
         
         if (!outbound.acceptedAt) {
           try {
-            // Guard: check if sdk.transactions.update exists before calling
-            if (typeof sdk.transactions.update === 'function') {
-              await sdk.transactions.update({
-                id: transaction.id,
-                attributes: {
-                  protectedData: {
-                    ...protectedData,
-                    outbound: {
-                      ...outbound,
-                      acceptedAt: timestamp() // ← respects FORCE_NOW
-                    }
-                  }
-                }
-              });
-              console.log('💾 Set outbound.acceptedAt for transition/accept');
+            const txId = transaction.id.uuid || transaction.id;
+            const result = await upsertProtectedData(txId, {
+              outbound: {
+                ...outbound,
+                acceptedAt: timestamp() // ← respects FORCE_NOW
+              }
+            });
+            
+            if (result && result.success === false) {
+              console.error('❌ Failed to set acceptedAt (non-critical):', result.error);
             } else {
-              console.warn('⚠️ sdk.transactions.update not available, skipping acceptedAt update (non-critical)');
+              console.log('💾 Set outbound.acceptedAt for transition/accept');
             }
           } catch (updateError) {
             console.error('❌ Failed to set acceptedAt (non-critical):', updateError.message);

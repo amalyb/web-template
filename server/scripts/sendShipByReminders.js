@@ -1,4 +1,5 @@
 const { getTrustedSdk } = require('../api-util/sdk');
+const { upsertProtectedData } = require('../lib/txData');
 let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
@@ -222,19 +223,19 @@ async function sendShipByReminders() {
           const updatedReminders = { ...reminders, [reminderKey]: timestamp() };
           
           try {
-            await sdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...protectedData,
-                  outbound: {
-                    ...outbound,
-                    reminders: updatedReminders
-                  }
-                }
+            const txId = tx?.id?.uuid || tx?.id;
+            const result = await upsertProtectedData(txId, {
+              outbound: {
+                ...outbound,
+                reminders: updatedReminders
               }
             });
-            console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
+            
+            if (result && result.success === false) {
+              console.error(`❌ Failed to update transaction reminders:`, result.error);
+            } else {
+              console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
+            }
           } catch (updateError) {
             console.error(`❌ Failed to update transaction reminders:`, updateError.message);
           }
