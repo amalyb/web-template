@@ -2,6 +2,28 @@
 
 const express = require('express');
 const { getTrustedSdk } = require('../api-util/sdk');
+const { getTrustedSdk: getIntegrationSdk } = require('../api-util/integrationSdk');
+const { upsertProtectedData } = require('../lib/txData');
+const { timestamp } = require('../util/time');
+const { shortLink } = require('../api-util/shortlink');
+const { SMS_TAGS } = require('../lib/sms/tags');
+const { toCarrierPhase, isShippedStatus, isDeliveredStatus } = require('../lib/statusMap');
+const { getPublicTrackingUrl } = require('../lib/trackingLinks');
+
+// In-memory LRU cache for first-scan idempotency (24h TTL)
+// Format: Map<trackingNumber, timestamp>
+const firstScanCache = new Map();
+const FIRST_SCAN_TTL = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+
+// Clean up expired entries every hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of firstScanCache.entries()) {
+    if (now - timestamp > FIRST_SCAN_TTL) {
+      firstScanCache.delete(key);
+    }
+  }
+}, 60 * 60 * 1000); // 1 hour
 
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
@@ -202,20 +224,33 @@ function getLenderPhone(transaction) {
   }
 }
 
-  // Main webhook handler
-  router.post('/shippo', async (req, res) => {
-    console.log('🚀 Shippo webhook received!');
-    console.log('📋 Request body:', JSON.stringify(req.body, null, 2));
-    
-    // Verify Shippo signature
+// Main webhook handler logic (extracted for reusability)
+async function handleTrackingWebhook(req, res, opts = {}) {
+  const { skipSignature = false, isTest = false } = opts;
+  
+  const eventType = req.body?.event || 'unknown';
+  const testPrefix = isTest ? '[TEST] ' : '';
+  console.log(`${testPrefix}🚀 Shippo webhook received! event=${eventType}`);
+  console.log(`${testPrefix}📋 Request body:`, JSON.stringify(req.body, null, 2));
+  
+  // Verify Shippo signature (skip if not configured for test environments or if skipSignature is set)
+  if (!skipSignature) {
     const webhookSecret = process.env.SHIPPO_WEBHOOK_SECRET;
-    if (webhookSecret && !verifyShippoSignature(req, webhookSecret)) {
-      console.log('🚫 Invalid Shippo signature - rejecting request');
-      return res.status(403).json({ error: 'Invalid signature' });
+    if (webhookSecret) {
+      if (!verifyShippoSignature(req, webhookSecret)) {
+        console.log(`${testPrefix}🚫 Invalid Shippo signature - rejecting request`);
+        return res.status(403).json({ error: 'Invalid signature' });
+      }
+      console.log(`${testPrefix}✅ Shippo signature verified`);
+    } else {
+      console.log(`${testPrefix}⚠️ SHIPPO_WEBHOOK_SECRET not set - skipping signature verification (test mode)`);
     }
-    
-    try {
-      const payload = req.body;
+  } else {
+    console.log(`${testPrefix}⚠️ Signature verification skipped (test mode)`);
+  }
+  
+  try {
+    const payload = req.body;
       
       // Validate payload structure
       if (!payload || !payload.data) {
@@ -245,15 +280,16 @@ function getLenderPhone(transaction) {
       
       console.log(`✅ Shippo mode check passed: event.mode=${event?.mode || 'none'}, expected=${expectedMode || 'any'}`);
       
-      // Check if status is DELIVERED or TRANSIT (first scan)
+      // Check if status is DELIVERED or first-scan statuses (TRANSIT, IN_TRANSIT, ACCEPTED, ACCEPTANCE)
       const upperStatus = trackingStatus?.toUpperCase();
-      if (!upperStatus || (upperStatus !== 'DELIVERED' && upperStatus !== 'TRANSIT')) {
-        console.log(`ℹ️ Status '${trackingStatus}' is not DELIVERED or TRANSIT - ignoring webhook`);
-        return res.status(200).json({ message: 'Status not DELIVERED or TRANSIT - ignored' });
-      }
-      
+      const firstScanStatuses = ['TRANSIT', 'IN_TRANSIT', 'ACCEPTED', 'ACCEPTANCE'];
       const isDelivery = upperStatus === 'DELIVERED';
-      const isFirstScan = upperStatus === 'TRANSIT';
+      const isFirstScan = firstScanStatuses.includes(upperStatus);
+      
+      if (!upperStatus || (!isDelivery && !isFirstScan)) {
+        console.log(`ℹ️ Status '${trackingStatus}' is not DELIVERED or first-scan status - ignoring webhook`);
+        return res.status(200).json({ message: `Status ${trackingStatus} ignored` });
+      }
       
       console.log(`✅ Status is ${upperStatus} - processing ${isDelivery ? 'delivery' : 'first scan'} webhook`);
     
@@ -297,10 +333,13 @@ function getLenderPhone(transaction) {
     // Check if this is a return tracking number
     const protectedData = transaction.attributes.protectedData || {};
     const returnData = protectedData.return || {};
-    const isReturnTracking = trackingNumber === protectedData.returnTrackingNumber ||
-                            trackingNumber === returnData.label?.trackingNumber;
     
-    console.log(`🔍 Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'}`);
+    // Determine direction: check metadata.direction first, then fall back to tracking number matching
+    const isReturnTracking = (metadata.direction === 'return') ||
+                            (trackingNumber === protectedData.returnTrackingNumber) ||
+                            (trackingNumber === returnData.label?.trackingNumber);
+    
+    console.log(`🔍 Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'} (metadata.direction=${metadata.direction || 'none'})`);
     
     // Handle return tracking - send SMS to lender
     if (isReturnTracking && isFirstScan) {
@@ -319,18 +358,25 @@ function getLenderPhone(transaction) {
         return res.status(400).json({ error: 'No lender phone number found' });
       }
       
-      // Get listing title
-      const listingTitle = transaction.attributes.listing?.title || 'your item';
-      const trackingUrl = protectedData.returnTrackingUrl || `https://track.shippo.com/${trackingNumber}`;
+      // Get listing title (truncate if too long)
+      const rawTitle = transaction.attributes.listing?.title || 'your item';
+      const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
       
-      const message = `📬 Return in transit: "${listingTitle}". Track here: ${trackingUrl}`;
+      // Generate public carrier tracking URL (shorter than Shippo URLs)
+      const returnCarrier = protectedData.returnCarrier;
+      const publicTrackingUrl = getPublicTrackingUrl(returnCarrier, trackingNumber);
+      console.log(`[TRACKINGLINK] Using short public link for return: ${publicTrackingUrl} (carrier: ${returnCarrier || 'unknown'})`);
+      
+      // Use short link for even more compact SMS
+      const shortTrackingUrl = await shortLink(publicTrackingUrl);
+      const message = `📬 Return in transit: "${listingTitle}". Track: ${shortTrackingUrl}`;
       
       try {
         await sendSMS(lenderPhone, message, {
           role: 'lender',
           transactionId: transaction.id,
           transition: 'webhook/shippo-return-first-scan',
-          tag: 'return_first_scan_to_lender',
+          tag: SMS_TAGS.RETURN_FIRST_SCAN_TO_LENDER,
           meta: { 
             listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id,
             trackingNumber: trackingNumber
@@ -339,20 +385,19 @@ function getLenderPhone(transaction) {
         
         // Update transaction with return first scan timestamp
         try {
-          const sdk = await getTrustedSdk();
-          await sdk.transactions.update({
-            id: transaction.id,
-            attributes: {
-              protectedData: {
-                ...protectedData,
-                return: {
-                  ...returnData,
-                  firstScanAt: new Date().toISOString()
-                }
-              }
+          const txId = transaction.id.uuid || transaction.id;
+          const result = await upsertProtectedData(txId, {
+            return: {
+              ...returnData,
+              firstScanAt: timestamp() // ← respects FORCE_NOW
             }
           });
-          console.log(`💾 Updated transaction with return first scan timestamp`);
+          
+          if (result && result.success === false) {
+            console.error(`❌ Failed to update transaction with return first scan:`, result.error);
+          } else {
+            console.log(`💾 Updated transaction with return first scan timestamp`);
+          }
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }
@@ -378,9 +423,21 @@ function getLenderPhone(transaction) {
         return res.status(200).json({ message: 'Delivery SMS already sent - idempotent' });
       }
       
-      if (isFirstScan && protectedData.shippingNotification?.firstScan?.sent === true) {
-        console.log('ℹ️ First scan SMS already sent - skipping (idempotent)');
-        return res.status(200).json({ message: 'First scan SMS already sent - idempotent' });
+      // Check first-scan idempotency: protectedData first, then in-memory cache
+      if (isFirstScan) {
+        const pdFirstScanSent = protectedData.shippingNotification?.firstScan?.sent === true;
+        const cacheKey = `firstscan:${trackingNumber}`;
+        const cachedTimestamp = firstScanCache.get(cacheKey);
+        const cacheValid = cachedTimestamp && (Date.now() - cachedTimestamp < FIRST_SCAN_TTL);
+        
+        if (pdFirstScanSent || cacheValid) {
+          console.log(`ℹ️ [STEP-4] First scan SMS already sent - skipping (idempotent via ${pdFirstScanSent ? 'protectedData' : 'cache'})`);
+          return res.status(200).json({ message: 'First scan SMS already sent - idempotent' });
+        }
+        
+        // Mark as sent in cache immediately to prevent race conditions
+        firstScanCache.set(cacheKey, Date.now());
+        console.log(`[STEP-4] Marked first-scan in cache for tracking ${trackingNumber}`);
       }
       
       // Get borrower phone number
@@ -403,35 +460,51 @@ function getLenderPhone(transaction) {
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
-            timestamp: new Date().toISOString(),
+            timestamp: timestamp(), // ← respects FORCE_NOW
             event: 'delivered'
           },
           shippingNotification: {
             ...protectedData.shippingNotification,
-            delivered: { sent: true, sentAt: new Date().toISOString() }
+            delivered: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
           }
         };
       } else if (isFirstScan) {
-        // Send first scan SMS
-        const trackingUrl = protectedData.outboundTrackingUrl;
-        if (!trackingUrl) {
-          console.warn('⚠️ No tracking URL found for first scan notification');
-          return res.status(400).json({ error: 'No tracking URL found for first scan notification' });
+        // Send first scan SMS (Step-4: borrower notification)
+        const carrier = protectedData.outboundCarrier;
+        const trackingNum = protectedData.outboundTrackingNumber;
+        
+        if (!trackingNum) {
+          console.warn('⚠️ [STEP-4] No tracking number found for first scan notification');
+          return res.status(400).json({ error: 'No tracking number found for first scan notification' });
         }
         
-        message = `🚚 Your Sherbrt item is on the way!\nTrack it here: ${trackingUrl}`;
+        // Generate public carrier tracking URL (shorter than Shippo URLs)
+        const publicTrackingUrl = getPublicTrackingUrl(carrier, trackingNum);
+        console.log(`[TRACKINGLINK] Using short public link: ${publicTrackingUrl} (carrier: ${carrier || 'unknown'})`);
+        
+        // Get listing title for personalized message
+        const listing = transaction.attributes?.listing || transaction.relationships?.listing?.data;
+        const rawTitle = listing?.title || listing?.attributes?.title || 'your item';
+        const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
+        
+        // Use short link for even more compact SMS
+        const shortTrackingUrl = await shortLink(publicTrackingUrl);
+        message = `Sherbrt 🍧: 🚚 "${listingTitle}" is on its way! Track: ${shortTrackingUrl}`;
         smsType = 'first scan';
+        
+        console.log(`[STEP-4] Sending borrower SMS for tracking ${trackingNumber}, txId=${transaction.id}`);
+        console.log(`[STEP-4] Message length: ${message.length} chars, shortLink: ${shortTrackingUrl}`);
         protectedDataUpdate = {
           ...protectedData,
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
-            timestamp: new Date().toISOString(),
+            timestamp: timestamp(), // ← respects FORCE_NOW
             event: 'first_scan'
           },
           shippingNotification: {
             ...protectedData.shippingNotification,
-            firstScan: { sent: true, sentAt: new Date().toISOString() }
+            firstScan: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
           }
         };
       }
@@ -443,10 +516,15 @@ function getLenderPhone(transaction) {
           role: 'customer',
           transactionId: transaction.id,
           transition: `webhook/shippo-${smsType.replace(' ', '-')}`,
-          tag: isDelivery ? 'delivery_to_borrower' : 'first_scan_to_borrower',
+          tag: isDelivery ? SMS_TAGS.DELIVERY_TO_BORROWER : SMS_TAGS.ITEM_SHIPPED_TO_BORROWER,
           meta: { listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id }
         });
-        console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
+        
+        if (isFirstScan) {
+          console.log(`✅ [STEP-4] Borrower SMS sent for tracking ${trackingNumber}, txId=${transaction.id}`);
+        } else {
+          console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
+        }
         
         // Mark SMS as sent in transaction protectedData
         try {
@@ -497,7 +575,15 @@ function getLenderPhone(transaction) {
     console.error('❌ Error stack:', error.stack);
     res.status(500).json({ error: 'Internal server error' });
   }
+}
+
+// Main webhook handler
+router.post('/shippo', async (req, res) => {
+  await handleTrackingWebhook(req, res, { skipSignature: false, isTest: false });
 });
+
+// Dev-only test route for simulating Shippo tracking webhooks
+}
 
 module.exports = router;
 
