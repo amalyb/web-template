@@ -85,18 +85,22 @@ async function txUpdateProtectedData(txId, patch, options = {}) {
       }
       
       // Non-retryable error or max retries exceeded
-      console.error(`❌ [PERSIST] Failed to update protectedData for tx=${txId}:`, {
-        status,
+      console.error('[PERSIST][ERR]', {
+        txId,
+        message: error?.message,
+        status: error?.status || error?.response?.status,
+        data: error?.data || error?.response?.data,
+        apiErrors: error?.apiErrors,
         attempt,
-        error: error.message,
-        data: error.response?.data
+        maxRetries
       });
       
       return { 
         success: false, 
         error: error.message,
         status,
-        attempt 
+        attempt,
+        details: error?.response?.data
       };
     }
   }

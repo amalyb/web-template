@@ -1075,9 +1075,61 @@ module.exports = async (req, res) => {
       }
       
       console.log('🚀 Making final SDK transition call...');
-      const response = isSpeculative
-        ? await sdk.transactions.transitionSpeculative(body, queryParams)
-        : await sdk.transactions.transition(body, queryParams);
+      
+      // Use Integration SDK for transition/accept to ensure protectedData is persisted
+      const flexIntegrationSdk = getIntegrationSdk();
+      let response;
+      
+      if (bodyParams?.transition === 'transition/accept' && !isSpeculative) {
+        console.log('🔐 [ACCEPT] Using Integration SDK for privileged transition');
+        console.log('🔐 [ACCEPT] protectedData keys being sent:', Object.keys(params.protectedData || {}));
+        console.log('🔐 [ACCEPT] providerZip:', params.protectedData?.providerZip);
+        console.log('🔐 [ACCEPT] customerZip:', params.protectedData?.customerZip);
+        
+        response = await flexIntegrationSdk.transactions.transition({
+          id: body.id,
+          transition: body.transition,
+          params: {
+            ...params,
+            protectedData: params.protectedData || {}
+          }
+        });
+        
+        console.log('✅ [ACCEPT] Integration SDK transition completed');
+        
+        // Immediately re-fetch with Integration SDK to verify protectedData persisted
+        try {
+          const txAfter = await flexIntegrationSdk.transactions.show({ id: body.id });
+          const pdAfter = txAfter.data.data.attributes.protectedData || {};
+          
+          console.log('[VERIFY][ACCEPT] PD on tx', {
+            providerZip: pdAfter.providerZip,
+            customerZip: pdAfter.customerZip,
+            providerStreet: pdAfter.providerStreet,
+            providerCity: pdAfter.providerCity,
+            providerState: pdAfter.providerState,
+            customerStreet: pdAfter.customerStreet,
+            customerCity: pdAfter.customerCity,
+            customerState: pdAfter.customerState,
+            allPDKeys: Object.keys(pdAfter)
+          });
+          
+          // Warn if critical fields are missing
+          if (!pdAfter.providerZip || !pdAfter.customerZip) {
+            console.warn('⚠️ [VERIFY][ACCEPT] Missing ZIP codes after transition!', {
+              providerZip: pdAfter.providerZip,
+              customerZip: pdAfter.customerZip
+            });
+          }
+        } catch (verifyErr) {
+          console.error('❌ [VERIFY][ACCEPT] Failed to verify protectedData:', verifyErr.message);
+        }
+      } else {
+        // Use regular SDK for other transitions
+        response = isSpeculative
+          ? await sdk.transactions.transitionSpeculative(body, queryParams)
+          : await sdk.transactions.transition(body, queryParams);
+      }
       
       console.log('✅ SDK transition call SUCCESSFUL:', {
         status: response?.status,
