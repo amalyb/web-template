@@ -34,27 +34,26 @@ async function fetchTx(txId, options = {}) {
 }
 
 /**
- * Merge patch into transaction.protectedData using Integration SDK.
+ * Update transaction protectedData using Integration SDK.
  * 
- * This function uses the robust txUpdateProtectedData from integrationSdk.js
- * with automatic retry logic for 409 conflicts.
+ * The Integration SDK's updateMetadata endpoint handles merging server-side,
+ * so we just pass the patch directly without client-side read-modify-write.
  * 
- * @param {string} txId - Transaction UUID
+ * @param {string} txId - Transaction UUID (plain string)
  * @param {object} patch - Partial protectedData to merge (non-destructive)
- * @param {object} options - { retries?: 3, delayMs?: 300, maxRetries?: 3, backoffMs?: 100 }
- * @returns {Promise<object>} - Result: { success: true/false, data?, error? }
+ * @param {object} options - Optional: { source: 'shippo|accept|reminder' }
+ * @returns {Promise<object>} - Transaction data from response
  */
 async function upsertProtectedData(txId, patch, options = {}) {
-  // Map legacy parameter names to new ones for backwards compatibility
-  const { 
-    retries = 3, 
-    delayMs = 300,
-    maxRetries = retries,
-    backoffMs = delayMs
-  } = options;
+  // Extract source for logging (ignore legacy retry options)
+  const { source } = options;
   
-  // Use the robust implementation from integrationSdk.js
-  return txUpdateProtectedData(txId, patch, { maxRetries, backoffMs });
+  // Use the simple helper from integrationSdk.js
+  // Returns transaction data directly (not wrapped in { success, data, error })
+  const data = await txUpdateProtectedData(txId, patch, { source });
+  
+  // Return success wrapper for backwards compatibility with existing code
+  return { success: true, data };
 }
 
 /**

@@ -249,7 +249,7 @@ async function sendOverdueReminders() {
           const txId = tx?.id?.uuid || tx?.id;
           const result = await upsertProtectedData(txId, {
             return: updatedReturnData
-          });
+          }, { source: 'reminder' });
           
           if (result && result.success === false) {
             console.error(`❌ Failed to update transaction fees and overdue tracking:`, result.error);

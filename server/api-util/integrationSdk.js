@@ -39,74 +39,42 @@ function deepMerge(base, patch) {
 }
 
 /**
- * Safely update transaction protectedData with read-modify-write pattern
+ * Update transaction protectedData using Integration SDK
  * 
- * @param {string} txId - Transaction UUID
- * @param {object} patch - Partial protectedData to merge (non-destructive)
- * @param {object} options - { maxRetries: 3, backoffMs: 100 }
- * @returns {Promise<object>} - { success: true/false, data?, error? }
+ * NOTE: Integration API method is updateMetadata, not update.
+ * 
+ * @param {string} txId - Transaction UUID (plain string, not SDK UUID object)
+ * @param {object} protectedPatch - Partial protectedData to patch
+ * @param {object} opts - Optional: { source: 'shippo|accept|reminder' }
+ * @returns {Promise<object>} - Transaction data from response
  */
-async function txUpdateProtectedData(txId, patch, options = {}) {
-  const { maxRetries = 3, backoffMs = 100 } = options;
+async function txUpdateProtectedData(txId, protectedPatch, opts = {}) {
   const sdk = getTrustedSdk();
+  const ctx = { txId, keys: Object.keys(protectedPatch || {}), source: opts.source };
   
-  console.log(`[PERSIST] Updating protectedData for tx=${txId}, keys=${Object.keys(patch).join(',')}`);
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // 1. Read current transaction
-      const showResponse = await sdk.transactions.show({ id: txId });
-      const currentTx = showResponse.data.data;
-      const currentProtectedData = currentTx.attributes.protectedData || {};
-      
-      // 2. Deep merge patch into current protectedData
-      const mergedProtectedData = deepMerge(currentProtectedData, patch);
-      
-      console.log(`[PERSIST] Attempt ${attempt}/${maxRetries}: Merging keys into protectedData`);
-      
-      // 3. Write back using update() (privileged)
-      const updateResponse = await sdk.transactions.update({
-        id: txId,
-        protectedData: mergedProtectedData
-      });
-      
-      console.log(`✅ [PERSIST] Successfully updated protectedData for tx=${txId}`);
-      return { success: true, data: updateResponse.data };
-      
-    } catch (error) {
-      const status = error.status || error.response?.status;
-      
-      if (status === 409 && attempt < maxRetries) {
-        // Conflict - another concurrent update happened, retry
-        const backoff = backoffMs * attempt; // Linear backoff
-        console.warn(`⚠️ [PERSIST] 409 Conflict on attempt ${attempt}/${maxRetries}, retrying in ${backoff}ms`);
-        await new Promise(resolve => setTimeout(resolve, backoff));
-        continue;
-      }
-      
-      // Non-retryable error or max retries exceeded
-      console.error('[PERSIST][ERR]', {
-        txId,
-        message: error?.message,
-        status: error?.status || error?.response?.status,
-        data: error?.data || error?.response?.data,
-        apiErrors: error?.apiErrors,
-        attempt,
-        maxRetries
-      });
-      
-      return { 
-        success: false, 
-        error: error.message,
-        status,
-        attempt,
-        details: error?.response?.data
-      };
-    }
+  try {
+    console.log('[INT][PD] updateMetadata', ctx);
+
+    // NOTE: Integration API method is updateMetadata, not update.
+    const res = await sdk.transactions.updateMetadata({
+      id: txId,                 // string UUID, not SDK UUID object
+      protectedData: protectedPatch,
+      // metadata: {}           // include if you also want to patch normal metadata
+    });
+
+    console.log('[INT][PD][OK]', ctx);
+    return res.data;
+  } catch (e) {
+    const err = e?.response?.data?.errors?.[0] || {};
+    console.error('[INT][PD][ERR]', {
+      ...ctx,
+      status: e?.response?.status,
+      code: err.code,
+      title: err.title,
+      details: err.details || err.message || e.message,
+    });
+    throw e;
   }
-  
-  // Should never reach here but just in case
-  return { success: false, error: 'Max retries exceeded', attempt: maxRetries };
 }
 
 module.exports = { 

@@ -234,7 +234,7 @@ async function sendShipByReminders() {
                 ...outbound,
                 reminders: updatedReminders
               }
-            });
+            }, { source: 'reminder' });
             
             if (result && result.success === false) {
               console.error(`❌ Failed to update transaction reminders:`, result.error);

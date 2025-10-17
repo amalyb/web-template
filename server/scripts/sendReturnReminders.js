@@ -165,7 +165,7 @@ async function sendReturnReminders() {
                   createdAt: timestamp() // ← respects FORCE_NOW
                 }
               }
-            });
+            }, { source: 'reminder' });
             
             if (result && result.success === false) {
               console.error(`❌ Failed to create return label:`, result.error);
@@ -220,7 +220,7 @@ async function sendReturnReminders() {
                 ...returnData,
                 tMinus1SentAt: timestamp() // ← respects FORCE_NOW
               }
-            });
+            }, { source: 'reminder' });
             
             if (result && result.success === false) {
               console.error(`❌ Failed to mark T-1 as sent:`, result.error);

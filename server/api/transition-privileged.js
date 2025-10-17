@@ -474,7 +474,7 @@ async function createShippingLabels({
           shipByDate: shipByDate ? shipByDate.toISOString() : null
         }
       };
-      const result = await upsertProtectedData(txId, patch);
+      const result = await upsertProtectedData(txId, patch, { source: 'shippo' });
       if (result && result.success === false) {
         console.warn('⚠️ [PERSIST] Failed to save outbound label (SMS already sent):', result.error);
       } else {
@@ -617,7 +617,7 @@ async function createShippingLabels({
                 returnQrExpiry: parseExpiresParam(returnQrUrl || '') || null,
                 returnPurchasedAt: timestamp(), // ← respects FORCE_NOW
               };
-              const result = await upsertProtectedData(txId, patch);
+              const result = await upsertProtectedData(txId, patch, { source: 'shippo' });
               if (result && result.success === false) {
                 console.warn('⚠️ [PERSIST] Failed to save return label:', result.error);
               } else {
@@ -675,7 +675,7 @@ async function createShippingLabels({
               shippingNotification: {
                 labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
               }
-            });
+            }, { source: 'shippo' });
             if (notificationResult && notificationResult.success === false) {
               console.warn('⚠️ [PERSIST] Failed to save notification state:', notificationResult.error);
             } else {
@@ -1197,7 +1197,7 @@ module.exports = async (req, res) => {
                 ...outbound,
                 acceptedAt: timestamp() // ← respects FORCE_NOW
               }
-            });
+            }, { source: 'accept' });
             
             if (result && result.success === false) {
               console.error('❌ Failed to set acceptedAt (non-critical):', result.error);

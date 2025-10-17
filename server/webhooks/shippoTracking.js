@@ -391,7 +391,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
               ...returnData,
               firstScanAt: timestamp() // ← respects FORCE_NOW
             }
-          });
+          }, { source: 'webhook' });
           
           if (result && result.success === false) {
             console.error(`❌ Failed to update transaction with return first scan:`, result.error);
