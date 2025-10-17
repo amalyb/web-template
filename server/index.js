@@ -185,16 +185,18 @@ app.use(
         "'self'",
         "data:",
         "blob:",
+        "https://cdn.st-api.com",
+        "https://images.sharetribe.com",
+        "https://*.imgix.net",
         "https://api.mapbox.com",
         "https://*.tiles.mapbox.com",
-        "https://cdn.st-api.com",          // Sharetribe CDN assets
       ],
       connectSrc: [
         "'self'",
+        "https://flex-api.sharetribe.com",
+        "https://cdn.st-api.com",
         "https://api.mapbox.com",
         "https://events.mapbox.com",
-        "https://flex-api.sharetribe.com",  // Flex Marketplace API
-        "https://cdn.st-api.com",           // Console-hosted assets
       ],
       workerSrc: ["'self'", "blob:"],
       objectSrc: ["'none'"],
