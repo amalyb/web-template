@@ -174,24 +174,27 @@ app.use(
       scriptSrc: [
         "'self'",                // Allow our own static JS
         "https://api.mapbox.com",
-        "https://*.mapbox.com"
+        "https://*.mapbox.com",
       ],
       styleSrc: [
         "'self'",
         "https://api.mapbox.com",
-        "'unsafe-inline'"        // Needed for Mapbox inline styles
+        "'unsafe-inline'",        // Needed for Mapbox inline styles
       ],
       imgSrc: [
         "'self'",
         "data:",
         "blob:",
         "https://api.mapbox.com",
-        "https://*.tiles.mapbox.com"
+        "https://*.tiles.mapbox.com",
+        "https://cdn.st-api.com",          // Sharetribe CDN assets
       ],
       connectSrc: [
         "'self'",
         "https://api.mapbox.com",
-        "https://events.mapbox.com"
+        "https://events.mapbox.com",
+        "https://flex-api.sharetribe.com",  // Flex Marketplace API
+        "https://cdn.st-api.com",           // Console-hosted assets
       ],
       workerSrc: ["'self'", "blob:"],
       objectSrc: ["'none'"],
