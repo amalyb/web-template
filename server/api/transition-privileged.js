@@ -7,7 +7,7 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
-const { getIntegrationSdk } = require('../api-util/integrationSdk');
+const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
@@ -1076,14 +1076,14 @@ module.exports = async (req, res) => {
       
       console.log('🚀 Making final SDK transition call...');
       
-      // Use Integration SDK for transition/accept to ensure protectedData is persisted
+      // Use Marketplace SDK for transition, then upsert protectedData via Integration SDK
       const flexIntegrationSdk = getIntegrationSdk();
       let response;
       
       if (bodyParams?.transition === 'transition/accept' && !isSpeculative) {
-        console.log('🔐 [ACCEPT] Using Integration SDK for privileged transition');
+        console.log('🔐 [ACCEPT] Using Marketplace SDK for transition');
         
-        // Extract plain UUID string for Integration SDK (not marketplace wrapper)
+        // Extract plain UUID string for Integration SDK usage later
         const txIdPlain = 
           (typeof id === 'string') ? id :
           id?.uuid || 
@@ -1095,52 +1095,58 @@ module.exports = async (req, res) => {
           return res.status(400).json({ error: 'Missing transaction id' });
         }
         
-        // Build clean params: only protectedData and real params, NOT transactionId
-        const { protectedData = {}, transactionId: _, listingId: __, ...restCleanParams } = params;
+        // Store mergedProtectedData for later upsert
+        const mergedProtectedData = params.protectedData || {};
         
         console.log('🔐 [ACCEPT] txId (plain):', txIdPlain);
-        console.log('🔐 [ACCEPT] protectedData keys being sent:', Object.keys(protectedData));
-        console.log('🔐 [ACCEPT] providerZip:', protectedData.providerZip);
-        console.log('🔐 [ACCEPT] customerZip:', protectedData.customerZip);
+        console.log('🔐 [ACCEPT] protectedData keys:', Object.keys(mergedProtectedData));
+        console.log('🔐 [ACCEPT] providerZip:', mergedProtectedData.providerZip);
+        console.log('🔐 [ACCEPT] customerZip:', mergedProtectedData.customerZip);
         
         try {
-          response = await flexIntegrationSdk.transactions.transition({
-            id: txIdPlain,                                 // plain string UUID
-            transition: 'transition/accept',
-            params: { ...restCleanParams, protectedData }, // no transactionId/listingId here
-          });
+          // Execute transition with Marketplace SDK (user-scoped)
+          response = await sdk.transactions.transition(body, queryParams);
           
-          console.log('✅ [ACCEPT] Integration SDK transition completed');
+          console.log('✅ [ACCEPT] Marketplace transition completed');
         } catch (e) {
+          const err = e?.response?.data?.errors?.[0] || {};
           console.error('[ACCEPT][ERR]', {
-            message: e?.message,
-            status: e?.status || e?.response?.status,
-            data: e?.data || e?.response?.data,
-            apiErrors: e?.apiErrors,
-            stack: e?.stack?.split('\n').slice(0, 3).join('\n'),
+            status: e?.response?.status,
+            code: err.code,
+            title: err.title,
+            details: err.details || err.message,
           });
           return res.status(500).json({ 
             error: 'transition/accept-failed',
-            details: e?.message 
+            details: err.code || e.message 
           });
         }
         
-        // Immediately re-fetch with Integration SDK to verify protectedData persisted
+        // AFTER transition succeeds, persist protectedData via Integration SDK
         try {
-          const txAfter = await flexIntegrationSdk.transactions.show({ id: txIdPlain }).then(r => r.data.data);
-          const pdAfter = txAfter.attributes.protectedData || {};
-          
-          console.log('[VERIFY][ACCEPT] PD on tx', {
-            providerZip: pdAfter.providerZip,
-            customerZip: pdAfter.customerZip,
+          console.log('[ACCEPT][PD] Upserting protectedData via Integration', Object.keys(mergedProtectedData));
+          await txUpdateProtectedData(txIdPlain, mergedProtectedData, { source: 'accept' });
+          console.log('[ACCEPT][PD] Upsert complete');
+        } catch (pdErr) {
+          console.error('[ACCEPT][PD] Upsert failed:', pdErr.message);
+          // Don't fail the request, but log it
+        }
+        
+        // Immediately VERIFY by fetching the transaction and logging zip codes
+        try {
+          const verify = await flexIntegrationSdk.transactions.show({ id: txIdPlain, include: ['provider','customer'] });
+          const pd = verify?.data?.data?.attributes?.protectedData || {};
+          console.log('[VERIFY][ACCEPT] PD zips after upsert', { 
+            providerZip: pd.providerZip, 
+            customerZip: pd.customerZip 
           });
           
           // Warn if critical fields are missing
-          if (!pdAfter.providerZip) {
-            console.warn('⚠️ [VERIFY][ACCEPT] Missing providerZip after transition!');
+          if (!pd.providerZip) {
+            console.warn('⚠️ [VERIFY][ACCEPT] Missing providerZip after upsert!');
           }
-          if (!pdAfter.customerZip) {
-            console.warn('⚠️ [VERIFY][ACCEPT] Missing customerZip after transition!');
+          if (!pd.customerZip) {
+            console.warn('⚠️ [VERIFY][ACCEPT] Missing customerZip after upsert!');
           }
         } catch (verifyErr) {
           console.error('❌ [VERIFY][ACCEPT] Failed to verify protectedData:', verifyErr.message);
