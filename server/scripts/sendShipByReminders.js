@@ -3,7 +3,7 @@ const { upsertProtectedData } = require('../lib/txData');
 let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
-const { getToday, diffDays, addDays, isSameDay, isMorningOf, logTimeState, timestamp } = require('../util/time');
+const { getToday, diffDays, addDays, isSameDay, isMorningOf, logTimeState, timestamp, yyyymmdd } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -87,7 +87,12 @@ async function sendShipByReminders() {
 
     const response = await sdk.transactions.query(query);
     const transactions = response.data.data;
-    const included = response.data.included;
+    const included = response.data.included || [];
+    
+    // Build Map index for included entities (array → Map)
+    const includedMap = new Map(
+      included.map(e => [`${e.type}/${e.id?.uuid || e.id}`, e])
+    );
 
     console.log(`📊 Found ${transactions.length} accepted transactions`);
 
@@ -104,8 +109,8 @@ async function sendShipByReminders() {
         continue;
       }
       
-      // Use centralized ship-by calculation
-      const shipByDate = computeShipByDate(tx);
+      // Use centralized ship-by calculation (now async)
+      const shipByDate = await computeShipByDate(tx, { preferLabelAddresses: true });
       if (!shipByDate) {
         console.warn(`⚠️ Could not compute ship-by date for tx ${tx?.id?.uuid || '(no id)'}`);
         continue;
@@ -123,7 +128,7 @@ async function sendShipByReminders() {
       // Get provider phone
       const providerRef = tx?.relationships?.provider?.data;
       const providerKey = providerRef ? `${providerRef.type}/${providerRef.id?.uuid || providerRef.id}` : null;
-      const provider = providerKey ? included.get(providerKey) : null;
+      const provider = providerKey ? includedMap.get(providerKey) : null;
       
       const providerPhone = provider?.attributes?.profile?.protectedData?.phone ||
                            provider?.attributes?.profile?.protectedData?.phoneNumber ||
@@ -142,14 +147,14 @@ async function sendShipByReminders() {
       // Get listing title and QR URL
       const listingRef = tx?.relationships?.listing?.data;
       const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
-      const listing = listingKey ? included.get(listingKey) : null;
+      const listing = listingKey ? includedMap.get(listingKey) : null;
       const title = listing?.attributes?.title || 'your item';
       
       // Use URL helper with Shippo fallback support
       const { buildShipLabelLink } = require('../util/url');
       const shippoData = {
-        qr_code_url: pd?.outboundQrCodeUrl,
-        label_url: pd?.outboundLabelUrl,
+        qr_code_url: protectedData?.outboundQrCodeUrl,
+        label_url: protectedData?.outboundLabelUrl,
       };
       const { url: qrUrl, strategy } = buildShipLabelLink(tx?.id?.uuid || tx?.id, shippoData, { preferQr: true });
       const reminders = outbound.reminders || {};

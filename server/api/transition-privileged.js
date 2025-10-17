@@ -367,9 +367,9 @@ async function createShippingLabels({
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
-    // Calculate ship-by date using hardened centralized helper
+    // Calculate ship-by date using hardened centralized helper (now async)
     const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = computeShipByDate(transaction);
+    const shipByDate = await computeShipByDate(transaction, { preferLabelAddresses: true });
     const shipByStr = shipByDate && formatShipBy(shipByDate);
 
     // Debug so we can see inputs/outputs clearly
@@ -405,17 +405,21 @@ async function createShippingLabels({
           const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
           
+          // Add transit hint if using distance mode
+          const transitHint =
+            (process.env.SHIP_LEAD_MODE === 'distance' && shipByStr) ? ' (est. transit applied)' : '';
+          
           // Compose body (QR branch keeps whatever you prefer)
           let body;
           if (hasQr && qrUrl) {
             // Keep QR copy if you want QR in Step-3
             body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${qrUrl}`
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}${transitHint}. Scan QR: ${qrUrl}`
               : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${qrUrl}`;
           } else {
             // Default: short carrier link
             body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${linkToSend}`
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}${transitHint}. Label: ${linkToSend}`
               : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
           }
 
