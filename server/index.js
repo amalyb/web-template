@@ -175,6 +175,7 @@ app.use(
         "'self'",                // Allow our own static JS
         "https://api.mapbox.com",
         "https://*.mapbox.com",
+        "https://js.stripe.com", // Stripe SDK
       ],
       styleSrc: [
         "'self'",
@@ -190,6 +191,7 @@ app.use(
         "https://*.imgix.net",
         "https://api.mapbox.com",
         "https://*.tiles.mapbox.com",
+        "https://*.stripe.com",  // Stripe images
       ],
       connectSrc: [
         "'self'",
@@ -197,6 +199,17 @@ app.use(
         "https://cdn.st-api.com",
         "https://api.mapbox.com",
         "https://events.mapbox.com",
+        "https://api.stripe.com", // Stripe API
+        "https://m.stripe.network",
+        "https://r.stripe.com",
+        "https://*.stripe.com",
+      ],
+      frameSrc: [
+        "'self'",
+        "https://js.stripe.com",     // Stripe Elements iframe
+        "https://hooks.stripe.com",
+        "https://m.stripe.network",
+        "https://*.stripe.com",
       ],
       workerSrc: ["'self'", "blob:"],
       objectSrc: ["'none'"],
