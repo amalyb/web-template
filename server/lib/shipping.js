@@ -19,52 +19,42 @@ function getBookingStartISO(tx) {
 /**
  * Resolve origin and destination ZIP codes from transaction data
  * Priority order:
- * 1. Outbound label addresses (most reliable - validated by carrier)
- * 2. Borrower checkout shipping address
- * 3. Lender profile address
+ * 1. Shippo label addresses (if preferLabelAddresses=true AND label exists - carrier-validated)
+ * 2. ProtectedData (set at accept/booking - providerZip & customerZip)
  * 
  * @param {Object} tx - Transaction object
- * @param {Object} opts - Options { preferLabelAddresses: boolean }
+ * @param {Object} opts - Options { preferLabelAddresses: boolean } (default: true)
  * @returns {Promise<{fromZip: string|null, toZip: string|null}>}
  */
 async function resolveZipsFromTx(tx, opts = {}) {
   const preferLabel = opts.preferLabelAddresses !== false;
+  const pd = tx?.attributes?.protectedData || {};
+  const md = tx?.attributes?.metadata || {};
 
+  // 1) Label ZIPs (ground truth once purchased)
   let fromZip = null;
   let toZip = null;
+  const lbl =
+    tx?.attributes?.protectedData?.outboundLabel ||
+    md?.shipping?.outboundLabel ||
+    null;
 
-  try {
-    if (preferLabel) {
-      const pd = tx?.attributes?.protectedData || tx?.protectedData || {};
-      
-      // Try from protectedData top-level fields (most reliable - from label creation)
-      fromZip = fromZip || pd.providerZip;
-      toZip = toZip || pd.customerZip;
-      
-      // Also check nested metadata.shipping.outboundLabel if present
-      const lbl = tx?.attributes?.metadata?.shipping?.outboundLabel;
-      fromZip = fromZip || lbl?.from?.zip || lbl?.from?.postal_code;
-      toZip = toZip || lbl?.to?.zip || lbl?.to?.postal_code;
-    }
-  } catch (err) {
-    console.warn('[ship-by] Error accessing label addresses:', err.message);
+  if (preferLabel && lbl) {
+    fromZip = lbl?.from?.zip || lbl?.from?.postal_code || lbl?.address_from?.zip || null;
+    toZip   = lbl?.to?.zip   || lbl?.to?.postal_code   || lbl?.address_to?.zip   || null;
   }
 
-  // Borrower destination (checkout) fallback
-  try {
-    const checkoutTo = tx?.attributes?.metadata?.checkout?.shippingAddress;
-    toZip = toZip || checkoutTo?.postal_code || checkoutTo?.zip;
-  } catch (err) {
-    console.warn('[ship-by] Error accessing checkout address:', err.message);
-  }
+  // 2) Accept/checkout form ZIPs on the transaction (PD)
+  fromZip = fromZip || pd.providerZip || pd.provider?.postal_code || null;  // lender @ accept
+  toZip   = toZip   || pd.customerZip || pd.customer?.postal_code || null;  // borrower @ booking
 
-  // Lender origin fallback (profile)
-  try {
-    const lenderAddr = tx?.attributes?.metadata?.lender?.address;
-    fromZip = fromZip || lenderAddr?.postal_code || lenderAddr?.zip;
-  } catch (err) {
-    console.warn('[ship-by] Error accessing lender address:', err.message);
-  }
+  // 3) No profile/legacy fallbacks by design
+  console.log('[ship-by] PD zips', {
+    providerZip: pd.providerZip,
+    customerZip: pd.customerZip,
+    usedFrom: fromZip,
+    usedTo: toZip,
+  });
 
   return { fromZip, toZip };
 }
@@ -114,6 +104,22 @@ async function computeLeadDaysDynamic({ fromZip, toZip }) {
 }
 
 /**
+ * Adjust ship-by date if it falls on Sunday (move to Saturday)
+ * @param {Date} date - The date to check/adjust
+ * @returns {Date} Original date or Saturday if it was Sunday
+ */
+function adjustIfSundayUTC(date) {
+  if (!date) return date;
+  // 0 = Sunday (in UTC, since we normalized with setUTCHours earlier)
+  if (date.getUTCDay() === 0) {
+    const d = new Date(date);
+    d.setUTCDate(d.getUTCDate() - 1); // move to Saturday
+    return d;
+  }
+  return date;
+}
+
+/**
  * Compute ship-by date for a transaction
  * Supports both static and distance-based lead time calculation
  * 
@@ -144,7 +150,20 @@ async function computeShipByDate(tx, opts = {}) {
 
   const shipBy = new Date(start);
   shipBy.setUTCDate(shipBy.getUTCDate() - leadDays);
-  return shipBy;
+
+  // Optional toggle via env (recommended)
+  const ADJUST_SUNDAY = String(process.env.SHIP_ADJUST_SUNDAY || '1') === '1';
+  const adjusted = ADJUST_SUNDAY ? adjustIfSundayUTC(shipBy) : shipBy;
+
+  if (ADJUST_SUNDAY && adjusted.getTime() !== shipBy.getTime()) {
+    console.log('[ship-by:adjust]', {
+      originalISO: shipBy.toISOString(),
+      adjustedISO: adjusted.toISOString(),
+      reason: 'sunday_to_saturday',
+    });
+  }
+
+  return adjusted;
 }
 
 function formatShipBy(date) {
@@ -153,6 +172,7 @@ function formatShipBy(date) {
     return date.toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
+      timeZone: 'UTC', // keep display aligned with UTC calculations
     });
   } catch {
     return null;
