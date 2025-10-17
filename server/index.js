@@ -60,7 +60,6 @@ catch { renderer = require('./renderer'); }
 console.log('[server] renderer keys:', Object.keys(renderer || {}));
 
 const dataLoader = require('./dataLoader');
-const { generateCSPNonce, csp } = require('./csp');
 const sdkUtils = require('./api-util/sdk');
 
 const buildDir = path.join(__dirname, '..', 'build');
@@ -74,10 +73,6 @@ const redirectSSL =
     : process.env.REACT_APP_SHARETRIBE_USING_SSL;
 const REDIRECT_SSL = redirectSSL === 'true';
 const TRUST_PROXY = process.env.SERVER_SHARETRIBE_TRUST_PROXY || null;
-const CSP = process.env.REACT_APP_CSP;
-const CSP_MODE = process.env.CSP_MODE || 'report'; // 'block' for prod, 'report' for test
-const cspReportUrl = '/csp-report';
-const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
 
 // Health check - must return 200 for Render
@@ -161,49 +156,51 @@ app.use(
 
 // The helmet middleware sets various HTTP headers to improve security.
 // See: https://www.npmjs.com/package/helmet
-// Helmet 4 doesn't disable CSP by default so we need to do that explicitly.
-// If csp is enabled we will add that separately.
+// CSP is configured to allow Mapbox and our own static files
 
 app.use(
   helmet({
-    contentSecurityPolicy: false,
     referrerPolicy: {
       policy: 'origin',
     },
   })
 );
 
-if (cspEnabled) {
-  app.use(generateCSPNonce);
-
-  // When a CSP directive is violated, the browser posts a JSON body
-  // to the defined report URL and we need to parse this body.
-  app.use(
-    bodyParser.json({
-      type: ['json', 'application/csp-report'],
-    })
-  );
-
-  // CSP can be turned on in report or block mode. In report mode, the
-  // browser checks the policy and calls the report URL when the
-  // policy is violated, but doesn't block any requests. In block
-  // mode, the browser also blocks the requests.
-
-  // Build CSP policies
-  const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
-  
-  // Log CSP mode at startup
-  console.log(`🔐 CSP mode: ${CSP_MODE}`);
-
-  if (CSP_MODE === 'block') {
-    // Apply both enforce and reportOnly middlewares (enforce first)
-    app.use(cspPolicies.enforce);
-    app.use(cspPolicies.reportOnly);
-  } else {
-    // Apply only reportOnly middleware
-    app.use(cspPolicies.reportOnly);
-  }
-}
+app.use(
+  helmet.contentSecurityPolicy({
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: [
+        "'self'",                // Allow our own static JS
+        "https://api.mapbox.com",
+        "https://*.mapbox.com"
+      ],
+      styleSrc: [
+        "'self'",
+        "https://api.mapbox.com",
+        "'unsafe-inline'"        // Needed for Mapbox inline styles
+      ],
+      imgSrc: [
+        "'self'",
+        "data:",
+        "blob:",
+        "https://api.mapbox.com",
+        "https://*.tiles.mapbox.com"
+      ],
+      connectSrc: [
+        "'self'",
+        "https://api.mapbox.com",
+        "https://events.mapbox.com"
+      ],
+      workerSrc: ["'self'", "blob:"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'self'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+    },
+  })
+);
 
 // Set up integration SDK for QR and other privileged operations
 const { getIntegrationSdk } = require('./api-util/integrationSdk');
@@ -502,23 +499,6 @@ app.get('*', async (req, res, next) => {
 // Set error handler. If Sentry is set up, all error responses
 // will be logged there.
 log.setupExpressErrorHandler(app);
-
-if (cspEnabled) {
-  // Dig out the value of the given CSP report key from the request body.
-  const reportValue = (req, key) => {
-    const report = req.body ? req.body['csp-report'] : null;
-    return report && report[key] ? report[key] : key;
-  };
-
-  // Handler for CSP violation reports.
-  app.post(cspReportUrl, (req, res) => {
-    const effectiveDirective = reportValue(req, 'effective-directive');
-    const blockedUri = reportValue(req, 'blocked-uri');
-    const msg = `CSP: ${effectiveDirective} doesn't allow ${blockedUri}`;
-    log.error(new Error(msg), 'csp-violation');
-    res.status(204).end();
-  });
-}
 
 const server = app.listen(PORT, () => {
   const mode = process.env.NODE_ENV || 'development';
