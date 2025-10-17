@@ -1082,44 +1082,65 @@ module.exports = async (req, res) => {
       
       if (bodyParams?.transition === 'transition/accept' && !isSpeculative) {
         console.log('🔐 [ACCEPT] Using Integration SDK for privileged transition');
-        console.log('🔐 [ACCEPT] protectedData keys being sent:', Object.keys(params.protectedData || {}));
-        console.log('🔐 [ACCEPT] providerZip:', params.protectedData?.providerZip);
-        console.log('🔐 [ACCEPT] customerZip:', params.protectedData?.customerZip);
         
-        response = await flexIntegrationSdk.transactions.transition({
-          id: body.id,
-          transition: body.transition,
-          params: {
-            ...params,
-            protectedData: params.protectedData || {}
-          }
-        });
+        // Extract plain UUID string for Integration SDK (not marketplace wrapper)
+        const txIdPlain = 
+          (typeof id === 'string') ? id :
+          id?.uuid || 
+          bodyParams?.params?.transactionId?.uuid ||
+          bodyParams?.id;
         
-        console.log('✅ [ACCEPT] Integration SDK transition completed');
+        if (!txIdPlain) {
+          console.error('❌ [ACCEPT] Missing transaction ID');
+          return res.status(400).json({ error: 'Missing transaction id' });
+        }
+        
+        // Build clean params: only protectedData and real params, NOT transactionId
+        const { protectedData = {}, transactionId: _, listingId: __, ...restCleanParams } = params;
+        
+        console.log('🔐 [ACCEPT] txId (plain):', txIdPlain);
+        console.log('🔐 [ACCEPT] protectedData keys being sent:', Object.keys(protectedData));
+        console.log('🔐 [ACCEPT] providerZip:', protectedData.providerZip);
+        console.log('🔐 [ACCEPT] customerZip:', protectedData.customerZip);
+        
+        try {
+          response = await flexIntegrationSdk.transactions.transition({
+            id: txIdPlain,                                 // plain string UUID
+            transition: 'transition/accept',
+            params: { ...restCleanParams, protectedData }, // no transactionId/listingId here
+          });
+          
+          console.log('✅ [ACCEPT] Integration SDK transition completed');
+        } catch (e) {
+          console.error('[ACCEPT][ERR]', {
+            message: e?.message,
+            status: e?.status || e?.response?.status,
+            data: e?.data || e?.response?.data,
+            apiErrors: e?.apiErrors,
+            stack: e?.stack?.split('\n').slice(0, 3).join('\n'),
+          });
+          return res.status(500).json({ 
+            error: 'transition/accept-failed',
+            details: e?.message 
+          });
+        }
         
         // Immediately re-fetch with Integration SDK to verify protectedData persisted
         try {
-          const txAfter = await flexIntegrationSdk.transactions.show({ id: body.id });
-          const pdAfter = txAfter.data.data.attributes.protectedData || {};
+          const txAfter = await flexIntegrationSdk.transactions.show({ id: txIdPlain }).then(r => r.data.data);
+          const pdAfter = txAfter.attributes.protectedData || {};
           
           console.log('[VERIFY][ACCEPT] PD on tx', {
             providerZip: pdAfter.providerZip,
             customerZip: pdAfter.customerZip,
-            providerStreet: pdAfter.providerStreet,
-            providerCity: pdAfter.providerCity,
-            providerState: pdAfter.providerState,
-            customerStreet: pdAfter.customerStreet,
-            customerCity: pdAfter.customerCity,
-            customerState: pdAfter.customerState,
-            allPDKeys: Object.keys(pdAfter)
           });
           
           // Warn if critical fields are missing
-          if (!pdAfter.providerZip || !pdAfter.customerZip) {
-            console.warn('⚠️ [VERIFY][ACCEPT] Missing ZIP codes after transition!', {
-              providerZip: pdAfter.providerZip,
-              customerZip: pdAfter.customerZip
-            });
+          if (!pdAfter.providerZip) {
+            console.warn('⚠️ [VERIFY][ACCEPT] Missing providerZip after transition!');
+          }
+          if (!pdAfter.customerZip) {
+            console.warn('⚠️ [VERIFY][ACCEPT] Missing customerZip after transition!');
           }
         } catch (verifyErr) {
           console.error('❌ [VERIFY][ACCEPT] Failed to verify protectedData:', verifyErr.message);
