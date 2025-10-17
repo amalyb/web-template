@@ -24,6 +24,11 @@ const hasIC = Boolean(process.env.INTEGRATION_CLIENT_ID);
 const hasIS = Boolean(process.env.INTEGRATION_CLIENT_SECRET);
 console.log('[server] Integration creds present?', { INTEGRATION_CLIENT_ID: hasIC, INTEGRATION_CLIENT_SECRET: hasIS });
 
+// Startup env verification with masking (last 6 chars)
+console.log('[INT] marketplaceId (server):', (process.env.SHARETRIBE_MARKETPLACE_ID || '').slice(-6));
+console.log('[INT] clientId (integration) …', (process.env.INTEGRATION_CLIENT_ID || '').slice(-6));
+console.log('[WEB] marketplaceId (client):', (process.env.REACT_APP_SHARETRIBE_MARKETPLACE_ID || '').slice(-6));
+
 // Setup Sentry
 // Note 1: This needs to happen before other express requires
 // Note 2: this doesn't use instrument.js file but log.js
@@ -369,6 +374,33 @@ app.get('/api/qr/test', async (req, res) => {
 
   res.set('Cache-Control', 'no-store');
   return res.status(result.ok ? 200 : 500).json(result);
+});
+
+// Integration SDK smoke test endpoint - verify credentials and marketplace access
+app.get('/api/integration-smoke', async (_req, res) => {
+  try {
+    const flexIntegrationSdk = integrationSdk || getIntegrationSdk();
+    if (!flexIntegrationSdk) {
+      return res.status(500).json({
+        ok: false,
+        error: 'Integration SDK not initialized',
+        message: 'Check INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET'
+      });
+    }
+    
+    const mp = await flexIntegrationSdk.marketplace.show();
+    res.json({ 
+      ok: true, 
+      marketplace: mp.data?.data?.id 
+    });
+  } catch (e) {
+    res.status(e?.status || e?.response?.status || 500).json({
+      ok: false,
+      status: e?.status || e?.response?.status,
+      data: e?.data || e?.response?.data,
+      message: e?.message,
+    });
+  }
 });
 
 const noCacheHeaders = {
