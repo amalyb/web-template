@@ -64,6 +64,29 @@ const logTx = tx => ({
   label_url: tx?.label_url,
   qr_code_url: tx?.qr_code_url,
 });
+
+// Choose the best link to send in SMS according to business rules:
+// 1) UPS preferred: use QR if present, else label.
+// 2) If USPS fallback: use label (never QR).
+// 3) Else: any label.
+// 4) Else: tracking.
+function pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) {
+  const c = (carrier || '').toUpperCase();
+  // UPS first: prefer QR, then label
+  if (c === 'UPS') {
+    if (qrUrl) return qrUrl;
+    if (labelUrl) return labelUrl;
+  }
+  // USPS fallback: label only (no QR)
+  if (c === 'USPS') {
+    if (labelUrl) return labelUrl;
+  }
+  // Any other carrier: prefer label if present
+  if (labelUrl) return labelUrl;
+  // Last resort: tracking
+  if (trackingUrl) return trackingUrl;
+  return null;
+}
 // ---------------------------------------
 
 // Conditional import of sendSMS to prevent module loading errors
@@ -418,29 +441,28 @@ async function createShippingLabels({
           // Compute hasQr for branching logic (any carrier)
           const hasQr = Boolean(qrUrl);
 
-          // Build a short, permanent carrier URL (UPS/USPS/FedEx/DHL). Fallbacks included.
+          // Build public tracking URL for fallback logging (unchanged)
           const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
-          const linkToSend = publicTrack || trackingUrl || labelUrl; // never the long signed .png if we can avoid it
+          // NEW: pick best link per UPS-first rules (keep SMS copy unchanged)
+          const linkToSend = pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) || publicTrack;
 
           // Get listing title (truncate if too long to keep SMS compact)
           const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
 
-          // Compose body (QR branch keeps whatever you prefer)
+          // ⬇️ DO NOT CHANGE MESSAGE COPY — only the link is different now
           let body;
-          if (hasQr && qrUrl) {
-            // Keep QR copy if you want QR in Step-3
+          if (hasQr && qrUrl && carrier && carrier.toUpperCase() === 'UPS' && linkToSend === qrUrl) {
             body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${qrUrl}`
-              : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${qrUrl}`;
+              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Scan QR: ${linkToSend}`
+              : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${linkToSend}`;
           } else {
-            // Default: short carrier link
             body = shipByStr
               ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}. Label: ${linkToSend}`
               : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
           }
 
-          console.log('[TRACKINGLINK] Using short public link:', linkToSend);
+          console.log('[OUTBOUND-LINK] chosen:', linkToSend, 'carrier=', carrier, 'qr?', !!qrUrl, 'label?', !!labelUrl, 'track?', !!trackingUrl);
           console.log(
             '[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
             carrier,

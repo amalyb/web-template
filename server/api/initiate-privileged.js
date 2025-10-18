@@ -32,7 +32,7 @@ console.log('🚦 initiate-privileged endpoint is wired up');
 function buildLenderMsg(tx, listingTitle) {
   // Carrier-friendly: short, one link, no emojis
   const lenderInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/sales';
-  const lenderMsg = `Sherbrt 🍧: new booking request for "${listingTitle}". Check your inbox: ${lenderInboxUrl}`;
+  const lenderMsg = `Sherbrt 🍧: New booking request for "${listingTitle}". Check your inbox: ${lenderInboxUrl}`;
   return lenderMsg;
 }
 
