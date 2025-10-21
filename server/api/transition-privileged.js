@@ -18,6 +18,8 @@ const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 const { buildShippoAddress } = require('../shippo/buildAddress');
+const { extractArtifacts } = require('../lib/shipping/extractArtifacts');
+const { buildLenderShipByMessage } = require('../lib/sms/buildLenderShipByMessage');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -421,36 +423,36 @@ async function createShippingLabels({
       console.log('[SHIPPO][TX]', logTx(shippoTx));
       console.log('[SHIPPO][RATE]', safePick(selectedRate || {}, ['provider', 'servicelevel', 'service', 'object_id']));
     }
-    const tx = shippoTx || {};
-    const trackingNumber = tx.tracking_number || null;
-    const trackingUrl = tx.tracking_url_provider || null;
-    const labelUrl = tx.label_url || null;
-    const qrUrl = tx.qr_code_url || null;
-
     const carrier = selectedRate?.provider ?? null;
     const service = selectedRate?.service?.name ?? selectedRate?.servicelevel?.name ?? null;
-
+    
+    // Extract and normalize shipping artifacts using the new utility
+    const shippingArtifacts = extractArtifacts({
+      carrier,
+      trackingNumber: shippoTx.tracking_number,
+      shippoTx
+    });
+    
+    // Legacy variables for backward compatibility (deprecated - use shippingArtifacts instead)
+    const trackingNumber = shippingArtifacts.trackingNumber;
+    const trackingUrl = shippingArtifacts.trackingUrl;
+    const labelUrl = shippingArtifacts.upsLabelUrl || shippingArtifacts.uspsLabelUrl;
+    const qrUrl = shippingArtifacts.upsQrUrl;
+    
     const qrPayload = { trackingNumber, trackingUrl, labelUrl, qrUrl, carrier, service };
     
-    console.log('[SHIPPO] QR payload built:', {
-      hasTrackingNumber: !!trackingNumber,
-      hasTrackingUrl: !!trackingUrl,
-      hasLabelUrl: !!labelUrl,
-      hasQrUrl: !!qrUrl,
-      carrier,
+    console.log('[SHIPPO] Shipping artifacts extracted:', {
+      hasTrackingNumber: !!shippingArtifacts.trackingNumber,
+      hasTrackingUrl: !!shippingArtifacts.trackingUrl,
+      hasUpsQr: !!shippingArtifacts.upsQrUrl,
+      hasUpsLabel: !!shippingArtifacts.upsLabelUrl,
+      hasUspsLabel: !!shippingArtifacts.uspsLabelUrl,
+      carrier: shippingArtifacts.carrier,
       service,
     });
 
     console.log('📦 [SHIPPO] Label purchased successfully!');
     console.log('📦 [SHIPPO] Transaction ID:', shippoTx.object_id);
-    console.log('📦 [SHIPPO] QR payload built:', {
-      hasTrackingNumber: !!qrPayload.trackingNumber,
-      hasTrackingUrl: !!qrPayload.trackingUrl,
-      hasLabelUrl: !!qrPayload.labelUrl,
-      hasQrUrl: !!qrPayload.qrUrl,
-      carrier: qrPayload.carrier,
-      service: qrPayload.service,
-    });
 
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
@@ -459,7 +461,7 @@ async function createShippingLabels({
     const shipByStr = formatShipBy(shipByDate);
     
     // ──────────────────────────────────────────────────────────────────────────────
-    // STEP-3: notify lender "label ready"
+    // STEP-3: notify lender "label ready" with QR/label-only link (no tracking)
     // Runs right after outbound label purchase succeeds.
     // ──────────────────────────────────────────────────────────────────────────────
     try {
@@ -474,36 +476,9 @@ async function createShippingLabels({
         if (!lenderPhone) {
           console.warn('[SMS][Step-3] Phone normalization failed; skipping SMS');
         } else {
-          // Compute hasQr for branching logic (any carrier)
-          const hasQr = Boolean(qrUrl);
-          
-          // Build public tracking URL for fallback logging (unchanged)
-          const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
-          // NEW: pick best link per UPS-first rules (keep SMS copy unchanged)
-          const linkToSend = pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) || publicTrack;
-          
           // Get listing title (truncate if too long to keep SMS compact)
           const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-          
-          // Add transit hint if using distance mode
-          const transitHint = (mode === 'distance' && shipByStr) ? ' (est. transit applied)' : '';
-          
-          // ⬇️ DO NOT CHANGE MESSAGE COPY — only the link is different now
-          let body;
-          if (hasQr && qrUrl && carrier && carrier.toUpperCase() === 'UPS' && linkToSend === qrUrl) {
-            body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}${transitHint}. Scan QR: ${linkToSend}`
-              : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${linkToSend}`;
-          } else {
-            body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}${transitHint}. Label: ${linkToSend}`
-              : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
-          }
-
-          console.log('[OUTBOUND-LINK] chosen:', linkToSend, 'carrier=', carrier, 'qr?', !!qrUrl, 'label?', !!labelUrl, 'track?', !!trackingUrl);
-          console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
-            carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
           
           // One-time log before SMS (as requested)
           console.log('[SMS][LENDER:shipBy]', { 
@@ -512,6 +487,25 @@ async function createShippingLabels({
             miles: miles ? Math.round(miles) : null, 
             mode 
           });
+
+          // Build the lender SMS using the new strict QR/label-only function
+          let body;
+          try {
+            body = await buildLenderShipByMessage({
+              itemTitle: listingTitle,
+              shipByDate: shipByStr,
+              shippingArtifacts
+            });
+            
+            console.log('[SMS][Step-3] Built compliant lender message with shortlink');
+          } catch (msgError) {
+            // If buildLenderShipByMessage throws (no compliant link), log and skip SMS
+            console.error('[SMS][Step-3] Failed to build compliant message:', msgError.message);
+            console.warn('[SMS][Step-3] Skipping lender SMS - no QR/label link available');
+            
+            // Exit early - do not send SMS with tracking link
+            throw msgError;
+          }
 
           // Import SMS tags for consistency
           const { SMS_TAGS } = require('../lib/sms/tags');
@@ -528,7 +522,8 @@ async function createShippingLabels({
                 listingId: listing?.id?.uuid || listing?.id,
                 carrier,
                 trackingNumber,
-                hasQr: !!hasQr
+                hasQr: !!shippingArtifacts.upsQrUrl,
+                hasLabel: !!(shippingArtifacts.upsLabelUrl || shippingArtifacts.uspsLabelUrl)
               }
             }
           );
@@ -558,6 +553,15 @@ async function createShippingLabels({
         outbound: {
           ...protectedData.outbound,
           shipByDate: shipByDate ? shipByDate.toISOString() : null
+        },
+        // Persist normalized shipping artifacts for future use (e.g., return SMS, reminders)
+        shippingArtifacts: {
+          carrier: shippingArtifacts.carrier,
+          trackingNumber: shippingArtifacts.trackingNumber,
+          upsQrUrl: shippingArtifacts.upsQrUrl,
+          upsLabelUrl: shippingArtifacts.upsLabelUrl,
+          uspsLabelUrl: shippingArtifacts.uspsLabelUrl,
+          trackingUrl: shippingArtifacts.trackingUrl,
         }
       };
       const result = await upsertProtectedData(txId, patch, { source: 'shippo' });
@@ -568,6 +572,7 @@ async function createShippingLabels({
         if (shipByDate) {
           console.log('📅 [PERSIST] Set ship-by date:', shipByDate.toISOString());
         }
+        console.log('✅ [PERSIST] Stored shipping artifacts for future use');
       }
     } catch (persistError) {
       console.error('❌ [PERSIST] Exception saving outbound label (SMS already sent):', persistError.message);
