@@ -1,5 +1,7 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
+const { utcToZonedTime, format } = require('date-fns-tz');
+const { startOfDay } = require('date-fns');
 
 const LEAD_MODE = process.env.SHIP_LEAD_MODE || 'static';
 const LEAD_FLOOR = Number(process.env.SHIP_LEAD_DAYS || 2);
@@ -60,35 +62,46 @@ async function resolveZipsFromTx(tx, opts = {}) {
 }
 
 /**
+ * Compute lead days from miles using realistic transit thresholds
+ * @param {number} miles - Distance in miles
+ * @returns {number} Lead days before booking start
+ */
+function leadDaysFromMiles(miles) {
+  if (miles <= 50) return 1;
+  if (miles <= 250) return 2;
+  if (miles <= 600) return 3;
+  if (miles <= 1500) return 4;
+  return 5;
+}
+
+/**
  * Compute lead days based on distance between origin and destination
- * Uses simple distance buckets:
- * - ≤200 miles: 1 day (respecting floor)
- * - 200-1000 miles: 2 days (respecting floor)
- * - >1000 miles: 3 days (respecting floor)
+ * Uses realistic distance thresholds:
+ * - ≤50 miles: 1 day
+ * - ≤250 miles: 2 days
+ * - ≤600 miles: 3 days
+ * - ≤1500 miles: 4 days
+ * - >1500 miles: 5 days
  * 
  * @param {Object} params - { fromZip, toZip }
- * @returns {Promise<number>} Lead days (between LEAD_FLOOR and LEAD_MAX)
+ * @returns {Promise<{leadDays: number, miles: number|null}>}
  */
 async function computeLeadDaysDynamic({ fromZip, toZip }) {
-  if (!fromZip || !toZip) return LEAD_FLOOR;
-
-  const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
-  if (!fromLL || !toLL) return LEAD_FLOOR;
-
-  const miles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
-
-  // Buckets (tuneable): ≤200mi:1d, 200–1000mi:2d, >1000mi:3d
-  let lead = LEAD_FLOOR;
-  if (miles <= 200) {
-    lead = Math.max(1, LEAD_FLOOR);
-  } else if (miles <= 1000) {
-    lead = Math.max(2, LEAD_FLOOR);
-  } else {
-    lead = Math.max(3, LEAD_FLOOR);
+  if (!fromZip || !toZip) {
+    const staticFloor = Number(process.env.SHIP_LEAD_DAYS || 0);
+    const lead = Math.max(1, staticFloor);
+    return { leadDays: lead, miles: null };
   }
 
-  // Cap to LEAD_MAX
-  lead = Math.min(lead, LEAD_MAX);
+  const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
+  if (!fromLL || !toLL) {
+    const staticFloor = Number(process.env.SHIP_LEAD_DAYS || 0);
+    const lead = Math.max(1, staticFloor);
+    return { leadDays: lead, miles: null };
+  }
+
+  const miles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
+  const lead = leadDaysFromMiles(miles);
 
   // Debug log (safe/structured)
   console.log('[ship-by:distance]', {
@@ -96,11 +109,9 @@ async function computeLeadDaysDynamic({ fromZip, toZip }) {
     toZip,
     miles: Math.round(miles),
     chosenLeadDays: lead,
-    floor: LEAD_FLOOR,
-    max: LEAD_MAX,
   });
 
-  return lead;
+  return { leadDays: lead, miles };
 }
 
 /**
@@ -120,31 +131,42 @@ function adjustIfSundayUTC(date) {
 }
 
 /**
- * Compute ship-by date for a transaction
+ * Compute ship-by date and metadata for a transaction
  * Supports both static and distance-based lead time calculation
  * 
  * @param {Object} tx - Transaction object with booking and address data
  * @param {Object} opts - Options { preferLabelAddresses: boolean }
- * @returns {Promise<Date|null>} Ship-by date or null if cannot be computed
+ * @returns {Promise<{shipByDate: Date, leadDays: number, miles: number|null, mode: string}>}
  */
-async function computeShipByDate(tx, opts = {}) {
+async function computeShipBy(tx, opts = {}) {
   const startISO = getBookingStartISO(tx);
-  if (!startISO) return null;
+  if (!startISO) {
+    return { shipByDate: null, leadDays: 0, miles: null, mode: 'none' };
+  }
 
   const start = new Date(startISO);
-  if (Number.isNaN(+start)) return null;
+  if (Number.isNaN(+start)) {
+    return { shipByDate: null, leadDays: 0, miles: null, mode: 'none' };
+  }
   
   // Normalize to UTC midnight to avoid timezone shifts
   start.setUTCHours(0, 0, 0, 0);
 
   let leadDays = LEAD_FLOOR;
+  let miles = null;
+  let mode = 'static';
 
   if (LEAD_MODE === 'distance') {
     const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
     console.log('[ship-by] zips', { fromZip, toZip });
-    leadDays = await computeLeadDaysDynamic({ fromZip, toZip });
+    const result = await computeLeadDaysDynamic({ fromZip, toZip });
+    leadDays = result.leadDays;
+    miles = result.miles;
+    mode = miles != null ? 'distance' : 'static';
   } else {
     // static (existing behavior)
+    const staticFloor = Number(process.env.SHIP_LEAD_DAYS || 0);
+    leadDays = Math.max(1, staticFloor);
     console.log('[ship-by:static]', { chosenLeadDays: leadDays });
   }
 
@@ -167,30 +189,46 @@ async function computeShipByDate(tx, opts = {}) {
   console.log('[ship-by:final]', {
     startISO: startISO,
     leadDays: leadDays,
+    miles: miles ? Math.round(miles) : null,
     shipByISO: adjusted.toISOString(),
-    mode: LEAD_MODE
+    mode: mode
   });
 
-  return adjusted;
+  return { shipByDate: adjusted, leadDays, miles, mode };
 }
 
+/**
+ * Legacy wrapper for backward compatibility
+ * @deprecated Use computeShipBy instead
+ */
+async function computeShipByDate(tx, opts = {}) {
+  const result = await computeShipBy(tx, opts);
+  return result.shipByDate;
+}
+
+/**
+ * Format ship-by date for SMS display (Pacific Time, start-of-day)
+ * @param {Date} date - The date to format
+ * @returns {string|null} Formatted date string or null
+ */
 function formatShipBy(date) {
   if (!date) return null;
   try {
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      timeZone: 'UTC', // keep display aligned with UTC calculations
-    });
+    const tz = 'America/Los_Angeles';
+    const z = utcToZonedTime(new Date(date), tz);
+    const sod = startOfDay(z);
+    return format(sod, 'MMM d', { timeZone: tz });
   } catch {
     return null;
   }
 }
 
 module.exports = { 
-  computeShipByDate, 
+  computeShipBy,
+  computeShipByDate,  // legacy
   formatShipBy, 
   getBookingStartISO,
   resolveZipsFromTx,
   computeLeadDaysDynamic,
+  leadDaysFromMiles,
 };
