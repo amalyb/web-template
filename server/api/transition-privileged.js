@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink } = require('../util/url');
@@ -283,6 +283,19 @@ async function createShippingLabels({
     console.log('📦 [SHIPPO] Outbound shipment created successfully');
     console.log('📦 [SHIPPO] Shipment ID:', shipmentRes.data.object_id);
     
+    // ──────────────────────────────────────────────────────────────────────────────
+    // COMPUTE SHIP-BY DATE ONCE (BEFORE rate selection)
+    // ──────────────────────────────────────────────────────────────────────────────
+    const computeResult = await computeShipBy(transaction, { preferLabelAddresses: false });
+    const { shipByDate, leadDays, miles, mode } = computeResult;
+    
+    console.log('[RATE-SELECT][COMPUTE]', { 
+      shipByISO: shipByDate?.toISOString?.(), 
+      leadDays, 
+      miles: miles ? Math.round(miles) : null, 
+      mode 
+    });
+    
     // Select a shipping rate from the available rates
     const availableRates = shipmentRes.data.rates || [];
     const shipmentData = shipmentRes.data;
@@ -326,37 +339,27 @@ async function createShippingLabels({
       return { success: false, reason: 'no_shipping_rates' };
     }
     
-    // Rate selection logic: use provider preference from env
+    // Rate selection logic: use pickCheapestAllowedRate with shipByDate
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
       .split(',')
       .map(p => p.trim().toUpperCase())
       .filter(Boolean);
     
-    const providersAvailable = availableRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
+    const selectedRate = pickCheapestAllowedRate(availableRates, { 
+      shipByDate, 
+      preferredProviders 
+    });
     
-    console.log('[SHIPPO][RATE-SELECT] providers_available=' + JSON.stringify(providersAvailable) + ' prefs=' + JSON.stringify(preferredProviders));
-    
-    // Select rate based on preference order
-    let selectedRate = null;
-    for (const preferredProvider of preferredProviders) {
-      selectedRate = availableRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
-      if (selectedRate) {
-        console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`);
-        break;
-      }
-    }
-    
-    // Fallback: use first available if no preference match
     if (!selectedRate) {
-      selectedRate = availableRates[0];
-      console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`);
+      console.error('❌ [SHIPPO][NO-RATES] No suitable rate found');
+      return { success: false, reason: 'no_suitable_rate' };
     }
     
-    console.log('📦 [SHIPPO] Selected rate:', {
-      provider: selectedRate.provider,
-      service: selectedRate.servicelevel || selectedRate.service,
-      rate: selectedRate.rate,
-      object_id: selectedRate.object_id
+    console.log('[RATE-SELECT][OUTBOUND]', {
+      token: selectedRate?.servicelevel?.token || selectedRate?.service?.token,
+      provider: selectedRate?.provider,
+      amount: Number(selectedRate?.amount ?? selectedRate?.rate ?? 0),
+      estDays: selectedRate?.estimated_days ?? selectedRate?.duration_terms
     });
     
     // Create the actual label by purchasing the transaction
@@ -440,16 +443,8 @@ async function createShippingLabels({
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
-    // Calculate ship-by date using hardened centralized helper (now async)
-    const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = await computeShipByDate(transaction, { preferLabelAddresses: true });
-    const shipByStr = shipByDate && formatShipBy(shipByDate);
-
-    // Debug so we can see inputs/outputs clearly
-    console.log('[label-ready] bookingStartISO:', bookingStartISO);
-    console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
-    console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
-    console.log('[label-ready] shipByStr:', shipByStr);
+    // Reuse the shipByDate computed earlier (already logged above)
+    const shipByStr = formatShipBy(shipByDate);
     
     // ──────────────────────────────────────────────────────────────────────────────
     // STEP-3: notify lender "label ready"
@@ -480,8 +475,7 @@ async function createShippingLabels({
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
           
           // Add transit hint if using distance mode
-          const transitHint =
-            (process.env.SHIP_LEAD_MODE === 'distance' && shipByStr) ? ' (est. transit applied)' : '';
+          const transitHint = (mode === 'distance' && shipByStr) ? ' (est. transit applied)' : '';
           
           // ⬇️ DO NOT CHANGE MESSAGE COPY — only the link is different now
           let body;
@@ -499,18 +493,13 @@ async function createShippingLabels({
           console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
             carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
           
-          // Log the ship-by date used in the SMS for diagnosis
-          if (shipByStr && bookingStartISO) {
-            const bookingStart = new Date(bookingStartISO);
-            const leadDaysInMessage = shipByDate ? Math.round((bookingStart - shipByDate) / (1000 * 60 * 60 * 24)) : 0;
-            console.log('[SMS][ShipBy]', {
-              bookingStart: bookingStart.toISOString().split('T')[0],
-              shipByDate: shipByDate ? shipByDate.toISOString().split('T')[0] : 'null',
-              leadDays: leadDaysInMessage,
-              formatted: shipByStr,
-              message: body
-            });
-          }
+          // One-time log before SMS (as requested)
+          console.log('[SMS][LENDER:shipBy]', { 
+            shipByISO: shipByDate?.toISOString?.(), 
+            leadDays, 
+            miles: miles ? Math.round(miles) : null, 
+            mode 
+          });
 
           // Import SMS tags for consistency
           const { SMS_TAGS } = require('../lib/sms/tags');
@@ -622,33 +611,23 @@ async function createShippingLabels({
         }
         
         if (returnRates.length > 0) {
-          // Use same provider preference logic for return labels
-          const returnProvidersAvailable = returnRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
-          console.log('[SHIPPO][RATE-SELECT][RETURN] providers_available=' + JSON.stringify(returnProvidersAvailable));
-          
-          let returnSelectedRate = null;
-          for (const preferredProvider of preferredProviders) {
-            returnSelectedRate = returnRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
-            if (returnSelectedRate) {
-              console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`);
-              break;
-            }
-          }
-          
-          // Fallback to first available
-          if (!returnSelectedRate) {
-            returnSelectedRate = returnRates[0];
-            console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`);
-          }
-          
-          console.log('📦 [SHIPPO] Selected return rate:', {
-            provider: returnSelectedRate.provider,
-            service: returnSelectedRate.servicelevel || returnSelectedRate.service,
-            rate: returnSelectedRate.rate,
-            object_id: returnSelectedRate.object_id
+          // Use pickCheapestAllowedRate for return label (same shipByDate)
+          const returnSelectedRate = pickCheapestAllowedRate(returnRates, { 
+            shipByDate, 
+            preferredProviders 
           });
           
-          // Build return transaction payload - only request QR for USPS
+          if (!returnSelectedRate) {
+            console.warn('⚠️ [SHIPPO][RETURN] No suitable return rate found');
+          } else {
+            console.log('[RATE-SELECT][RETURN]', {
+              token: returnSelectedRate?.servicelevel?.token || returnSelectedRate?.service?.token,
+              provider: returnSelectedRate?.provider,
+              amount: Number(returnSelectedRate?.amount ?? returnSelectedRate?.rate ?? 0),
+              estDays: returnSelectedRate?.estimated_days ?? returnSelectedRate?.duration_terms
+            });
+          
+            // Build return transaction payload - only request QR for USPS
           const returnTransactionPayload = {
             rate: returnSelectedRate.object_id,
             async: false,
@@ -714,8 +693,9 @@ async function createShippingLabels({
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
           }
-        }
-      }
+          }  // end else (returnSelectedRate)
+        }  // end if (returnRates.length > 0)
+      }  // end if (providerStreet && providerCity...)
     } catch (returnLabelError) {
       console.error('❌ [SHIPPO] Non-critical step failed', {
         where: 'return-label-creation',
