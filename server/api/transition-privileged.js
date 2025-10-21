@@ -19,6 +19,7 @@ const { timestamp } = require('../util/time');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 const { extractArtifacts } = require('../lib/shipping/extractArtifacts');
 const { buildLenderShipByMessage } = require('../lib/sms/buildLenderShipByMessage');
+const { buildShippoAddress } = require('../shippo/buildAddress');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -199,11 +200,18 @@ async function createShippingLabels({
   console.log('🚀 [SHIPPO] Starting label creation for transaction:', txId);
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
   
-  // Extract addresses from protectedData
-  const providerAddress = {
+  // ──────────────────────────────────────────────────────────────────────────────
+  // EMAIL SUPPRESSION CONFIGURATION
+  // ──────────────────────────────────────────────────────────────────────────────
+  // Check if recipient email suppression is enabled (to prevent UPS Quantum View emails)
+  const suppress = String(process.env.SHIPPO_SUPPRESS_RECIPIENT_EMAIL || '').toLowerCase() === 'true';
+  console.log('[SHIPPO] Recipient email suppression:', suppress ? 'ON' : 'OFF');
+  
+  // Extract raw address data from protectedData
+  const rawProviderAddress = {
     name: protectedData.providerName || 'Provider',
     street1: protectedData.providerStreet,
-    street2: protectedData.providerStreet2 || '',
+    street2: protectedData.providerStreet2,
     city: protectedData.providerCity,
     state: protectedData.providerState,
     zip: protectedData.providerZip,
@@ -212,10 +220,10 @@ async function createShippingLabels({
     phone: protectedData.providerPhone,
   };
   
-  const customerAddress = {
+  const rawCustomerAddress = {
     name: protectedData.customerName || 'Customer',
     street1: protectedData.customerStreet,
-    street2: protectedData.customerStreet2 || '',
+    street2: protectedData.customerStreet2,
     city: protectedData.customerCity,
     state: protectedData.customerState,
     zip: protectedData.customerZip,
@@ -224,13 +232,25 @@ async function createShippingLabels({
     phone: protectedData.customerPhone,
   };
   
+  // Build Shippo-compatible addresses with email suppression logic
+  // Lender (provider) always keeps email for shippo notifications
+  const addressFrom = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
+  // Borrower (customer) email suppressed when flag is ON (to prevent UPS emails)
+  const addressTo = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
+  
   // Log addresses for debugging
-  console.log('🏷️ [SHIPPO] Provider address:', providerAddress);
-  console.log('🏷️ [SHIPPO] Customer address:', customerAddress);
+  console.log('🏷️ [SHIPPO] Provider address (from):', addressFrom);
+  console.log('🏷️ [SHIPPO] Customer address (to):', addressTo);
+  
+  // Runtime guard: ensure no email leaks when suppression is ON
+  if (suppress && addressTo.email) {
+    console.warn('[SHIPPO] Removing email due to suppression flag.');
+    delete addressTo.email;
+  }
   
   // Validate that we have complete address information
-  const hasCompleteProviderAddress = providerAddress.street1 && providerAddress.city && providerAddress.state && providerAddress.zip;
-  const hasCompleteCustomerAddress = customerAddress.street1 && customerAddress.city && customerAddress.state && customerAddress.zip;
+  const hasCompleteProviderAddress = addressFrom.street1 && addressFrom.city && addressFrom.state && addressFrom.zip;
+  const hasCompleteCustomerAddress = addressTo.street1 && addressTo.city && addressTo.state && addressTo.zip;
   
   if (!hasCompleteProviderAddress) {
     console.warn('⚠️ [SHIPPO] Incomplete provider address — skipping label creation');
@@ -263,8 +283,8 @@ async function createShippingLabels({
     // Outbound shipment payload
     // Note: QR code will be requested per-carrier at purchase time (USPS only)
     const outboundPayload = {
-      address_from: providerAddress,
-      address_to: customerAddress,
+      address_from: addressFrom,
+      address_to: addressTo,
       parcels: [parcel],
       async: false
     };
@@ -321,18 +341,18 @@ async function createShippingLabels({
       
       // Log addresses being used (masked)
       console.error('[SHIPPO][NO-RATES] address_from:', {
-        street1: providerAddress.street1,
-        city: providerAddress.city,
-        state: providerAddress.state,
-        zip: providerAddress.zip,
-        country: providerAddress.country
+        street1: addressFrom.street1,
+        city: addressFrom.city,
+        state: addressFrom.state,
+        zip: addressFrom.zip,
+        country: addressFrom.country
       });
       console.error('[SHIPPO][NO-RATES] address_to:', {
-        street1: customerAddress.street1,
-        city: customerAddress.city,
-        state: customerAddress.state,
-        zip: customerAddress.zip,
-        country: customerAddress.country
+        street1: addressTo.street1,
+        city: addressTo.city,
+        state: addressTo.state,
+        zip: addressTo.zip,
+        country: addressTo.country
       });
       
       // Log parcel dimensions
@@ -583,9 +603,22 @@ async function createShippingLabels({
       if (protectedData.providerStreet && protectedData.providerCity && protectedData.providerState && protectedData.providerZip) {
         console.log('📦 [SHIPPO] Creating return shipment (customer → provider)...');
         
+        // For return shipment, reverse the addresses:
+        // - address_from: customer (borrower) returning the item
+        // - address_to: provider (lender) receiving the return
+        // Apply email suppression to return label recipient (provider) as well
+        const returnAddressFrom = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
+        const returnAddressTo = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
+        
+        // Runtime guard for return label too
+        if (suppress && returnAddressFrom.email) {
+          console.warn('[SHIPPO] Removing email from return label address_from due to suppression flag.');
+          delete returnAddressFrom.email;
+        }
+        
         const returnPayload = {
-          address_from: customerAddress,
-          address_to: providerAddress,
+          address_from: returnAddressFrom,
+          address_to: returnAddressTo,
           parcels: [parcel],
           async: false
         };
