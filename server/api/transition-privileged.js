@@ -17,6 +17,7 @@ const { buildShipLabelLink } = require('../util/url');
 const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
+const { buildShippoAddress } = require('../shippo/buildAddress');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -147,30 +148,34 @@ async function createShippingLabels({
   console.log('🚀 [SHIPPO] Starting label creation for transaction:', txId);
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
   
-  // Extract addresses from protectedData
-  const providerAddress = {
+  // Compute email suppression flag from environment variable
+  const suppress = String(process.env.SHIPPO_SUPPRESS_RECIPIENT_EMAIL || '').toLowerCase() === 'true';
+  console.log('[SHIPPO] Recipient email suppression:', suppress ? 'ON' : 'OFF');
+  
+  // Build addresses using centralized helper
+  // Lender (address_from): always include email (suppressEmail: false)
+  // Borrower (address_to): suppress email based on env flag
+  const providerAddress = buildShippoAddress({
     name: protectedData.providerName || 'Provider',
     street1: protectedData.providerStreet,
-    street2: protectedData.providerStreet2 || '',
+    street2: protectedData.providerStreet2,
     city: protectedData.providerCity,
     state: protectedData.providerState,
     zip: protectedData.providerZip,
-    country: 'US',
     email: protectedData.providerEmail,
     phone: protectedData.providerPhone,
-  };
+  }, { suppressEmail: false });
   
-  const customerAddress = {
+  const customerAddress = buildShippoAddress({
     name: protectedData.customerName || 'Customer',
     street1: protectedData.customerStreet,
-    street2: protectedData.customerStreet2 || '',
+    street2: protectedData.customerStreet2,
     city: protectedData.customerCity,
     state: protectedData.customerState,
     zip: protectedData.customerZip,
-    country: 'US',
     email: protectedData.customerEmail,
     phone: protectedData.customerPhone,
-  };
+  }, { suppressEmail: suppress });
   
   // Log addresses for debugging
   console.log('🏷️ [SHIPPO] Provider address:', providerAddress);
@@ -216,6 +221,13 @@ async function createShippingLabels({
       parcels: [parcel],
       async: false
     };
+    
+    // Runtime guard: ensure email is removed from address_to when suppression is ON
+    if (suppress && outboundPayload.address_to.email) {
+      console.warn('[SHIPPO] Removing email due to suppression flag.');
+      delete outboundPayload.address_to.email;
+    }
+    
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
 
     // Create outbound shipment (provider → customer)
@@ -532,6 +544,12 @@ async function createShippingLabels({
           parcels: [parcel],
           async: false
         };
+        
+        // Runtime guard for return label: ensure email is removed from address_from when suppression is ON
+        if (suppress && returnPayload.address_from.email) {
+          console.warn('[SHIPPO] Removing email from return label address_from due to suppression flag.');
+          delete returnPayload.address_from.email;
+        }
 
         const returnShipmentRes = await axios.post(
           'https://api.goshippo.com/shipments/',
