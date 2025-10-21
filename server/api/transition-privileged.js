@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink } = require('../util/url');
@@ -18,6 +18,8 @@ const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 const { buildShippoAddress } = require('../shippo/buildAddress');
+const { extractArtifacts } = require('../lib/shipping/extractArtifacts');
+const { buildLenderShipByMessage } = require('../lib/sms/buildLenderShipByMessage');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -86,6 +88,56 @@ function pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) {
   if (trackingUrl) return trackingUrl;
   return null;
 }
+// ---------------------------------------
+
+/**
+ * Select the cheapest allowed shipping rate that meets the deadline, preferring Ground.
+ * @param {Array} availableRates - Array of rate objects from Shippo
+ * @param {Object} opts - Options { shipByDate, preferredProviders }
+ * @returns {Object|null} Selected rate object or null
+ */
+function pickCheapestAllowedRate(availableRates, { shipByDate, preferredProviders = ['UPS','USPS'] }) {
+  if (!Array.isArray(availableRates) || availableRates.length === 0) return null;
+
+  const allow = (process.env.ALLOWED_UPS_SERVICES || '').split(',').map(s => s.trim()).filter(Boolean);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const deadline = shipByDate ? new Date(shipByDate) : null;
+  const daysUntil = deadline ? Math.ceil((deadline - today) / 86400000) : 999;
+  const buffer = 1; // cushion to avoid cutting it too close
+
+  // normalize
+  const norm = availableRates.map(r => ({
+    provider: String(r.provider || '').toUpperCase(),
+    token: r.servicelevel?.token || r.service?.token || '',
+    name: r.servicelevel?.name || r.service?.name || '',
+    amount: Number(r.amount ?? r.amount_local ?? r.rate ?? 1e9),
+    estDays: Number(r.estimated_days ?? r.duration_terms ?? 999),
+    raw: r
+  }));
+
+  // provider preference order
+  let candidates = [];
+  for (const p of preferredProviders.map(p => p.toUpperCase())) {
+    const subset = norm.filter(n => n.provider === p);
+    if (subset.length) { candidates = subset; break; }
+  }
+  if (!candidates.length) candidates = norm;
+
+  // optional allow-list (e.g., "ups_ground,ups_3_day_select")
+  if (allow.length) candidates = candidates.filter(n => !n.provider || n.provider !== 'UPS' || allow.includes(n.token));
+
+  // prefer UPS Ground if it meets the deadline
+  const ground = candidates.filter(n => n.token === 'ups_ground').sort((a,b)=>a.amount-b.amount);
+  if (ground.length && (ground[0].estDays + buffer) <= daysUntil) return ground[0].raw;
+
+  // otherwise: cheapest that meets the deadline
+  const feasible = candidates.filter(n => (n.estDays + buffer) <= daysUntil).sort((a,b)=>a.amount-b.amount);
+  if (feasible.length) return feasible[0].raw;
+
+  // last resort: absolute cheapest (never choose "fastest" by default)
+  return candidates.sort((a,b)=>a.amount-b.amount)[0].raw;
+}
+
 // ---------------------------------------
 
 // Conditional import of sendSMS to prevent module loading errors
@@ -245,6 +297,19 @@ async function createShippingLabels({
     console.log('📦 [SHIPPO] Outbound shipment created successfully');
     console.log('📦 [SHIPPO] Shipment ID:', shipmentRes.data.object_id);
     
+    // ──────────────────────────────────────────────────────────────────────────────
+    // COMPUTE SHIP-BY DATE ONCE (BEFORE rate selection)
+    // ──────────────────────────────────────────────────────────────────────────────
+    const computeResult = await computeShipBy(transaction, { preferLabelAddresses: false });
+    const { shipByDate, leadDays, miles, mode } = computeResult;
+    
+    console.log('[RATE-SELECT][COMPUTE]', { 
+      shipByISO: shipByDate?.toISOString?.(), 
+      leadDays, 
+      miles: miles ? Math.round(miles) : null, 
+      mode 
+    });
+    
     // Select a shipping rate from the available rates
     const availableRates = shipmentRes.data.rates || [];
     const shipmentData = shipmentRes.data;
@@ -288,37 +353,27 @@ async function createShippingLabels({
       return { success: false, reason: 'no_shipping_rates' };
     }
     
-    // Rate selection logic: use provider preference from env
+    // Rate selection logic: use pickCheapestAllowedRate with shipByDate
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
       .split(',')
       .map(p => p.trim().toUpperCase())
       .filter(Boolean);
     
-    const providersAvailable = availableRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
+    const selectedRate = pickCheapestAllowedRate(availableRates, { 
+      shipByDate, 
+      preferredProviders 
+    });
     
-    console.log('[SHIPPO][RATE-SELECT] providers_available=' + JSON.stringify(providersAvailable) + ' prefs=' + JSON.stringify(preferredProviders));
-    
-    // Select rate based on preference order
-    let selectedRate = null;
-    for (const preferredProvider of preferredProviders) {
-      selectedRate = availableRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
-      if (selectedRate) {
-        console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`);
-        break;
-      }
-    }
-    
-    // Fallback: use first available if no preference match
     if (!selectedRate) {
-      selectedRate = availableRates[0];
-      console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`);
+      console.error('❌ [SHIPPO][NO-RATES] No suitable rate found');
+      return { success: false, reason: 'no_suitable_rate' };
     }
     
-    console.log('📦 [SHIPPO] Selected rate:', {
-      provider: selectedRate.provider,
-      service: selectedRate.servicelevel || selectedRate.service,
-      rate: selectedRate.rate,
-      object_id: selectedRate.object_id
+    console.log('[RATE-SELECT][OUTBOUND]', {
+      token: selectedRate?.servicelevel?.token || selectedRate?.service?.token,
+      provider: selectedRate?.provider,
+      amount: Number(selectedRate?.amount ?? selectedRate?.rate ?? 0),
+      estDays: selectedRate?.estimated_days ?? selectedRate?.duration_terms
     });
     
     // Create the actual label by purchasing the transaction
@@ -368,53 +423,45 @@ async function createShippingLabels({
       console.log('[SHIPPO][TX]', logTx(shippoTx));
       console.log('[SHIPPO][RATE]', safePick(selectedRate || {}, ['provider', 'servicelevel', 'service', 'object_id']));
     }
-    const tx = shippoTx || {};
-    const trackingNumber = tx.tracking_number || null;
-    const trackingUrl = tx.tracking_url_provider || null;
-    const labelUrl = tx.label_url || null;
-    const qrUrl = tx.qr_code_url || null;
-
     const carrier = selectedRate?.provider ?? null;
     const service = selectedRate?.service?.name ?? selectedRate?.servicelevel?.name ?? null;
-
+    
+    // Extract and normalize shipping artifacts using the new utility
+    const shippingArtifacts = extractArtifacts({
+      carrier,
+      trackingNumber: shippoTx.tracking_number,
+      shippoTx
+    });
+    
+    // Legacy variables for backward compatibility (deprecated - use shippingArtifacts instead)
+    const trackingNumber = shippingArtifacts.trackingNumber;
+    const trackingUrl = shippingArtifacts.trackingUrl;
+    const labelUrl = shippingArtifacts.upsLabelUrl || shippingArtifacts.uspsLabelUrl;
+    const qrUrl = shippingArtifacts.upsQrUrl;
+    
     const qrPayload = { trackingNumber, trackingUrl, labelUrl, qrUrl, carrier, service };
     
-    console.log('[SHIPPO] QR payload built:', {
-      hasTrackingNumber: !!trackingNumber,
-      hasTrackingUrl: !!trackingUrl,
-      hasLabelUrl: !!labelUrl,
-      hasQrUrl: !!qrUrl,
-      carrier,
+    console.log('[SHIPPO] Shipping artifacts extracted:', {
+      hasTrackingNumber: !!shippingArtifacts.trackingNumber,
+      hasTrackingUrl: !!shippingArtifacts.trackingUrl,
+      hasUpsQr: !!shippingArtifacts.upsQrUrl,
+      hasUpsLabel: !!shippingArtifacts.upsLabelUrl,
+      hasUspsLabel: !!shippingArtifacts.uspsLabelUrl,
+      carrier: shippingArtifacts.carrier,
       service,
     });
 
     console.log('📦 [SHIPPO] Label purchased successfully!');
     console.log('📦 [SHIPPO] Transaction ID:', shippoTx.object_id);
-    console.log('📦 [SHIPPO] QR payload built:', {
-      hasTrackingNumber: !!qrPayload.trackingNumber,
-      hasTrackingUrl: !!qrPayload.trackingUrl,
-      hasLabelUrl: !!qrPayload.labelUrl,
-      hasQrUrl: !!qrPayload.qrUrl,
-      carrier: qrPayload.carrier,
-      service: qrPayload.service,
-    });
 
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
-    // Calculate ship-by date using hardened centralized helper (now async)
-    const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = await computeShipByDate(transaction, { preferLabelAddresses: true });
-    const shipByStr = shipByDate && formatShipBy(shipByDate);
-
-    // Debug so we can see inputs/outputs clearly
-    console.log('[label-ready] bookingStartISO:', bookingStartISO);
-    console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
-    console.log('[label-ready] shipByDate:', shipByDate ? shipByDate.toISOString() : null);
-    console.log('[label-ready] shipByStr:', shipByStr);
+    // Reuse the shipByDate computed earlier (already logged above)
+    const shipByStr = formatShipBy(shipByDate);
     
     // ──────────────────────────────────────────────────────────────────────────────
-    // STEP-3: notify lender "label ready"
+    // STEP-3: notify lender "label ready" with QR/label-only link (no tracking)
     // Runs right after outbound label purchase succeeds.
     // ──────────────────────────────────────────────────────────────────────────────
     try {
@@ -429,37 +476,36 @@ async function createShippingLabels({
         if (!lenderPhone) {
           console.warn('[SMS][Step-3] Phone normalization failed; skipping SMS');
         } else {
-          // Compute hasQr for branching logic (any carrier)
-          const hasQr = Boolean(qrUrl);
-          
-          // Build public tracking URL for fallback logging (unchanged)
-          const publicTrack = getPublicTrackingUrl(carrier, trackingNumber);
-          // NEW: pick best link per UPS-first rules (keep SMS copy unchanged)
-          const linkToSend = pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) || publicTrack;
-          
           // Get listing title (truncate if too long to keep SMS compact)
           const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
           
-          // Add transit hint if using distance mode
-          const transitHint =
-            (process.env.SHIP_LEAD_MODE === 'distance' && shipByStr) ? ' (est. transit applied)' : '';
-          
-          // ⬇️ DO NOT CHANGE MESSAGE COPY — only the link is different now
-          let body;
-          if (hasQr && qrUrl && carrier && carrier.toUpperCase() === 'UPS' && linkToSend === qrUrl) {
-            body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}${transitHint}. Scan QR: ${linkToSend}`
-              : `Sherbrt 🍧: Ship "${listingTitle}". Scan QR: ${linkToSend}`;
-          } else {
-            body = shipByStr
-              ? `Sherbrt 🍧: Ship "${listingTitle}" by ${shipByStr}${transitHint}. Label: ${linkToSend}`
-              : `Sherbrt 🍧: Ship "${listingTitle}". Label: ${linkToSend}`;
-          }
+          // One-time log before SMS (as requested)
+          console.log('[SMS][LENDER:shipBy]', { 
+            shipByISO: shipByDate?.toISOString?.(), 
+            leadDays, 
+            miles: miles ? Math.round(miles) : null, 
+            mode 
+          });
 
-          console.log('[OUTBOUND-LINK] chosen:', linkToSend, 'carrier=', carrier, 'qr?', !!qrUrl, 'label?', !!labelUrl, 'track?', !!trackingUrl);
-          console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
-            carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
+          // Build the lender SMS using the new strict QR/label-only function
+          let body;
+          try {
+            body = await buildLenderShipByMessage({
+              itemTitle: listingTitle,
+              shipByDate: shipByStr,
+              shippingArtifacts
+            });
+            
+            console.log('[SMS][Step-3] Built compliant lender message with shortlink');
+          } catch (msgError) {
+            // If buildLenderShipByMessage throws (no compliant link), log and skip SMS
+            console.error('[SMS][Step-3] Failed to build compliant message:', msgError.message);
+            console.warn('[SMS][Step-3] Skipping lender SMS - no QR/label link available');
+            
+            // Exit early - do not send SMS with tracking link
+            throw msgError;
+          }
 
           // Import SMS tags for consistency
           const { SMS_TAGS } = require('../lib/sms/tags');
@@ -476,7 +522,8 @@ async function createShippingLabels({
                 listingId: listing?.id?.uuid || listing?.id,
                 carrier,
                 trackingNumber,
-                hasQr: !!hasQr
+                hasQr: !!shippingArtifacts.upsQrUrl,
+                hasLabel: !!(shippingArtifacts.upsLabelUrl || shippingArtifacts.uspsLabelUrl)
               }
             }
           );
@@ -506,6 +553,15 @@ async function createShippingLabels({
         outbound: {
           ...protectedData.outbound,
           shipByDate: shipByDate ? shipByDate.toISOString() : null
+        },
+        // Persist normalized shipping artifacts for future use (e.g., return SMS, reminders)
+        shippingArtifacts: {
+          carrier: shippingArtifacts.carrier,
+          trackingNumber: shippingArtifacts.trackingNumber,
+          upsQrUrl: shippingArtifacts.upsQrUrl,
+          upsLabelUrl: shippingArtifacts.upsLabelUrl,
+          uspsLabelUrl: shippingArtifacts.uspsLabelUrl,
+          trackingUrl: shippingArtifacts.trackingUrl,
         }
       };
       const result = await upsertProtectedData(txId, patch, { source: 'shippo' });
@@ -516,6 +572,7 @@ async function createShippingLabels({
         if (shipByDate) {
           console.log('📅 [PERSIST] Set ship-by date:', shipByDate.toISOString());
         }
+        console.log('✅ [PERSIST] Stored shipping artifacts for future use');
       }
     } catch (persistError) {
       console.error('❌ [PERSIST] Exception saving outbound label (SMS already sent):', persistError.message);
@@ -577,33 +634,23 @@ async function createShippingLabels({
         }
         
         if (returnRates.length > 0) {
-          // Use same provider preference logic for return labels
-          const returnProvidersAvailable = returnRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
-          console.log('[SHIPPO][RATE-SELECT][RETURN] providers_available=' + JSON.stringify(returnProvidersAvailable));
-          
-          let returnSelectedRate = null;
-          for (const preferredProvider of preferredProviders) {
-            returnSelectedRate = returnRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
-            if (returnSelectedRate) {
-              console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`);
-              break;
-            }
-          }
-          
-          // Fallback to first available
-          if (!returnSelectedRate) {
-            returnSelectedRate = returnRates[0];
-            console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`);
-          }
-          
-          console.log('📦 [SHIPPO] Selected return rate:', {
-            provider: returnSelectedRate.provider,
-            service: returnSelectedRate.servicelevel || returnSelectedRate.service,
-            rate: returnSelectedRate.rate,
-            object_id: returnSelectedRate.object_id
+          // Use pickCheapestAllowedRate for return label (same shipByDate)
+          const returnSelectedRate = pickCheapestAllowedRate(returnRates, { 
+            shipByDate, 
+            preferredProviders 
           });
           
-          // Build return transaction payload - only request QR for USPS
+          if (!returnSelectedRate) {
+            console.warn('⚠️ [SHIPPO][RETURN] No suitable return rate found');
+          } else {
+            console.log('[RATE-SELECT][RETURN]', {
+              token: returnSelectedRate?.servicelevel?.token || returnSelectedRate?.service?.token,
+              provider: returnSelectedRate?.provider,
+              amount: Number(returnSelectedRate?.amount ?? returnSelectedRate?.rate ?? 0),
+              estDays: returnSelectedRate?.estimated_days ?? returnSelectedRate?.duration_terms
+            });
+          
+            // Build return transaction payload - only request QR for USPS
           const returnTransactionPayload = {
             rate: returnSelectedRate.object_id,
             async: false,
@@ -669,8 +716,9 @@ async function createShippingLabels({
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
           }
-        }
-      }
+          }  // end else (returnSelectedRate)
+        }  // end if (returnRates.length > 0)
+      }  // end if (providerStreet && providerCity...)
     } catch (returnLabelError) {
       console.error('❌ [SHIPPO] Non-critical step failed', {
         where: 'return-label-creation',
