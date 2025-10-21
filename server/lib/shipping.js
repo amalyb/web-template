@@ -162,6 +162,14 @@ async function computeShipByDate(tx, opts = {}) {
       reason: 'sunday_to_saturday',
     });
   }
+  
+  // Final verification log
+  console.log('[ship-by:final]', {
+    startISO: startISO,
+    leadDays: leadDays,
+    shipByISO: adjusted.toISOString(),
+    mode: LEAD_MODE
+  });
 
   return adjusted;
 }

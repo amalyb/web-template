@@ -327,8 +327,39 @@ async function createShippingLabels({
     }
     
     // Calculate ship-by date early so it can inform rate selection
+    const bookingStartISO_early = getBookingStartISO(transaction);
     const shipByDate = await computeShipByDate(transaction, { preferLabelAddresses: true });
     const shipByStr = shipByDate && formatShipBy(shipByDate);
+    
+    // Enhanced logging for ship-by calculation diagnosis
+    if (shipByDate && bookingStartISO_early) {
+      const bookingStart = new Date(bookingStartISO_early);
+      const leadDaysComputed = Math.round((bookingStart - shipByDate) / (1000 * 60 * 60 * 24));
+      console.log('[ship-by:computed]', {
+        mode: process.env.SHIP_LEAD_MODE || 'static',
+        bookingStart: bookingStart.toISOString().split('T')[0],
+        shipByDate: shipByDate.toISOString().split('T')[0],
+        leadDays: leadDaysComputed,
+        formatted: shipByStr
+      });
+      
+      // Safety check: if ship-by date equals or is after booking start, something is wrong
+      if (shipByDate >= bookingStart) {
+        console.error('[ship-by:ERROR] Ship-by date is not before booking start!', {
+          shipBy: shipByDate.toISOString(),
+          bookingStart: bookingStart.toISOString(),
+          leadDays: leadDaysComputed,
+          env_SHIP_LEAD_DAYS: process.env.SHIP_LEAD_DAYS,
+          env_SHIP_LEAD_MODE: process.env.SHIP_LEAD_MODE
+        });
+      }
+    } else if (!shipByDate) {
+      console.warn('[ship-by:WARNING] Could not compute ship-by date', {
+        bookingStartISO: bookingStartISO_early,
+        env_SHIP_LEAD_DAYS: process.env.SHIP_LEAD_DAYS,
+        env_SHIP_LEAD_MODE: process.env.SHIP_LEAD_MODE
+      });
+    }
     
     // Rate selection logic: use provider preference from env
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
@@ -504,6 +535,19 @@ async function createShippingLabels({
           console.log('[OUTBOUND-LINK] chosen:', linkToSend, 'carrier=', carrier, 'qr?', !!qrUrl, 'label?', !!labelUrl, 'track?', !!trackingUrl);
           console.log('[SMS][Step-3] carrier=%s link=%s txId=%s tracking=%s hasQr=%s',
             carrier, linkToSend, txId, trackingNumber || 'none', hasQr);
+          
+          // Log the ship-by date used in the SMS for diagnosis
+          if (shipByStr && bookingStartISO) {
+            const bookingStart = new Date(bookingStartISO);
+            const leadDaysInMessage = shipByDate ? Math.round((bookingStart - shipByDate) / (1000 * 60 * 60 * 24)) : 0;
+            console.log('[SMS][ShipBy]', {
+              bookingStart: bookingStart.toISOString().split('T')[0],
+              shipByDate: shipByDate ? shipByDate.toISOString().split('T')[0] : 'null',
+              leadDays: leadDaysInMessage,
+              formatted: shipByStr,
+              message: body
+            });
+          }
 
           // Import SMS tags for consistency
           const { SMS_TAGS } = require('../lib/sms/tags');
