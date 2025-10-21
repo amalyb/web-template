@@ -10,10 +10,11 @@
  * 
  * Environment Variables:
  * - LINK_SECRET: Secret key for HMAC (required)
- * - APP_HOST: Base URL for short links (fallback to ROOT_URL)
+ * - SHORTLINK_BASE: Base URL for short links (from centralized env.js)
  */
 
 const crypto = require('crypto');
+const { SHORTLINK_ENABLED, SHORTLINK_BASE, SHORTLINK_TTL_DAYS } = require('../lib/env');
 
 // Get Redis instance
 let redis = null;
@@ -26,6 +27,14 @@ try {
 
 // Base62 characters for compact IDs
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+
+/**
+ * Get base URL for shortlinks from centralized env config
+ * @returns {string} Base URL (e.g., 'https://www.sherbrt.com/r')
+ */
+function getBase() {
+  return SHORTLINK_BASE; // already derived from PUBLIC_BASE_URL || SITE_URL in env.js
+}
 
 /**
  * Generate a random base62 ID
@@ -89,8 +98,9 @@ async function makeShortToken(url) {
     throw new Error('Failed to generate unique short link ID');
   }
   
-  // Store URL in Redis with 90-day TTL
-  await redis.set(`shortlink:${id}`, url, 'EX', 60 * 60 * 24 * 90);
+  // Store URL in Redis with configurable TTL (default 21 days)
+  const ttlSeconds = 60 * 60 * 24 * SHORTLINK_TTL_DAYS;
+  await redis.set(`shortlink:${id}`, url, 'EX', ttlSeconds);
   
   // Generate HMAC for verification
   const hmac = generateHmac(id, secret);
@@ -149,17 +159,23 @@ function shortLink(url) {
     return '';
   }
   
+  // Check if shortlinks are enabled
+  if (!SHORTLINK_ENABLED) {
+    console.log('[SHORTLINK] Shortlinks disabled, returning original URL');
+    return url;
+  }
+  
   const secret = process.env.LINK_SECRET;
   if (!secret || !redis) {
     console.warn('[SHORTLINK] LINK_SECRET or Redis not available, returning original URL');
     return url;
   }
   
-  // Get base URL (prefer APP_HOST over ROOT_URL)
-  const base = (process.env.APP_HOST || process.env.ROOT_URL || '').replace(/\/+$/, '');
+  // Get base URL from centralized env config
+  const base = getBase(); // e.g., 'https://www.sherbrt.com/r'
   
-  if (!base) {
-    console.warn('[SHORTLINK] APP_HOST/ROOT_URL not set, returning original URL');
+  if (!base || base === '/r') {
+    console.warn('[SHORTLINK] SHORTLINK_BASE not properly configured, returning original URL');
     return url;
   }
   
@@ -167,7 +183,8 @@ function shortLink(url) {
   return makeShortToken(url)
     .then(token => {
       if (!token) return url;
-      return `${base}/r/${token}`;
+      // SHORTLINK_BASE already includes /r, so just append the token
+      return `${base}/${token}`;
     })
     .catch(err => {
       console.error('[SHORTLINK] Error generating short link:', err.message);
