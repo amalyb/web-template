@@ -1,13 +1,13 @@
 /**
  * Short Link System
- *
+ * 
  * Generates secure, compact short links for SMS to avoid Twilio 30019 errors.
  * Uses Redis for storage with HMAC-SHA256 verification for security.
- *
+ * 
  * Format: /r/{id}{hmac}
  * - id: 6-character alphanumeric ID (base62)
  * - hmac: 4-character HMAC signature for verification
- *
+ * 
  * Environment Variables:
  * - LINK_SECRET: Secret key for HMAC (required)
  * - APP_HOST: Base URL for short links (fallback to ROOT_URL)
@@ -66,35 +66,35 @@ async function makeShortToken(url) {
   if (!url || typeof url !== 'string') {
     throw new Error('Invalid URL for short token');
   }
-
+  
   const secret = process.env.LINK_SECRET;
   if (!secret || !redis) {
     console.warn('[SHORTLINK] LINK_SECRET or Redis not available');
     return null;
   }
-
+  
   // Generate a unique ID
   let id;
   let attempts = 0;
   const maxAttempts = 10;
-
+  
   do {
     id = generateId(6);
     const exists = await redis.exists(`shortlink:${id}`);
     if (!exists) break;
     attempts++;
   } while (attempts < maxAttempts);
-
+  
   if (attempts >= maxAttempts) {
     throw new Error('Failed to generate unique short link ID');
   }
-
+  
   // Store URL in Redis with 90-day TTL
   await redis.set(`shortlink:${id}`, url, 'EX', 60 * 60 * 24 * 90);
-
+  
   // Generate HMAC for verification
   const hmac = generateHmac(id, secret);
-
+  
   // Return token: id+hmac
   return `${id}${hmac}`;
 }
@@ -109,32 +109,32 @@ async function expandShortToken(token) {
   if (!token || typeof token !== 'string') {
     throw new Error('Invalid token');
   }
-
+  
   const secret = process.env.LINK_SECRET;
   if (!secret || !redis) {
     throw new Error('LINK_SECRET or Redis not configured');
   }
-
+  
   // Token format: 6-char ID + 4-char HMAC = 10 chars
   if (token.length !== 10) {
     throw new Error('Invalid token format');
   }
-
+  
   const id = token.slice(0, 6);
   const receivedHmac = token.slice(6);
-
+  
   // Verify HMAC
   const expectedHmac = generateHmac(id, secret);
   if (receivedHmac !== expectedHmac) {
     throw new Error('Invalid token signature');
   }
-
+  
   // Look up URL in Redis
   const url = await redis.get(`shortlink:${id}`);
   if (!url) {
     throw new Error('Link expired or not found');
   }
-
+  
   return url;
 }
 
@@ -148,21 +148,21 @@ function shortLink(url) {
     console.warn('[SHORTLINK] Invalid URL, returning empty string');
     return '';
   }
-
+  
   const secret = process.env.LINK_SECRET;
   if (!secret || !redis) {
     console.warn('[SHORTLINK] LINK_SECRET or Redis not available, returning original URL');
     return url;
   }
-
+  
   // Get base URL (prefer APP_HOST over ROOT_URL)
   const base = (process.env.APP_HOST || process.env.ROOT_URL || '').replace(/\/+$/, '');
-
+  
   if (!base) {
     console.warn('[SHORTLINK] APP_HOST/ROOT_URL not set, returning original URL');
     return url;
   }
-
+  
   // Generate short token asynchronously
   return makeShortToken(url)
     .then(token => {
@@ -180,3 +180,4 @@ module.exports = {
   expandShortToken,
   shortLink,
 };
+

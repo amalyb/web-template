@@ -1,0 +1,137 @@
+@import '../../styles/marketplaceDefaults.css';
+
+.root {
+  composes: marketplaceModalRootStyles from global;
+}
+
+.content {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 24px;
+
+  @media (--viewportMedium) {
+    padding: 48px 24px;
+  }
+}
+
+.title {
+  margin: 0 0 32px;
+  font-size: 28px;
+  font-weight: 700;
+  text-align: center;
+
+  @media (--viewportMedium) {
+    font-size: 36px;
+    margin-bottom: 48px;
+  }
+}
+
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+.loadingText {
+  margin-top: 16px;
+  color: var(--matterColorAnti);
+}
+
+.error {
+  background-color: var(--failColor);
+  color: white;
+  padding: 24px;
+  border-radius: 4px;
+  margin: 24px 0;
+}
+
+.error h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+}
+
+.error p {
+  margin: 8px 0;
+}
+
+.helpText {
+  opacity: 0.9;
+  font-size: 14px;
+}
+
+.labelContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.section {
+  background-color: var(--matterColorBright);
+  border: 1px solid var(--matterColorNegative);
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.sectionTitle {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.qrCode {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.qrCode img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--matterColorNegative);
+  border-radius: 4px;
+}
+
+.instructions {
+  margin: 0;
+  text-align: center;
+  color: var(--matterColorAnti);
+  font-size: 14px;
+}
+
+.labelLinks {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.button {
+  composes: button buttonFont buttonText buttonBordersSecondary from global;
+  padding: 12px 24px;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 600;
+  
+  &:hover {
+    opacity: 0.9;
+  }
+}
+
+.tracking {
+  padding: 12px;
+  background-color: var(--matterColorLight);
+  border-radius: 4px;
+  text-align: center;
+}
+
+.shipByNotice {
+  background-color: var(--attentionColor);
+  color: var(--matterColorBright);
+  padding: 16px;
+  border-radius: 4px;
+  text-align: center;
+  font-weight: 600;
+}
+
