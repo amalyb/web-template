@@ -87,6 +87,56 @@ function pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) {
 }
 // ---------------------------------------
 
+/**
+ * Select the cheapest allowed shipping rate that meets the deadline, preferring Ground.
+ * @param {Array} availableRates - Array of rate objects from Shippo
+ * @param {Object} opts - Options { shipByDate, preferredProviders }
+ * @returns {Object|null} Selected rate object or null
+ */
+function pickCheapestAllowedRate(availableRates, { shipByDate, preferredProviders = ['UPS','USPS'] }) {
+  if (!Array.isArray(availableRates) || availableRates.length === 0) return null;
+
+  const allow = (process.env.ALLOWED_UPS_SERVICES || '').split(',').map(s => s.trim()).filter(Boolean);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const deadline = shipByDate ? new Date(shipByDate) : null;
+  const daysUntil = deadline ? Math.ceil((deadline - today) / 86400000) : 999;
+  const buffer = 1; // cushion to avoid cutting it too close
+
+  // normalize
+  const norm = availableRates.map(r => ({
+    provider: String(r.provider || '').toUpperCase(),
+    token: r.servicelevel?.token || r.service?.token || '',
+    name: r.servicelevel?.name || r.service?.name || '',
+    amount: Number(r.amount ?? r.amount_local ?? r.rate ?? 1e9),
+    estDays: Number(r.estimated_days ?? r.duration_terms ?? 999),
+    raw: r
+  }));
+
+  // provider preference order
+  let candidates = [];
+  for (const p of preferredProviders.map(p => p.toUpperCase())) {
+    const subset = norm.filter(n => n.provider === p);
+    if (subset.length) { candidates = subset; break; }
+  }
+  if (!candidates.length) candidates = norm;
+
+  // optional allow-list (e.g., "ups_ground,ups_3_day_select")
+  if (allow.length) candidates = candidates.filter(n => !n.provider || n.provider !== 'UPS' || allow.includes(n.token));
+
+  // prefer UPS Ground if it meets the deadline
+  const ground = candidates.filter(n => n.token === 'ups_ground').sort((a,b)=>a.amount-b.amount);
+  if (ground.length && (ground[0].estDays + buffer) <= daysUntil) return ground[0].raw;
+
+  // otherwise: cheapest that meets the deadline
+  const feasible = candidates.filter(n => (n.estDays + buffer) <= daysUntil).sort((a,b)=>a.amount-b.amount);
+  if (feasible.length) return feasible[0].raw;
+
+  // last resort: absolute cheapest (never choose "fastest" by default)
+  return candidates.sort((a,b)=>a.amount-b.amount)[0].raw;
+}
+
+// ---------------------------------------
+
 // Conditional import of sendSMS to prevent module loading errors
 let sendSMS = null;
 try {
@@ -276,6 +326,10 @@ async function createShippingLabels({
       return { success: false, reason: 'no_shipping_rates' };
     }
     
+    // Calculate ship-by date early so it can inform rate selection
+    const shipByDate = await computeShipByDate(transaction, { preferLabelAddresses: true });
+    const shipByStr = shipByDate && formatShipBy(shipByDate);
+    
     // Rate selection logic: use provider preference from env
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
       .split(',')
@@ -285,22 +339,26 @@ async function createShippingLabels({
     const providersAvailable = availableRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
     
     console.log('[SHIPPO][RATE-SELECT] providers_available=' + JSON.stringify(providersAvailable) + ' prefs=' + JSON.stringify(preferredProviders));
+    console.log('[SHIPPO][RATE-SELECT] shipByDate=' + (shipByDate ? shipByDate.toISOString() : 'null'));
     
-    // Select rate based on preference order
-    let selectedRate = null;
-    for (const preferredProvider of preferredProviders) {
-      selectedRate = availableRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
-      if (selectedRate) {
-        console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (matched preference: ${preferredProvider})`);
-        break;
-      }
-    }
+    // Select cheapest allowed rate that meets the deadline, preferring Ground
+    const selectedRate = pickCheapestAllowedRate(availableRates, {
+      shipByDate,
+      preferredProviders,
+    });
     
-    // Fallback: use first available if no preference match
     if (!selectedRate) {
-      selectedRate = availableRates[0];
-      console.log(`[SHIPPO][RATE-SELECT] chosen=${selectedRate.provider} (fallback: no preference match)`);
+      console.error('❌ [SHIPPO][RATE-SELECT] No suitable rate found');
+      return { success: false, reason: 'no_suitable_rate' };
     }
+    
+    console.log('[SHIPPO][RATE-SELECT] chosen:', {
+      provider: selectedRate?.provider,
+      token: selectedRate?.servicelevel?.token || selectedRate?.service?.token,
+      name: selectedRate?.servicelevel?.name || selectedRate?.service?.name,
+      amount: selectedRate?.amount,
+      estimated_days: selectedRate?.estimated_days,
+    });
     
     console.log('📦 [SHIPPO] Selected rate:', {
       provider: selectedRate.provider,
@@ -390,11 +448,9 @@ async function createShippingLabels({
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
-    // Calculate ship-by date using hardened centralized helper (now async)
+    // Ship-by date already computed earlier for rate selection (now reused here)
     const bookingStartISO = getBookingStartISO(transaction);
-    const shipByDate = await computeShipByDate(transaction, { preferLabelAddresses: true });
-    const shipByStr = shipByDate && formatShipBy(shipByDate);
-
+    
     // Debug so we can see inputs/outputs clearly
     console.log('[label-ready] bookingStartISO:', bookingStartISO);
     console.log('[label-ready] leadDays:', Number(process.env.SHIP_LEAD_DAYS || 2));
@@ -563,56 +619,70 @@ async function createShippingLabels({
           const returnProvidersAvailable = returnRates.map(r => r.provider).filter((v, i, a) => a.indexOf(v) === i);
           console.log('[SHIPPO][RATE-SELECT][RETURN] providers_available=' + JSON.stringify(returnProvidersAvailable));
           
-          let returnSelectedRate = null;
-          for (const preferredProvider of preferredProviders) {
-            returnSelectedRate = returnRates.find(rate => rate.provider.toUpperCase() === preferredProvider);
-            if (returnSelectedRate) {
-              console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (matched preference: ${preferredProvider})`);
-              break;
-            }
+          // For return labels, use a generous deadline (returns are less time-sensitive)
+          // Compute booking end date if available, otherwise use a far-future date to prefer cheapest
+          const bookingStartISO = getBookingStartISO(transaction);
+          let returnDeadline = null;
+          if (bookingStartISO) {
+            // Assume 7 days after booking start as a reasonable return window
+            returnDeadline = new Date(bookingStartISO);
+            returnDeadline.setDate(returnDeadline.getDate() + 7);
           }
           
-          // Fallback to first available
-          if (!returnSelectedRate) {
-            returnSelectedRate = returnRates[0];
-            console.log(`[SHIPPO][RATE-SELECT][RETURN] chosen=${returnSelectedRate.provider} (fallback)`);
-          }
+          console.log('[SHIPPO][RATE-SELECT][RETURN] returnDeadline=' + (returnDeadline ? returnDeadline.toISOString() : 'null (prefer cheapest)'));
           
-          console.log('📦 [SHIPPO] Selected return rate:', {
-            provider: returnSelectedRate.provider,
-            service: returnSelectedRate.servicelevel || returnSelectedRate.service,
-            rate: returnSelectedRate.rate,
-            object_id: returnSelectedRate.object_id
+          // Select cheapest allowed rate for return, preferring Ground
+          const returnSelectedRate = pickCheapestAllowedRate(returnRates, {
+            shipByDate: returnDeadline,
+            preferredProviders,
           });
           
-          // Build return transaction payload - only request QR for USPS
-          const returnTransactionPayload = {
-            rate: returnSelectedRate.object_id,
-            async: false,
-            label_file_type: 'PNG',
-            metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
-          };
-          
-          if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
-            returnTransactionPayload.extra = { qr_code_requested: true };
-            console.log('📦 [SHIPPO] Requesting QR code for USPS return label');
+          if (!returnSelectedRate) {
+            console.warn('⚠️ [SHIPPO][RATE-SELECT][RETURN] No suitable rate found - skipping return label purchase');
           } else {
-            console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
-          }
-          
-          console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
-          
-          // Purchase return label
-          const returnTransactionRes = await axios.post(
-            'https://api.goshippo.com/transactions/',
-            returnTransactionPayload,
-            {
-              headers: {
-                'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-                'Content-Type': 'application/json'
-              }
+            console.log('[SHIPPO][RATE-SELECT][RETURN] chosen:', {
+              provider: returnSelectedRate?.provider,
+              token: returnSelectedRate?.servicelevel?.token || returnSelectedRate?.service?.token,
+              name: returnSelectedRate?.servicelevel?.name || returnSelectedRate?.service?.name,
+              amount: returnSelectedRate?.amount,
+              estimated_days: returnSelectedRate?.estimated_days,
+            });
+            
+            console.log('📦 [SHIPPO] Selected return rate:', {
+              provider: returnSelectedRate.provider,
+              service: returnSelectedRate.servicelevel || returnSelectedRate.service,
+              rate: returnSelectedRate.rate,
+              object_id: returnSelectedRate.object_id
+            });
+            
+            // Build return transaction payload - only request QR for USPS
+            const returnTransactionPayload = {
+              rate: returnSelectedRate.object_id,
+              async: false,
+              label_file_type: 'PNG',
+              metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+            };
+            
+            if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
+              returnTransactionPayload.extra = { qr_code_requested: true };
+              console.log('📦 [SHIPPO] Requesting QR code for USPS return label');
+            } else {
+              console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
             }
-          );
+            
+            console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
+            
+            // Purchase return label
+            const returnTransactionRes = await axios.post(
+              'https://api.goshippo.com/transactions/',
+              returnTransactionPayload,
+              {
+                headers: {
+                  'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+                  'Content-Type': 'application/json'
+                }
+              }
+            );
           
           if (returnTransactionRes.data.status === 'SUCCESS') {
             // One-time debug log for return label purchase
@@ -651,6 +721,7 @@ async function createShippingLabels({
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
           }
+          } // end if (returnSelectedRate)
         }
       }
     } catch (returnLabelError) {
