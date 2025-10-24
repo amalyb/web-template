@@ -127,7 +127,7 @@ exports.render = async function render(req, res, data = {}) {
 
   return template({
     htmlAttributes: '',
-    title: '<title>Shop on Sherbet</title>',
+    title: '<title>Shop on Sherbrt</title>',
     link: '',
     meta: '',
     script: '',

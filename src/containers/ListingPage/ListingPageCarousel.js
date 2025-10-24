@@ -502,7 +502,7 @@ const pendingIsApproved = isPendingApprovalVariant && isApproved;
   <p className={css.inquiryPrompt}>
     <em>
       Questions on style or fit?{' '}
-      <a href="mailto:bestie@shoponsherbet.com" className={css.inquiryLink}>Just ask!</a>
+      <a href="mailto:bestie@shoponsherbrt.com" className={css.inquiryLink}>Just ask!</a>
     </em>
   </p>
 </div>
