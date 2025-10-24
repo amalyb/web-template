@@ -1,8 +1,12 @@
 import logoImageDesktop from '../assets/sherbet-logo-desktop.png';
 import logoImageMobile from '../assets/sherbet-logo-mobile.png';
 import brandImage from '../assets/sherbet-brandImage-1500x1000.jpg';
-import facebookImage from '../assets/sherbet-logo-facebook-sharing-1200x630.jpg';
+// Use static OG image for consistent social sharing URLs
+// import facebookImage from '../assets/sherbet-logo-facebook-sharing-1200x630.jpg';
 import twitterImage from '../assets/sherbet-logo-twitter-sharing-600x314.jpg';
+
+// Static OG image URL for consistent social media previews
+const facebookImage = 'https://www.sherbrt.com/static/og/sherbrt-og.jpg';
 
 /////////////////////////////////////////////////////////
 // This file contains configs that affect branding     //
