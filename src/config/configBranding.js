@@ -6,7 +6,7 @@ import brandImage from '../assets/sherbet-brandImage-1500x1000.jpg';
 import twitterImage from '../assets/sherbet-logo-twitter-sharing-600x314.jpg';
 
 // Static OG image URL for consistent social media previews
-const facebookImage = 'https://www.sherbrt.com/static/og/sherbrt-og.jpg';
+const facebookImage = 'https://www.sherbrt.com/static/og/sherbrt-og_new.jpg';
 
 /////////////////////////////////////////////////////////
 // This file contains configs that affect branding     //

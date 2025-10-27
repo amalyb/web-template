@@ -12,8 +12,8 @@ console.log('=' .repeat(60));
 
 // Test 1: Check if OG image exists
 console.log('\n1️⃣  Checking OG image file...');
-const ogImagePath = path.join(__dirname, 'public/static/og/sherbrt-og.jpg');
-const buildOgImagePath = path.join(__dirname, 'build/static/og/sherbrt-og.jpg');
+const ogImagePath = path.join(__dirname, 'public/static/og/sherbrt-og_new.jpg');
+const buildOgImagePath = path.join(__dirname, 'build/static/og/sherbrt-og_new.jpg');
 
 if (fs.existsSync(ogImagePath)) {
   const stats = fs.statSync(ogImagePath);
@@ -60,13 +60,13 @@ try {
       { tag: 'og:title', content: 'Shop on Sherbrt' },
       { tag: 'og:site_name', content: 'Shop on Sherbrt' },
       { tag: 'og:description', content: 'Borrow and lend designer looks on Sherbrt' },
-      { tag: 'og:image', content: 'https://www.sherbrt.com/static/og/sherbrt-og.jpg' },
+      { tag: 'og:image', content: 'https://www.sherbrt.com/static/og/sherbrt-og_new.jpg' },
       { tag: 'og:image:width', content: '1200' },
       { tag: 'og:image:height', content: '630' },
       { tag: 'og:type', content: 'website' },
       { tag: 'og:url', content: 'https://www.sherbrt.com/' },
       { tag: 'twitter:card', content: 'summary_large_image' },
-      { tag: 'twitter:image', content: 'https://www.sherbrt.com/static/og/sherbrt-og.jpg' }
+      { tag: 'twitter:image', content: 'https://www.sherbrt.com/static/og/sherbrt-og_new.jpg' }
     ];
     
     console.log('\n   📋 Meta Tags Verification:');

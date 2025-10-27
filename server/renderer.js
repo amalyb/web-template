@@ -126,7 +126,7 @@ exports.render = async function render(req, res, data = {}) {
   const nonceParamMaybe = nonce ? { nonce } : {};
 
   // Generate Open Graph meta tags for SSR
-  const ogImageUrl = 'https://www.sherbrt.com/static/og/sherbrt-og.jpg';
+  const ogImageUrl = 'https://www.sherbrt.com/static/og/sherbrt-og_new.jpg';
   const ogTitle = 'Shop on Sherbrt';
   const ogSiteName = 'Shop on Sherbrt';
   const ogDescription = 'Borrow and lend designer looks on Sherbrt — the sisterly circular fashion marketplace.';
