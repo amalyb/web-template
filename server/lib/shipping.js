@@ -1,6 +1,22 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
 
+// Shipping client initialization - supports EasyPost and Shippo
+let shippingClient, useEasyPost = process.env.EASYPOST_ENABLED === 'true';
+
+if (useEasyPost) {
+  const EasyPost = require('@easypost/api');
+  shippingClient = new EasyPost(process.env.EASYPOST_MODE === 'test'
+    ? process.env.EASYPOST_TEST_API_KEY
+    : process.env.EASYPOST_API_KEY
+  );
+  console.log('[Shipping] Using EasyPost integration');
+} else {
+  const shippo = require('shippo')(process.env.SHIPPO_API_TOKEN);
+  shippingClient = shippo;
+  console.log('[Shipping] Using Shippo integration');
+}
+
 const LEAD_MODE = process.env.SHIP_LEAD_MODE || 'static';
 const LEAD_FLOOR = Number(process.env.SHIP_LEAD_DAYS || 2);
 const LEAD_MAX = Number(process.env.SHIP_LEAD_MAX || 5);
@@ -180,6 +196,8 @@ function formatShipBy(date) {
 }
 
 module.exports = { 
+  shippingClient,
+  useEasyPost,
   computeShipByDate, 
   formatShipBy, 
   getBookingStartISO,
