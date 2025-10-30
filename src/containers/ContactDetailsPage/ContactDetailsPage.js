@@ -68,6 +68,7 @@ export const ContactDetailsPageComponent = props => {
   const currentEmail = user.attributes.email || '';
   const publicData = user.attributes.profile.publicData || {};
   const userType = publicData?.userType;
+  const currentShippingZip = publicData.shippingZip || '';
   const protectedData = user.attributes.profile.protectedData || {};
   const currentPhoneNumber = protectedData.phoneNumber || '';
   const userTypeConfig = userType && userTypes.find(config => config.userType === userType);
@@ -75,16 +76,18 @@ export const ContactDetailsPageComponent = props => {
   // ContactDetailsForm decides if it's allowed to show the input field.
   const phoneNumberMaybe =
     isPhoneNumberIncluded && currentPhoneNumber ? { phoneNumber: currentPhoneNumber } : {};
+  const shippingZipMaybe = currentShippingZip ? { shippingZip: currentShippingZip } : {};
 
   const handleSubmit = values => {
     const phoneNumber = values.phoneNumber ? values.phoneNumber : null;
-    return onSubmitContactDetails({ ...values, phoneNumber, currentEmail, currentPhoneNumber });
+    const shippingZip = values.shippingZip ? values.shippingZip.trim() : null;
+    return onSubmitContactDetails({ ...values, phoneNumber, shippingZip, currentEmail, currentPhoneNumber, currentShippingZip });
   };
 
   const contactInfoForm = user.id ? (
     <ContactDetailsForm
       className={css.form}
-      initialValues={{ email: currentEmail, ...phoneNumberMaybe }}
+      initialValues={{ email: currentEmail, ...phoneNumberMaybe, ...shippingZipMaybe }}
       saveEmailError={saveEmailError}
       savePhoneNumberError={savePhoneNumberError}
       currentUser={currentUser}

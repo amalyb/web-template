@@ -134,7 +134,7 @@ class ContactDetailsFormComponent extends Component {
             values,
             userTypeConfig,
           } = fieldRenderProps;
-          const { email, phoneNumber } = values;
+          const { email, phoneNumber, shippingZip } = values;
 
           const user = ensureCurrentUser(currentUser);
 
@@ -254,6 +254,13 @@ class ContactDetailsFormComponent extends Component {
             currentPhoneNumber !== phoneNumber &&
             !(typeof currentPhoneNumber === 'undefined' && phoneNumber === '');
 
+          // shipping ZIP
+          const publicData = profile.publicData || {};
+          const currentShippingZip = publicData.shippingZip;
+          const shippingZipChanged =
+            currentShippingZip !== shippingZip &&
+            !(typeof currentShippingZip === 'undefined' && shippingZip === '');
+
           // password
           const passwordLabel = intl.formatMessage({
             id: 'ContactDetailsForm.passwordLabel',
@@ -356,7 +363,7 @@ class ContactDetailsFormComponent extends Component {
             invalid ||
             pristineSinceLastSubmit ||
             inProgress ||
-            !(emailChanged || phoneNumberChanged);
+            !(emailChanged || phoneNumberChanged || shippingZipChanged);
 
           return (
             <Form
@@ -379,6 +386,32 @@ class ContactDetailsFormComponent extends Component {
                 {emailVerifiedInfo}
 
                 <PhoneNumberMaybe formId={formId} userTypeConfig={userTypeConfig} intl={intl} />
+
+                <div className={css.shippingZipSection}>
+                  <FieldTextInput
+                    type="text"
+                    name="shippingZip"
+                    id={formId ? `${formId}.shippingZip` : 'shippingZip'}
+                    label={intl.formatMessage({ id: 'ContactDetailsForm.shippingZipLabel' })}
+                    placeholder={intl.formatMessage({ id: 'ContactDetailsForm.shippingZipPlaceholder' })}
+                    validate={validators.composeValidators(
+                      validators.required(
+                        intl.formatMessage({ id: 'ContactDetailsForm.shippingZipRequired' })
+                      ),
+                      validators.minLength(
+                        intl.formatMessage({ id: 'ContactDetailsForm.shippingZipTooShort' }),
+                        3
+                      ),
+                      validators.maxLength(
+                        intl.formatMessage({ id: 'ContactDetailsForm.shippingZipTooLong' }),
+                        10
+                      )
+                    )}
+                  />
+                  <div className={css.helperText}>
+                    Used to estimate delivery and prepaid return shipping.
+                  </div>
+                </div>
               </div>
 
               <div className={confirmClasses}>
