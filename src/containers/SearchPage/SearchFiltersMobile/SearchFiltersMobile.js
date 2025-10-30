@@ -96,11 +96,7 @@ class SearchFiltersMobileComponent extends Component {
 
     return (
       <div className={classes}>
-        <div className={css.searchResultSummary}>
-          {listingsAreLoaded && resultsCount > 0 ? resultsFound : null}
-          {listingsAreLoaded && resultsCount === 0 ? noResults : null}
-          {searchInProgress ? loadingResults : null}
-        </div>
+        {/* removed results count for Sherbrt */}
         <div className={css.buttons}>
           <PopupOpenerButton isSelected={selectedFiltersCount > 0} toggleOpen={this.openFilters}>
             <FormattedMessage
