@@ -202,7 +202,7 @@ export const AuthenticationForms = props => {
   ];
 
   const handleSubmitSignup = values => {
-    const { userType, email, password, fname, lname, displayName, ...rest } = values;
+    const { userType, email, password, fname, lname, displayName, shippingZip, ...rest } = values;
     const displayNameMaybe = displayName ? { displayName: displayName.trim() } : {};
 
     const params = {
@@ -213,6 +213,7 @@ export const AuthenticationForms = props => {
       ...displayNameMaybe,
       publicData: {
         userType,
+        ...(shippingZip && { shippingZip: shippingZip.trim() }),
         ...pickUserFieldsData(rest, 'public', userType, userFields),
       },
       privateData: {
@@ -314,6 +315,7 @@ const ConfirmIdProviderInfoForm = props => {
       firstName: newFirstName,
       lastName: newLastName,
       displayName,
+      shippingZip,
       instagramHandle,
       birthdayMonth,
       birthdayDay,
@@ -338,10 +340,11 @@ const ConfirmIdProviderInfoForm = props => {
     };
 
     // Pass other values as extended data according to user field configuration
-    const extendedDataMaybe = !isEmpty(rest) || instagramHandle || birthdayMonth || birthdayDay
+    const extendedDataMaybe = !isEmpty(rest) || shippingZip || instagramHandle || birthdayMonth || birthdayDay
       ? {
           publicData: {
             userType,
+            ...(shippingZip && { shippingZip: shippingZip.trim() }),
             ...(instagramHandle && { instagramHandle }),
             ...(birthdayMonth && { birthdayMonth }),
             ...(birthdayDay && { birthdayDay }),

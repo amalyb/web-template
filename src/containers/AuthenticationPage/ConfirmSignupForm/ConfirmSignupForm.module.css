@@ -61,3 +61,10 @@
 .birthdayField {
   flex: 1;
 }
+
+.helperText {
+  font-size: 14px;
+  color: #757575;
+  margin-top: 6px;
+  line-height: 1.4;
+}

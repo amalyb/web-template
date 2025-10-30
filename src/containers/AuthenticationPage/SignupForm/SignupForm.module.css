@@ -87,3 +87,10 @@
   width: 100% !important;
   white-space: normal !important;
 }
+
+.helperText {
+  font-size: 14px;
+  color: #757575;
+  margin-top: 6px;
+  line-height: 1.4;
+}
