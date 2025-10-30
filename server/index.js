@@ -290,6 +290,26 @@ if (!dev) {
 // a 3rd party identity provider (e.g. Facebook or Google)
 app.use(passport.initialize());
 
+// Top Lenders API
+const { fetchTopLenders } = require('./topLenders');
+app.get('/api/top-lenders', async (req, res) => {
+  console.log('[topLenders] HIT /api/top-lenders');
+  try {
+    const rows = await fetchTopLenders(req);
+    console.log('[topLenders] rows returned from fetchTopLenders:', rows);
+    res.json({ topLenders: rows });
+  } catch (err) {
+    console.error('[topLenders] ERROR in /api/top-lenders:', {
+      message: err.message,
+      status: err.status,
+      statusText: err.statusText,
+      data: err.data,
+      stack: err.stack,
+    });
+    res.status(500).json({ error: true, message: 'Failed to load top lenders' });
+  }
+});
+
 // Short link redirect handler
 // Decodes compact tokens and redirects to long URLs (Shippo labels, tracking, etc.)
 const { expandShortToken } = require('./api-util/shortlink');

@@ -262,6 +262,13 @@ export const searchListings = (searchParams, config) => (dispatch, getState, sdk
     perPage,
   };
 
+  // Support author filtering from URL: /s?authorId=<uuid>
+  // Flex API expects author_id as the filter param
+  if (restOfParams?.authorId) {
+    params.author_id = restOfParams.authorId;
+    delete params.authorId;
+  }
+
   return sdk.listings
     .query(params)
     .then(response => {

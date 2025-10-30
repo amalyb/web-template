@@ -202,7 +202,39 @@ const TopbarComponent = props => {
 
   // Custom links are sorted so that group="primary" are always at the beginning of the list.
   const sortedCustomLinks = sortCustomLinks(config.topbar?.customLinks);
-  const customLinks = getResolvedCustomLinks(sortedCustomLinks, routeConfiguration);
+  const resolvedLinks = getResolvedCustomLinks(sortedCustomLinks, routeConfiguration);
+
+  // Inject "Top Lenders" internal link between "Dresses" and "How to Lend" if possible.
+  // Falls back to appending among primary links if anchors are not found.
+  const topLendersLink = {
+    group: 'primary',
+    text: 'Top Lenders',
+    type: 'internal',
+    route: { name: 'TopLendersPage' },
+  };
+
+  const insertLinkAtPreferredSpot = links => {
+    const hasAlready = links.some(l => l?.route?.name === 'TopLendersPage' || l?.text === 'Top Lenders');
+    if (hasAlready) return links;
+
+    const findIndexByText = label => links.findIndex(l => (l?.text || '').toLowerCase() === label);
+    const dressesIdx = findIndexByText('dresses');
+    const howToLendIdx = findIndexByText('how to lend');
+
+    if (dressesIdx > -1) {
+      const before = links.slice(0, dressesIdx + 1);
+      const after = links.slice(dressesIdx + 1);
+      return [...before, topLendersLink, ...after];
+    }
+    if (howToLendIdx > -1) {
+      const before = links.slice(0, howToLendIdx);
+      const after = links.slice(howToLendIdx);
+      return [...before, topLendersLink, ...after];
+    }
+    return [...links, topLendersLink];
+  };
+
+  const customLinks = insertLinkAtPreferredSpot(resolvedLinks);
   const resolvedCurrentPage = currentPage || getResolvedCurrentPage(location, routeConfiguration);
 
   const notificationDot = notificationCount > 0 ? <div className={css.notificationDot} /> : null;

@@ -1,0 +1,199 @@
+.root {
+  margin: 0 auto;
+  padding: 24px 24px 64px;
+  max-width: 1200px;
+}
+
+.title {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.subtitle {
+  margin: 0 0 24px;
+  color: var(--colorTextMediumEmphasis, #666);
+}
+
+.stateText {
+  margin-top: 24px;
+}
+
+.stateCta {
+  margin-left: 8px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-gap: 16px;
+}
+
+@media screen and (min-width: 640px) {
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media screen and (min-width: 1024px) {
+  .grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.card {
+  border: 1px solid rgba(0,0,0,0.06);
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  padding: 24px;
+  text-align: center;
+}
+
+.avatarWrapper {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 40%,
+    rgba(255, 173, 134, 0.25) 0%,
+    rgba(255, 255, 255, 0) 70%
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+}
+
+.avatar {
+  width: 120px;
+  height: 120px;
+  border-radius: 60px;
+  object-fit: cover;
+}
+
+.lenderName {
+  font-size: 20px;
+  line-height: 1.4;
+  font-weight: 600;
+  color: #ffad86;
+  margin-top: 16px;
+}
+
+.name {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.count {
+  color: #FFAD86;
+  margin-bottom: 8px;
+}
+
+.listingCount {
+  margin-top: 12px;
+  font-size: 18px;
+  line-height: 1.4;
+  color: #4a4a4a; /* soft neutral black consistent with Sherbrt body text */
+  font-weight: 500;
+}
+
+.userMetaRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.75rem; /* ensures spacing between zodiac and IG */
+  margin-top: 8px;
+}
+
+/* Each "chip": zodiac or IG */
+.metaItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 500;
+  text-decoration: none;
+  color: #ffad86; /* default text color for zodiac */
+}
+
+/* Prevent hover underline on zodiac (non-link items) */
+.metaItem:not(a):hover {
+  text-decoration: none;
+}
+
+/* Emoji / icon wrapper before the text */
+.metaIcon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 16px;
+  color: inherit;
+}
+
+/* IG icon should stay black */
+.metaIconInstagram {
+  display: inline-flex;
+  align-items: center;
+  font-size: 16px;
+  color: #000; /* keep IG icon black */
+}
+
+/* The text label after the icon, e.g. 'Virgo' or '@amalyb' */
+.metaText {
+  color: #ffad86;
+}
+
+/* Make Instagram handle bold and underlined on hover only */
+a.metaItem .metaText {
+  font-weight: 600; /* bold handle */
+}
+
+a.metaItem:hover .metaText {
+  text-decoration: underline;
+}
+
+.listingsLink {
+  margin-top: 16px;
+  font-size: 18px;
+  line-height: 1.4;
+  color: #ffad86;
+  font-weight: 500;
+  text-decoration: underline;
+  display: inline-block;
+}
+
+.ctaLink {
+  color: var(--marketplaceColor, #000);
+  text-decoration: underline;
+}
+
+
+/*. appended avatar styles */
+.avatarImage {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid #fff;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+.avatarFallbackCircle {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #FFD1C2, #FFAD86);
+  color: #6B3A2C;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.08);
+  border: 2px solid #fff;
+}
+
+.avatarInitials {
+  font-weight: 700;
+  font-size: 40px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
