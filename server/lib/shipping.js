@@ -14,8 +14,53 @@ if (useEasyPost) {
   );
   console.log('[Shipping] Using EasyPost integration');
 } else {
-  const shippo = require('shippo')(process.env.SHIPPO_API_TOKEN);
-  shippingClient = shippo;
+  // Safe Shippo bootstrap that works in both older and newer SDK shapes,
+  // AND won't crash locally if there's no token.
+
+  try {
+    const rawShippo = require('shippo');
+
+    // Handle both possible SDK styles:
+    //  - function style: const shippo = require('shippo')('TOKEN')
+    //  - constructor style: const Shippo = require('shippo'); new Shippo('TOKEN')
+    const token = process.env.SHIPPO_API_TOKEN || process.env.SHIPPO_TOKEN || 'DUMMY_TOKEN_FOR_DEV';
+
+    let clientCandidate;
+    if (typeof rawShippo === 'function') {
+      // Old style SDK
+      clientCandidate = rawShippo(token);
+    } else if (typeof rawShippo === 'object' && typeof rawShippo.default === 'function') {
+      // Some builds export { default: [Function] }
+      clientCandidate = rawShippo.default(token);
+    } else {
+      // Try "new" style
+      clientCandidate = new rawShippo(token);
+    }
+
+    shippingClient = clientCandidate;
+    console.log('[shipping] Shippo client initialized (dev-safe).');
+  } catch (err) {
+    console.warn('[shipping] Shippo module not available or failed to init. Using stub for dev.', err);
+
+    // Minimal stub so the rest of server can boot locally.
+    shippingClient = {
+      // Add any methods your code calls at startup, or leave empty if nothing is called until label purchase time.
+      shipment: {
+        create: async () => {
+          throw new Error('Shippo disabled in dev');
+        },
+      },
+      transaction: {
+        create: async () => {
+          throw new Error('Shippo disabled in dev');
+        },
+      },
+    };
+  }
+
+  // export whatever the rest of shipping.js expects
+  const shippo = shippingClient;
+
   console.log('[Shipping] Using Shippo integration');
 }
 
