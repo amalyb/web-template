@@ -202,7 +202,7 @@ export const AuthenticationForms = props => {
   ];
 
   const handleSubmitSignup = values => {
-    const { userType, email, password, fname, lname, displayName, shippingZip, ...rest } = values;
+    const { userType, email, password, fname, lname, displayName, shippingZip, instagramHandle, birthdayMonth, birthdayDay, birthdayYear, ...rest } = values;
     const displayNameMaybe = displayName ? { displayName: displayName.trim() } : {};
 
     const params = {
@@ -214,6 +214,10 @@ export const AuthenticationForms = props => {
       publicData: {
         userType,
         ...(shippingZip && { shippingZip: shippingZip.trim() }),
+        ...(instagramHandle && { instagramHandle }),
+        ...(birthdayMonth && { birthdayMonth }),
+        ...(birthdayDay && { birthdayDay }),
+        ...(birthdayYear && { birthdayYear }),
         ...pickUserFieldsData(rest, 'public', userType, userFields),
       },
       privateData: {
