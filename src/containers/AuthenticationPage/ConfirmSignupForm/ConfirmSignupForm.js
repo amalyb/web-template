@@ -149,6 +149,22 @@ const ConfirmSignupFormComponent = props => (
                 userTypeConfig={userTypeConfig}
                 intl={intl}
               />
+
+              <div className={css.row}>
+                <FieldTextInput
+                  type="text"
+                  id={formId ? `${formId}.shippingZip` : 'shippingZip'}
+                  name="shippingZip"
+                  autoComplete="postal-code"
+                  label="Shipping zipcode"
+                  placeholder="e.g. 10001"
+                  validate={validators.required('ZIP code is required')}
+                />
+                <div className={css.helperText}>
+                  We use this to estimate shipping. You can change it later.
+                </div>
+              </div>
+
               <UserFieldPhoneNumber
                 formName="ConfirmSignupForm"
                 className={css.row}
