@@ -208,6 +208,45 @@ const savePhoneNumber = params => (dispatch, getState, sdk) => {
 };
 
 /**
+ * Save shipping ZIP and update the current user.
+ */
+const requestSaveShippingZip = params => (dispatch, getState, sdk) => {
+  const shippingZip = params.shippingZip;
+
+  return sdk.currentUser
+    .updateProfile(
+      { publicData: { shippingZip } },
+      {
+        expand: true,
+        include: ['profileImage'],
+        'fields.image': ['variants.square-small', 'variants.square-small2x'],
+      }
+    )
+    .then(response => {
+      const entities = denormalisedResponseEntities(response);
+      if (entities.length !== 1) {
+        throw new Error('Expected a resource in the sdk.currentUser.updateProfile response');
+      }
+      return entities[0];
+    })
+    .catch(e => {
+      dispatch(savePhoneNumberError(storableError(e)));
+      throw e;
+    });
+};
+
+const saveShippingZip = params => (dispatch, getState, sdk) => {
+  return (
+    dispatch(requestSaveShippingZip(params))
+      .then(user => {
+        dispatch(currentUserShowSuccess(user));
+        dispatch(saveContactDetailsSuccess());
+      })
+      .catch(e => null)
+  );
+};
+
+/**
  * Save email and phone number and update the current user.
  */
 const saveEmailAndPhoneNumber = params => (dispatch, getState, sdk) => {
@@ -246,17 +285,38 @@ const saveEmailAndPhoneNumber = params => (dispatch, getState, sdk) => {
 export const saveContactDetails = params => (dispatch, getState, sdk) => {
   dispatch(saveContactDetailsRequest());
 
-  const { email, currentEmail, phoneNumber, currentPhoneNumber, currentPassword } = params;
+  const { email, currentEmail, phoneNumber, currentPhoneNumber, shippingZip, currentShippingZip, currentPassword } = params;
   const emailChanged = email !== currentEmail;
   const phoneNumberChanged = phoneNumber !== currentPhoneNumber;
+  const shippingZipChanged = shippingZip !== currentShippingZip;
 
-  if (emailChanged && phoneNumberChanged) {
-    return dispatch(saveEmailAndPhoneNumber({ email, currentPassword, phoneNumber }));
-  } else if (emailChanged) {
-    return dispatch(saveEmail({ email, currentPassword }));
-  } else if (phoneNumberChanged) {
-    return dispatch(savePhoneNumber({ phoneNumber }));
+  // Build array of promises for changed fields
+  const promises = [];
+  
+  if (emailChanged) {
+    promises.push(dispatch(requestSaveEmail({ email, currentPassword })));
   }
+  if (phoneNumberChanged) {
+    promises.push(dispatch(requestSavePhoneNumber({ phoneNumber })));
+  }
+  if (shippingZipChanged) {
+    promises.push(dispatch(requestSaveShippingZip({ shippingZip })));
+  }
+
+  // If nothing changed, return early
+  if (promises.length === 0) {
+    return Promise.resolve();
+  }
+
+  // Execute all promises and update user
+  return Promise.all(promises)
+    .then(users => {
+      // Get the last updated user (most recent)
+      const currentUser = users[users.length - 1];
+      dispatch(currentUserShowSuccess(currentUser));
+      dispatch(saveContactDetailsSuccess());
+    })
+    .catch(e => null);
 };
 
 export const resetPassword = email => (dispatch, getState, sdk) => {
