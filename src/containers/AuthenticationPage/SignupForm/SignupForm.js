@@ -295,16 +295,8 @@ const SignupFormComponent = props => (
               />
 
               {console.log('userType at render:', userType)}
-              {userType === 'lender' ? (
-                <FieldTextInput
-                  id="instagramHandle"
-                  name="instagramHandle"
-                  label="Instagram handle (optional)"
-                  placeholder="@"
-                  className={css.row}
-                />
-              ) : null}
 
+              {/* Birthday row */}
               <div className={css.birthdayContainer}>
                 <FieldSelect
                   id="birthdayMonth"
@@ -374,6 +366,17 @@ const SignupFormComponent = props => (
                     </option>
                   ))}
                 </FieldSelect>
+              </div>
+
+              {/* Instagram handle row */}
+              <div className={css.row}>
+                <FieldTextInput
+                  type="text"
+                  id={formId ? `${formId}.instagramHandle` : 'instagramHandle'}
+                  name="instagramHandle"
+                  label="Instagram handle (optional)"
+                  placeholder="@"
+                />
               </div>
             </div>
           ) : null}
