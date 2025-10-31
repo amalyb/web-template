@@ -19,6 +19,7 @@ const shippoWebhook = require('./webhooks/shippoTracking');
 const qrRouter = require('./api/qr');
 const smsStatus = require('./api/twilio/sms-status');
 const ship = require('./api/ship');
+const { fetchTopLenders } = require('./topLenders');
 
 const createUserWithIdp = require('./api/auth/createUserWithIdp');
 const loginWithIdp = require('./api/auth/loginWithIdp');
@@ -73,6 +74,17 @@ router.use('/qr', qrRouterInstance);
 
 // Shipping label endpoint (for /ship/:id page)
 router.get('/ship/:id', ship);
+
+// Top Lenders endpoint (Sherbrt Babes)
+router.get('/top-lenders', async (req, res) => {
+  try {
+    const rows = await fetchTopLenders(req);
+    res.json({ topLenders: rows });
+  } catch (err) {
+    console.error('[topLenders][dev] ERROR in /api/top-lenders:', err && err.message);
+    res.status(500).json({ error: true, message: 'Failed to load top lenders' });
+  }
+});
 
 // Create user with identity provider (e.g. Facebook or Google)
 // This endpoint is called to create a new user after user has confirmed

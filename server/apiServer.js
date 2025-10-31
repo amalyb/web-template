@@ -35,6 +35,18 @@ app.use(
 );
 app.use(cookieParser());
 app.use(bodyParser.json());
+
+// Attach Integration SDK to app (used by /api/top-lenders and others)
+try {
+  const { getIntegrationSdk } = require('./api-util/integrationSdk');
+  const integrationSdk = getIntegrationSdk();
+  if (integrationSdk) {
+    app.set('integrationSdk', integrationSdk);
+    console.log('✅ [dev] integrationSdk attached to app');
+  }
+} catch (e) {
+  console.warn('⚠️ [dev] integrationSdk not attached:', e && e.message);
+}
 app.use('/.well-known', wellKnownRouter);
 app.use('/api', apiRouter);
 

@@ -5,9 +5,24 @@
 }
 
 .title {
-  font-size: 28px;
-  font-weight: 700;
+  /* base title styles */
+  font-size: 2.5rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  background: linear-gradient(90deg, #FFAD86, #FFC0C0);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
   margin: 0 0 8px;
+}
+
+.topLendersTitle {
+  font-family: 'Agrandir Wide', sans-serif;
+}
+
+@media screen and (max-width: 480px) {
+  .title {
+    font-size: 2rem;
+  }
 }
 
 .subtitle {
@@ -42,12 +57,20 @@
 }
 
 .card {
-  border: 1px solid rgba(0,0,0,0.06);
+  border: 1px solid #f5e7e2;
   background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  border-radius: 20px;
+  box-shadow: 0 8px 20px rgba(255, 173, 134, 0.2);
   padding: 24px;
   text-align: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.topLenderCard { /* alias for clarity with spec */ }
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px rgba(255, 173, 134, 0.3);
 }
 
 .avatarWrapper {
@@ -63,6 +86,10 @@
   align-items: center;
   justify-content: center;
   margin: 0 auto 16px;
+}
+
+.topLenderAvatarWrapper {
+  box-shadow: 0 8px 20px rgba(255, 173, 134, 0.2);
 }
 
 .avatar {
@@ -160,6 +187,23 @@ a.metaItem:hover .metaText {
   font-weight: 500;
   text-decoration: underline;
   display: inline-block;
+}
+
+.listingsLink:hover {
+  text-decoration: none;
+  background: linear-gradient(90deg, #FFAD86, #FFC0C0, #FFAD86);
+  background-size: 200% auto;
+  color: #FFAD86;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.borrowHerLooksLink { text-decoration: none; color: #FFAD86; }
+.borrowHerLooksLink:hover { /* keep same shimmer behavior */ }
+
+@keyframes shimmer {
+  to { background-position: 200% center; }
 }
 
 .ctaLink {
