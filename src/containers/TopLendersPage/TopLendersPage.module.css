@@ -16,22 +16,28 @@
 }
 
 .headerTitle {
-  font-family: var(--marketing-headline-font, inherit);
-  font-weight: 500;
-  font-size: 2.25rem;
-  line-height: 1.2;
-  letter-spacing: 0;
-  color: #2E2E2E;
+  font-family: -apple-system, "system-ui", Inter, Helvetica, Arial, sans-serif, 
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 42.56px;
+  color: rgb(25, 25, 26);
+  text-align: center;
   margin: 0 0 1rem 0;
+  -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
+  box-sizing: border-box;
+  background-repeat: no-repeat;
 }
 
 .headerTagline {
+  text-align: center;
   font-family: inherit;
   font-weight: 400;
-  font-size: 1.25rem;
+  font-size: 18px;
+  color: rgb(80, 80, 82);
+  margin-top: 0.5rem;
   line-height: 1.5;
-  color: #4A4A4A;
-  margin: 0;
 }
 
 @media screen and (max-width: 480px) {
