@@ -204,17 +204,17 @@ const TopbarComponent = props => {
   const sortedCustomLinks = sortCustomLinks(config.topbar?.customLinks);
   const resolvedLinks = getResolvedCustomLinks(sortedCustomLinks, routeConfiguration);
 
-  // Inject "Top Lenders" internal link between "Dresses" and "How to Lend" if possible.
+  // Inject "Sherbrt Babes" internal link between "Dresses" and "How to Lend" if possible.
   // Falls back to appending among primary links if anchors are not found.
   const topLendersLink = {
     group: 'primary',
-    text: 'Top Lenders',
+    text: 'Sherbrt Babes',
     type: 'internal',
     route: { name: 'TopLendersPage' },
   };
 
   const insertLinkAtPreferredSpot = links => {
-    const hasAlready = links.some(l => l?.route?.name === 'TopLendersPage' || l?.text === 'Top Lenders');
+    const hasAlready = links.some(l => l?.route?.name === 'TopLendersPage' || l?.text === 'Top Lenders' || l?.text === 'Sherbrt Babes');
     if (hasAlready) return links;
 
     const findIndexByText = label => links.findIndex(l => (l?.text || '').toLowerCase() === label);
