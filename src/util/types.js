@@ -408,6 +408,7 @@ export const LINE_ITEM_DISCOUNT_25 = 'line-item/discount-25';
 export const LINE_ITEM_DISCOUNT_30 = 'line-item/discount-30';
 export const LINE_ITEM_DISCOUNT_40 = 'line-item/discount-40';
 export const LINE_ITEM_DISCOUNT_50 = 'line-item/discount-50';
+export const LINE_ITEM_ESTIMATED_SHIPPING = 'line-item/estimated-shipping';
 
 export const LINE_ITEMS = [
   LINE_ITEM_NIGHT,
@@ -424,6 +425,7 @@ export const LINE_ITEMS = [
   LINE_ITEM_DISCOUNT_30,
   LINE_ITEM_DISCOUNT_40,
   LINE_ITEM_DISCOUNT_50,
+  LINE_ITEM_ESTIMATED_SHIPPING,
 ];
 export const LISTING_UNIT_TYPES = [
   LINE_ITEM_NIGHT,

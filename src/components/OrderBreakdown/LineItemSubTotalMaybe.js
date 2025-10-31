@@ -8,6 +8,7 @@ import {
   propTypes,
   LINE_ITEM_CUSTOMER_COMMISSION,
   LINE_ITEM_PROVIDER_COMMISSION,
+  LINE_ITEM_ESTIMATED_SHIPPING,
 } from '../../util/types';
 
 import css from './OrderBreakdown.module.css';
@@ -36,10 +37,12 @@ const isCommission = lineItem => {
 };
 
 /**
- * Returns non-commission, non-reversal line items
+ * Returns non-commission, non-reversal line items (excluding shipping estimate)
  */
 const nonCommissionNonReversalLineItems = lineItems => {
-  return lineItems.filter(item => !isCommission(item) && !item.reversal);
+  return lineItems.filter(
+    item => !isCommission(item) && !item.reversal && item.code !== LINE_ITEM_ESTIMATED_SHIPPING
+  );
 };
 
 /**

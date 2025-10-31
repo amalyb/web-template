@@ -11,6 +11,7 @@ import {
   DATE_TYPE_DATETIME,
   DATE_TYPE_TIME,
   LINE_ITEM_CUSTOMER_COMMISSION,
+  LINE_ITEM_ESTIMATED_SHIPPING,
   LINE_ITEM_FIXED,
   LINE_ITEM_HOUR,
   LINE_ITEM_PROVIDER_COMMISSION,
@@ -31,6 +32,7 @@ import LineItemRefundMaybe from './LineItemRefundMaybe';
 import LineItemTotalPrice from './LineItemTotalPrice';
 import LineItemUnknownItemsMaybe from './LineItemUnknownItemsMaybe';
 import LineItemDiscountMaybe from './LineItemDiscountMaybe';
+import LineItemEstimatedShippingMaybe from './LineItemEstimatedShippingMaybe';
 
 import css from './OrderBreakdown.module.css';
 
@@ -52,7 +54,17 @@ export const OrderBreakdownComponent = props => {
   const allLineItems = transaction.attributes.lineItems || [];
   // We'll show only line-items that are specific for the current userRole (customer vs provider)
   const lineItems = allLineItems.filter(lineItem => lineItem.includeFor.includes(userRole));
-  const unitLineItem = lineItems.find(
+  
+  // Separate shipping line items from standard line items
+  // This prevents PropTypes warnings when shipping has lineTotal: null
+  const standardLineItems = lineItems.filter(
+    li => li.code !== LINE_ITEM_ESTIMATED_SHIPPING
+  );
+  const shippingLineItems = lineItems.filter(
+    li => li.code === LINE_ITEM_ESTIMATED_SHIPPING
+  );
+  
+  const unitLineItem = standardLineItems.find(
     item => LISTING_UNIT_TYPES.includes(item.code) && !item.reversal
   );
   // Line-item code that matches with base unit: day, night, hour, fixed, item
@@ -61,7 +73,7 @@ export const OrderBreakdownComponent = props => {
     ? DATE_TYPE_DATETIME
     : DATE_TYPE_DATE;
 
-  const hasCommissionLineItem = lineItems.find(item => {
+  const hasCommissionLineItem = standardLineItems.find(item => {
     const hasCustomerCommission = isCustomer && item.code === LINE_ITEM_CUSTOMER_COMMISSION;
     const hasProviderCommission = isProvider && item.code === LINE_ITEM_PROVIDER_COMMISSION;
     return (hasCustomerCommission || hasProviderCommission) && !item.reversal;
@@ -114,46 +126,48 @@ export const OrderBreakdownComponent = props => {
         timeZone={timeZone}
       />
 
-      <LineItemBasePriceMaybe lineItems={lineItems} code={lineItemUnitType} intl={intl} />
-      <LineItemDiscountMaybe lineItems={lineItems} intl={intl} />
-      <LineItemShippingFeeMaybe lineItems={lineItems} intl={intl} />
-      <LineItemPickupFeeMaybe lineItems={lineItems} intl={intl} />
-      <LineItemUnknownItemsMaybe lineItems={lineItems} isProvider={isProvider} intl={intl} />
+      <LineItemBasePriceMaybe lineItems={standardLineItems} code={lineItemUnitType} intl={intl} />
+      <LineItemDiscountMaybe lineItems={standardLineItems} intl={intl} />
+      <LineItemShippingFeeMaybe lineItems={standardLineItems} intl={intl} />
+      <LineItemPickupFeeMaybe lineItems={standardLineItems} intl={intl} />
+      <LineItemUnknownItemsMaybe lineItems={standardLineItems} isProvider={isProvider} intl={intl} />
 
       <LineItemSubTotalMaybe
-        lineItems={lineItems}
+        lineItems={standardLineItems}
         code={lineItemUnitType}
         userRole={userRole}
         intl={intl}
         marketplaceCurrency={currency}
       />
-      <LineItemRefundMaybe lineItems={lineItems} intl={intl} marketplaceCurrency={currency} />
+      <LineItemRefundMaybe lineItems={standardLineItems} intl={intl} marketplaceCurrency={currency} />
 
       <LineItemCustomerCommissionMaybe
-        lineItems={lineItems}
+        lineItems={standardLineItems}
         isCustomer={isCustomer}
         marketplaceName={marketplaceName}
         intl={intl}
       />
       <LineItemCustomerCommissionRefundMaybe
-        lineItems={lineItems}
+        lineItems={standardLineItems}
         isCustomer={isCustomer}
         marketplaceName={marketplaceName}
         intl={intl}
       />
 
       <LineItemProviderCommissionMaybe
-        lineItems={lineItems}
+        lineItems={standardLineItems}
         isProvider={isProvider}
         marketplaceName={marketplaceName}
         intl={intl}
       />
       <LineItemProviderCommissionRefundMaybe
-        lineItems={lineItems}
+        lineItems={standardLineItems}
         isProvider={isProvider}
         marketplaceName={marketplaceName}
         intl={intl}
       />
+
+      <LineItemEstimatedShippingMaybe lineItems={shippingLineItems} intl={intl} />
 
       <LineItemTotalPrice transaction={transaction} isProvider={isProvider} intl={intl} />
 

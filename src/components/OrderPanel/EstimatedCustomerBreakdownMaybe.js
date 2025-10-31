@@ -30,7 +30,7 @@ import Decimal from 'decimal.js';
 
 import { types as sdkTypes, transit } from '../../util/sdkLoader';
 import { FormattedMessage, useIntl } from '../../util/reactIntl';
-import { LINE_ITEM_DAY, LINE_ITEM_NIGHT, LISTING_UNIT_TYPES } from '../../util/types';
+import { LINE_ITEM_DAY, LINE_ITEM_NIGHT, LINE_ITEM_ESTIMATED_SHIPPING, LISTING_UNIT_TYPES } from '../../util/types';
 import { unitDivisor, convertMoneyToNumber, convertUnitToSubUnit, formatMoney } from '../../util/currency';
 import { getProcess, TX_TRANSITION_ACTOR_CUSTOMER } from '../../transactions/transaction';
 
@@ -385,7 +385,7 @@ const EstimatedCustomerBreakdownMaybe = props => {
   };
 
   try {
-    const { breakdownData: rawBreakdownData = {}, lineItems: rawLineItems, timeZone, currency, marketplaceName, processName } = props;
+    const { breakdownData: rawBreakdownData = {}, lineItems: rawLineItems, timeZone, currency, marketplaceName, processName, shippingEstimateCents, borrowerZip, lenderZip } = props;
     
     // Apply parsing guard
     const breakdownData = parseMaybe(rawBreakdownData) || {};
@@ -490,6 +490,33 @@ const EstimatedCustomerBreakdownMaybe = props => {
 
     // Remove all frontend discount logic. Only use the provided lineItems.
     let adjustedLineItems = parsedLineItems;
+    
+    // Create the shipping line item (with real or null value)
+    const shippingLineItem = shippingEstimateCents != null
+      ? {
+          code: LINE_ITEM_ESTIMATED_SHIPPING,
+          includeFor: ['customer'],
+          reversal: false,
+          lineTotal: new Money(shippingEstimateCents, currency),
+          unitPrice: new Money(shippingEstimateCents, currency),
+          quantity: new Decimal(1),
+        }
+      : {
+          code: LINE_ITEM_ESTIMATED_SHIPPING,
+          includeFor: ['customer'],
+          reversal: false,
+          // lineTotal is intentionally null -> tells UI to say "calculated at checkout"
+          lineTotal: null,
+          // Give unitPrice a valid Money(0) to avoid PropType warnings in other line item components
+          unitPrice: new Money(0, currency),
+          quantity: new Decimal(1),
+        };
+
+    // Only add shipping to calculation if we have a real value
+    // (null shipping will be added to the transaction's lineItems array later for display)
+    if (shippingEstimateCents != null) {
+      adjustedLineItems = [...adjustedLineItems, shippingLineItem];
+    }
 
     let process = null;
     try {
@@ -506,7 +533,7 @@ const EstimatedCustomerBreakdownMaybe = props => {
     const hasLineItems = parsedLineItems && parsedLineItems.length > 0;
     const hasRequiredBookingData = !shouldHaveBooking || (startDate && endDate);
 
-    const tx =
+    let tx =
       hasLineItems && hasRequiredBookingData
         ? estimatedCustomerTransaction(
             adjustedLineItems,
@@ -519,6 +546,18 @@ const EstimatedCustomerBreakdownMaybe = props => {
             currency
           )
         : null;
+
+    // If we have a transaction but shipping estimate is null,
+    // add the placeholder shipping line item for display only
+    if (tx && shippingEstimateCents == null) {
+      tx = {
+        ...tx,
+        attributes: {
+          ...tx.attributes,
+          lineItems: [...tx.attributes.lineItems, shippingLineItem],
+        },
+      };
+    }
 
     return tx ? (
       <OrderBreakdown

@@ -545,6 +545,9 @@ export const BookingDatesForm = props => {
     className,
     price: unitPrice,
     listingId,
+    listing,
+    author,
+    currentUser,
     isOwnListing,
     fetchLineItemsInProgress,
     onFetchTransactionLineItems,
@@ -567,6 +570,59 @@ export const BookingDatesForm = props => {
   const intl = useIntl();
   const [currentMonth, setCurrentMonth] = useState(getStartOf(TODAY, 'month', timeZone));
   const [errorMessage, setErrorMessage] = useState(null);
+  const [shippingEstimateCents, setShippingEstimateCents] = useState(null);
+
+  // Extract borrower and lender ZIP codes
+  // borrower (the viewer) - prefer new location, fall back to old
+  const borrowerZip =
+    currentUser?.attributes?.profile?.shippingZip ||
+    currentUser?.attributes?.profile?.publicData?.shippingZip ||
+    null;
+  
+  // lender (the owner of the listing)
+  const lenderZip =
+    listing?.attributes?.publicData?.shippingZip ||
+    author?.attributes?.profile?.publicData?.shippingZip ||
+    null;
+
+  // Debug: Log ZIP extraction results
+  console.debug('[shipping-debug]', {
+    borrowerZip,
+    lenderZip,
+    borrowerType: typeof borrowerZip,
+    lenderType: typeof lenderZip,
+    currentUserId: currentUser?.id?.uuid,
+    listingId: listing?.id?.uuid,
+    authorId: author?.id?.uuid,
+  });
+
+  // TODO: replace this with a real call to /api/shipping/estimate
+  // Client-side shipping estimate based on ZIP proximity
+  useEffect(() => {
+    // Basic validation: must be 5-digit string
+    const isValidZip = z => typeof z === 'string' && z.length === 5;
+    
+    // Debug: Log validation results
+    console.debug('[shipping-calc]', {
+      borrowerZip,
+      lenderZip,
+      isValidBorrower: typeof borrowerZip === 'string' && borrowerZip.length === 5,
+      isValidLender: typeof lenderZip === 'string' && lenderZip.length === 5,
+      nearMatch: (typeof borrowerZip === 'string' && typeof lenderZip === 'string')
+        ? borrowerZip.slice(0, 3) === lenderZip.slice(0, 3)
+        : null,
+    });
+    
+    if (isValidZip(borrowerZip) && isValidZip(lenderZip)) {
+      // Simple heuristic: if first 3 digits match, it's nearby
+      const nearMatch = borrowerZip.slice(0, 3) === lenderZip.slice(0, 3);
+      const cents = nearMatch ? 699 : 1099;
+      setShippingEstimateCents(cents);
+    } else {
+      // Trigger "calculated at checkout" messaging
+      setShippingEstimateCents(null);
+    }
+  }, [borrowerZip, lenderZip]);
 
   console.log('BookingDatesForm props:', {
     unitPrice: safeStringify(unitPrice),
@@ -934,6 +990,9 @@ export const BookingDatesForm = props => {
                   currency={unitPrice.currency}
                   marketplaceName={marketplaceName}
                   processName={BOOKING_PROCESS_NAME}
+                  shippingEstimateCents={shippingEstimateCents}
+                  borrowerZip={borrowerZip}
+                  lenderZip={lenderZip}
                 />
               </div>
             ) : null}

@@ -660,6 +660,7 @@
   "OrderBreakdown.commission": "{role, select, customer {{marketplaceName} fee *} provider {{marketplaceName} fee *} other {}}",
   "OrderBreakdown.commissionFeeNote": "* The fee helps us run this platform and provide the best possible service to you!",
   "OrderBreakdown.discount": "Discount {percentage}% off 💰",
+  "OrderBreakdown.estimatedShipping": "Estimated shipping (to you + prepaid return)",
   "OrderBreakdown.pickupFee": "Pickup",
   "OrderBreakdown.providerTotalDefault": "You'll make",
   "OrderBreakdown.providerTotalReceived": "You made",
