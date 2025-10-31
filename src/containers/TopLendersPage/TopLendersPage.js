@@ -153,13 +153,12 @@ const TopLendersPage = props => {
     >
       <TopbarContainer />
       <div className={classes}>
-        <h1 className={`${css.title} ${css.topLendersTitle}`}>
-          <span className={css.sherbrtWord}>Sherbrt</span>
-          <span className={css.babesWord}> Babes</span>
-        </h1>
-        <p className={`${css.subtitle} ${css.topLendersSubtitle}`}>
-          Borrow from the Sherbrt babes with the most looks live right now! 🍧💅
-        </p>
+        <header className={css.headerSection}>
+          <h1 className={css.headerTitle}>Sherbrt Babes</h1>
+          <p className={css.headerTagline}>
+            Borrow from the Sherbrt babes with the most looks live right now! 🍧💅
+          </p>
+        </header>
         {content}
       </div>
       <FooterContainer />
