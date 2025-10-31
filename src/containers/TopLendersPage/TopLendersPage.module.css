@@ -5,14 +5,56 @@
 }
 
 .title {
-  font-size: 28px;
-  font-weight: 700;
+  /* neutralize gradient for wrapper; use span-level styling instead */
   margin: 0 0 8px;
+}
+
+
+.headerSection {
+  text-align: center;
+  margin: 2rem auto 2rem;
+}
+
+.headerTitle {
+  font-family: -apple-system, "system-ui", Inter, Helvetica, Arial, sans-serif, 
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 42.56px;
+  color: rgb(25, 25, 26);
+  text-align: center;
+  margin: 0 0 1rem 0;
+  -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
+  box-sizing: border-box;
+  background-repeat: no-repeat;
+}
+
+.headerTagline {
+  text-align: center;
+  font-family: inherit;
+  font-weight: 400;
+  font-size: 18px;
+  color: rgb(80, 80, 82);
+  margin-top: 0.5rem;
+  line-height: 1.5;
+}
+
+@media screen and (max-width: 480px) {
+  .headerTitle { font-size: 1.9rem; }
+  .headerTagline { font-size: 1.1rem; }
 }
 
 .subtitle {
   margin: 0 0 24px;
   color: var(--colorTextMediumEmphasis, #666);
+}
+
+.topLendersSubtitle {
+  font-weight: 400;
+  color: #4a4a4a;
+  font-size: 1.25rem;
+  line-height: 1.5;
 }
 
 .stateText {
@@ -42,12 +84,20 @@
 }
 
 .card {
-  border: 1px solid rgba(0,0,0,0.06);
+  border: 1px solid #f5e7e2;
   background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  border-radius: 20px;
+  box-shadow: 0 8px 20px rgba(255, 173, 134, 0.2);
   padding: 24px;
   text-align: center;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.topLenderCard { /* alias for clarity with spec */ }
+
+.card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px rgba(255, 173, 134, 0.3);
 }
 
 .avatarWrapper {
@@ -63,6 +113,10 @@
   align-items: center;
   justify-content: center;
   margin: 0 auto 16px;
+}
+
+.topLenderAvatarWrapper {
+  box-shadow: 0 8px 20px rgba(255, 173, 134, 0.2);
 }
 
 .avatar {
@@ -160,6 +214,23 @@ a.metaItem:hover .metaText {
   font-weight: 500;
   text-decoration: underline;
   display: inline-block;
+}
+
+.listingsLink:hover {
+  text-decoration: none;
+  background: linear-gradient(90deg, #FFAD86, #FFC0C0, #FFAD86);
+  background-size: 200% auto;
+  color: #FFAD86;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 1.5s linear infinite;
+}
+
+.borrowHerLooksLink { text-decoration: none; color: #FFAD86; }
+.borrowHerLooksLink:hover { /* keep same shimmer behavior */ }
+
+@keyframes shimmer {
+  to { background-position: 200% center; }
 }
 
 .ctaLink {

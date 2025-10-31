@@ -83,9 +83,9 @@ const TopLendersPage = props => {
     return (
       <div className={css.grid}>
         {topLenders.map(l => (
-          <div className={css.card} key={l.userId}>
+          <div className={`${css.card} ${css.topLenderCard}`} key={l.userId}>
             <NamedLink name="ProfilePage" params={{ id: l.userId }}>
-              <div className={css.avatarWrapper}>
+              <div className={`${css.avatarWrapper} ${css.topLenderAvatarWrapper}`}>
                 {l.avatarUrl ? (
                   <img
                     src={l.avatarUrl}
@@ -135,7 +135,7 @@ const TopLendersPage = props => {
             <NamedLink
               name="SearchPage"
               to={{ search: `?authorId=${encodeURIComponent(l.userId)}` }}
-              className={css.listingsLink}
+              className={`${css.listingsLink} ${css.borrowHerLooksLink}`}
             >
               Borrow her looks →
             </NamedLink>
@@ -147,16 +147,18 @@ const TopLendersPage = props => {
 
   return (
     <Page
-      title="Top Lenders | Sherbrt"
+      title="Sherbrt Babes | Sherbrt"
       description="Borrow from the Sherbrt babes with the most looks live right now"
       scrollingDisabled={false}
     >
       <TopbarContainer />
       <div className={classes}>
-        <h1 className={css.title}>Top Lenders</h1>
-        <p className={css.subtitle}>
-          Borrow from the Sherbrt babes with the most looks live right now! 🍧💅
-        </p>
+        <header className={css.headerSection}>
+          <h1 className={css.headerTitle}>Sherbrt Babes</h1>
+          <p className={css.headerTagline}>
+            Borrow from the Sherbrt babes with the most looks live right now! 🍧💅
+          </p>
+        </header>
         {content}
       </div>
       <FooterContainer />
