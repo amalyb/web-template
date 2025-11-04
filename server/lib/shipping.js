@@ -185,6 +185,50 @@ async function computeShipByDate(tx, opts = {}) {
   return adjusted;
 }
 
+/**
+ * Compute ship-by date with metadata (wrapper for computeShipByDate)
+ * Returns an object with shipByDate, leadDays, miles, and mode
+ * 
+ * @param {Object} tx - Transaction object with booking and address data
+ * @param {Object} opts - Options { preferLabelAddresses: boolean }
+ * @returns {Promise<Object>} { shipByDate, leadDays, miles, mode }
+ */
+async function computeShipBy(tx, opts = {}) {
+  // Reuse existing date computation
+  const shipByDate = await computeShipByDate(tx, opts);
+  
+  // If date couldn't be computed, return a consistent empty shape
+  if (!shipByDate) {
+    return { shipByDate: null, leadDays: null, miles: null, mode: LEAD_MODE || 'static' };
+  }
+
+  let leadDays = LEAD_FLOOR;
+  let miles = null;
+  const mode = LEAD_MODE || 'static'; // 'static' | 'distance'
+
+  if (mode === 'distance') {
+    // We already have helpers in this file:
+    // - resolveZipsFromTx(tx, opts)
+    // - computeLeadDaysDynamic({ fromZip, toZip })
+    // Miles are optional and only used for logging; compute if cheap, otherwise leave null.
+    try {
+      const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
+      leadDays = await computeLeadDaysDynamic({ fromZip, toZip });
+      // Compute miles if geocoding succeeds (for diagnostics)
+      const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
+      if (fromLL && toLL) {
+        miles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
+      }
+    } catch (e) {
+      // Don't fail the purchase flow if distance data is unavailable
+      // Fallback: keep default leadDays (LEAD_FLOOR) and miles=null
+      console.warn('[ship-by] distance mode fallback:', e?.message);
+    }
+  }
+
+  return { shipByDate, leadDays, miles, mode };
+}
+
 function formatShipBy(date) {
   if (!date) return null;
   try {
@@ -523,6 +567,7 @@ async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
 module.exports = { 
   shippingClient,
   shippo,
+  computeShipBy,
   computeShipByDate, 
   formatShipBy, 
   getBookingStartISO,
@@ -531,3 +576,8 @@ module.exports = {
   estimateOneWay,
   estimateRoundTrip,
 };
+
+// Optional sanity check for debugging
+if (process.env.SHIPPO_DEBUG === 'true') {
+  console.log('[diag] typeof computeShipBy =', typeof computeShipBy);
+}
