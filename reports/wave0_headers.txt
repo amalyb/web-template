@@ -1,0 +1,25 @@
+HTTP/2 200 
+date: Wed, 08 Oct 2025 17:54:16 GMT
+content-type: text/html; charset=utf-8
+cf-ray: 98b780a2ff4aeb34-SJC
+access-control-allow-credentials: true
+content-security-policy-report-only: base-uri 'self';default-src 'self';child-src blob:;connect-src 'self' https://flex-api.sharetribe.com undefined *.st-api.com maps.googleapis.com places.googleapis.com *.tiles.mapbox.com api.mapbox.com events.mapbox.com *.google-analytics.com *.analytics.google.com *.googletagmanager.com *.g.doubleclick.net *.google.com plausible.io *.plausible.io fonts.googleapis.com sentry.io *.sentry.io https://api.stripe.com *.stripe.com;font-src 'self' data: assets-sharetribecom.sharetribe.com fonts.gstatic.com;form-action 'self';frame-src 'self' https://js.stripe.com *.stripe.com *.youtube-nocookie.com https://bid.g.doubleclick.net https://td.doubleclick.net;img-src 'self' data: blob: *.imgix.net sharetribe.imgix.net picsum.photos *.picsum.photos api.mapbox.com https://*.tiles.mapbox.com maps.googleapis.com *.gstatic.com *.googleapis.com *.ggpht.com *.giphy.com *.google-analytics.com *.analytics.google.com *.googletagmanager.com *.g.doubleclick.net *.google.com google.com *.ytimg.com https://q.stripe.com *.stripe.com;script-src 'self' 'nonce-63a0cae22e98c9afe4ae80d55459ef7eae1084fe2cfe94641d178e33d3ab9403' 'unsafe-eval' maps.googleapis.com api.mapbox.com *.googletagmanager.com *.google-analytics.com www.googleadservices.com *.g.doubleclick.net js.stripe.com plausible.io;script-src-elem 'self' blob: https://js.stripe.com https://api.mapbox.com https://*.mapbox.com;manifest-src 'self';worker-src 'self' blob:;style-src 'self' 'unsafe-inline' fonts.googleapis.com api.mapbox.com;report-uri /csp-report
+cross-origin-opener-policy: same-origin
+cross-origin-resource-policy: same-origin
+etag: W/"2114-YdKi768YvnW9pUODsG/+ta3ohqs"
+origin-agent-cluster: ?1
+referrer-policy: origin
+rndr-id: 47f61ed2-3a51-4d46
+strict-transport-security: max-age=31536000; includeSubDomains
+vary: Origin, Accept-Encoding
+x-content-type-options: nosniff
+x-dns-prefetch-control: off
+x-download-options: noopen
+x-frame-options: SAMEORIGIN
+x-permitted-cross-domain-policies: none
+x-render-origin-server: Render
+x-xss-protection: 0
+cf-cache-status: DYNAMIC
+server: cloudflare
+alt-svc: h3=":443"; ma=86400
+

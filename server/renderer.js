@@ -125,11 +125,33 @@ exports.render = async function render(req, res, data = {}) {
   // Add nonce to server-side rendered script tags
   const nonceParamMaybe = nonce ? { nonce } : {};
 
+  // Generate Open Graph meta tags for SSR
+  const ogImageUrl = 'https://www.sherbrt.com/static/og/sherbrt-og_new.jpg';
+  const ogTitle = 'Shop on Sherbrt';
+  const ogSiteName = 'Shop on Sherbrt';
+  const ogDescription = 'Borrow and lend designer looks on Sherbrt — the sisterly circular fashion marketplace.';
+  
+  const ogMetaTags = `
+    <meta property="og:title" content="${ogTitle}" />
+    <meta property="og:site_name" content="${ogSiteName}" />
+    <meta property="og:description" content="${ogDescription}" />
+    <meta property="og:image" content="${ogImageUrl}" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://www.sherbrt.com/" />
+    <meta name="description" content="${ogDescription}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${ogTitle}" />
+    <meta name="twitter:description" content="${ogDescription}" />
+    <meta name="twitter:image" content="${ogImageUrl}" />
+  `;
+
   return template({
     htmlAttributes: '',
-    title: '<title>Shop on Sherbet</title>',
+    title: '<title>Shop on Sherbrt</title>',
     link: '',
-    meta: '',
+    meta: ogMetaTags,
     script: '',
     preloadedStateScript,
     ssrStyles: extractor.getStyleTags(),

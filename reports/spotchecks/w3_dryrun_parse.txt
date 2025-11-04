@@ -1,0 +1,5 @@
+server/api-util/sendSMS.js:67:const DRY_RUN = process.env.SMS_DRY_RUN === '1' || process.env.SMS_DRY_RUN === 'true';
+server/index.js:127:  console.log('📱 SMS_DRY_RUN=true - SMS messages will be logged but not sent');
+server/scripts/sendOverdueReminders.js:42:const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
+server/scripts/sendReturnReminders.js:52:const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
+server/scripts/sendShipByReminders.js:43:const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';

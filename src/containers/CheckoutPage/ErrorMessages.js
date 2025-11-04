@@ -22,7 +22,8 @@ export const getErrorMessages = (
   isPaymentExpired,
   retrievePaymentIntentError,
   speculateTransactionError,
-  listingLink
+  listingLink,
+  onRetrySpeculation
 ) => {
   let listingNotFoundErrorMessage = null;
   let initiateOrderErrorMessage = null;
@@ -106,7 +107,29 @@ export const getErrorMessages = (
     <p className={css.orderError}>{initiateOrderErrorMessage}</p>
   ) : null;
   const speculateErrorMessageParagraph = speculateErrorMessage ? (
-    <p className={css.orderError}>{speculateErrorMessage}</p>
+    <div className={css.orderError}>
+      <p>{speculateErrorMessage}</p>
+      {onRetrySpeculation && (
+        <button 
+          type="button" 
+          onClick={onRetrySpeculation}
+          className={css.retryButton}
+          style={{ 
+            marginTop: '10px', 
+            padding: '8px 16px', 
+            cursor: 'pointer',
+            backgroundColor: '#4A90E2',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          <FormattedMessage id="CheckoutPage.retrySpeculation" defaultMessage="Retry" />
+        </button>
+      )}
+    </div>
   ) : null;
   const speculateTransactionErrorMessageParagraph =
     speculateTransactionError &&

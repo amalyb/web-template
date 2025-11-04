@@ -1,7 +1,10 @@
 import React from 'react';
 import classNames from 'classnames';
 
-import { AspectRatioWrapper, AvatarMedium, ResponsiveImage } from '../../components';
+// Direct imports to avoid circular deps via barrel
+import AspectRatioWrapper from '../../components/AspectRatioWrapper/AspectRatioWrapper';
+import AvatarMedium from '../../components/Avatar/Avatar';
+import ResponsiveImage from '../../components/ResponsiveImage/ResponsiveImage';
 
 import css from './CheckoutPage.module.css';
 

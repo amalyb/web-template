@@ -23,6 +23,15 @@ way to update this template, but currently, we follow a pattern:
 - [fix] OrderPanel: purchase and inquiries did not check closed status of the listing.
   [#573](https://github.com/sharetribe/web-template/pull/573)
 
+## [v8.0.2] 2025-10-09
+
+- [fix] CheckoutPage: Deduplicate privileged speculation by stable key (listingId, start, end, unitType)
+- [fix] StripePaymentForm: Guard undefined shipping/billing in Stripe form mapping
+- [fix] CheckoutPageWithPayment: Prevent Stripe Payment Element re-mount loop
+- [change] No server environment changes required
+
+  [v8.0.2]: https://github.com/amalyb/web-template/compare/v8.0.1...v8.0.2
+
 ## [v8.0.1] 2025-04-03
 
 - [add] Add currently available translations for FR.

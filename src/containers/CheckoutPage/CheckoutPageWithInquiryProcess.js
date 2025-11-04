@@ -14,17 +14,13 @@ import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import * as validators from '../../util/validators';
 import { getProcess } from '../../transactions/transaction';
 
-// Import shared components
-import {
-  FieldTextInput,
-  Form,
-  H3,
-  H4,
-  Heading,
-  NamedLink,
-  Page,
-  PrimaryButton,
-} from '../../components';
+// Direct imports to avoid circular deps via barrel
+import FieldTextInput from '../../components/FieldTextInput/FieldTextInput';
+import Form from '../../components/Form/Form';
+import { H3, H4, Heading } from '../../components/Heading/Heading';
+import NamedLink from '../../components/NamedLink/NamedLink';
+import Page from '../../components/Page/Page';
+import PrimaryButton from '../../components/Button/Button';
 
 import { getTransactionTypeData } from './CheckoutPageTransactionHelpers.js';
 

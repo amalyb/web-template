@@ -93,11 +93,51 @@ const request = (path, options = {}) => {
     const contentType = contentTypeHeader ? contentTypeHeader.split(';')[0] : null;
 
     if (res.status >= 400) {
+      // Special handling for 503 Service Unavailable (e.g. Stripe not configured)
+      // Must be checked BEFORE 401 to ensure proper error structure
+      if (res.status === 503) {
+        return res.json().then(data => {
+          const err = new Error(data?.message || 'Service unavailable');
+          err.status = 503;
+          err.code = data?.code || 'service-unavailable';
+          err.data = data || null;
+          err.endpoint = path;
+          console.error('[API] 503 Service Unavailable:', path, { code: err.code, message: err.message });
+          throw err;
+        }).catch(jsonError => {
+          // If response is not JSON, create a generic 503 error
+          if (jsonError instanceof SyntaxError) {
+            const err = new Error('Service unavailable');
+            err.status = 503;
+            err.code = 'service-unavailable';
+            err.endpoint = path;
+            throw err;
+          }
+          throw jsonError;
+        });
+      }
+      
+      // Special handling for 401 Unauthorized
+      if (res.status === 401) {
+        console.warn('[Sherbrt] 401 response from', path, '- session may be expired');
+      }
+      
       return res.json().then(data => {
         let e = new Error();
         e = Object.assign(e, data);
+        e.status = res.status; // Ensure status is preserved
+        e.endpoint = path; // Track which endpoint failed
 
         throw e;
+      }).catch(jsonError => {
+        // If response is not JSON, create a generic error
+        if (jsonError instanceof SyntaxError) {
+          let e = new Error(`HTTP ${res.status}: ${res.statusText}`);
+          e.status = res.status;
+          e.endpoint = path;
+          throw e;
+        }
+        throw jsonError;
       });
     }
     if (contentType === 'application/transit+json') {
@@ -151,6 +191,9 @@ export const transactionLineItems = (params) =>
 // See `server/api/initiate-privileged.js` to see what data should be
 // sent in the body.
 export const initiatePrivileged = body => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[PROXY_VERIFY] POST →', `${apiBaseUrl()}/api/initiate-privileged`);
+  }
   return post('/api/initiate-privileged', body);
 };
 
@@ -163,6 +206,9 @@ export const initiatePrivileged = body => {
 // See `server/api/transition-privileged.js` to see what data should
 // be sent in the body.
 export const transitionPrivileged = body => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[PROXY_VERIFY] POST →', `${apiBaseUrl()}/api/transition-privileged`);
+  }
   return post('/api/transition-privileged', body);
 };
 

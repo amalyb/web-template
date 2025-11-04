@@ -1,0 +1,8 @@
+server/webhooks/shippoTracking.js:42:router.use('/shippo', express.raw({ type: 'application/json' }), (req, res, next) => {
+server/webhooks/shippoTracking.js:192:  router.post('/shippo', async (req, res) => {
+server/webhooks/shippoTracking.js:198:        console.error('[shippo:webhook] Missing SHIPPO_WEBHOOK_SECRET in production');
+server/webhooks/shippoTracking.js:202:        console.warn('[shippo:webhook] signature verification failed');
+server/webhooks/shippoTracking.js:206:      console.log('[shippo:webhook] dev/test mode, signature verification not enforced');
+server/webhooks/shippoTracking.js:316:      const trackingUrl = protectedData.returnTrackingUrl || `https://track.shippo.com/${trackingNumber}`;
+server/webhooks/shippoTracking.js:324:          transition: 'webhook/shippo-return-first-scan',
+server/webhooks/shippoTracking.js:437:          transition: `webhook/shippo-${smsType.replace(' ', '-')}`,

@@ -10,6 +10,7 @@ import {
   NO_ACCESS_PAGE_USER_PENDING_APPROVAL,
   createSlug,
 } from '../../util/urlHelpers';
+import Decimal from 'decimal.js';
 
 import { Page, LayoutSingleColumn } from '../../components';
 import FooterContainer from '../../containers/FooterContainer/FooterContainer';
@@ -255,6 +256,26 @@ export const handleSubmit = parameters => values => {
 
   // Clear previous Stripe errors from store if there is any
   onInitializeCardPaymentData();
+
+  // ✅ PERSIST orderData to sessionStorage before navigation
+  // This ensures orderData survives full page reloads and redirects
+  const ORDER_KEY = 'sherbrt.checkout.orderData.v1';
+  try {
+    // Use proper SDK serialization to handle UUID, Money, and Decimal types
+    const replacer = function(k, v) {
+      if (this[k] instanceof Date) {
+        return { date: v, _serializedType: 'SerializableDate' };
+      }
+      if (this[k] instanceof Decimal) {
+        return { decimal: v, _serializedType: 'SerializableDecimal' };
+      }
+      return sdkTypes.replacer(k, v);
+    };
+    sessionStorage.setItem(ORDER_KEY, JSON.stringify(initialValues, replacer));
+    console.log('✅ Persisted orderData to sessionStorage:', ORDER_KEY);
+  } catch (e) {
+    console.warn('⚠️ Failed to persist orderData to sessionStorage:', e);
+  }
 
   // Redirect to CheckoutPage
   history.push(

@@ -22,12 +22,10 @@ require('./env').configureEnv();
 // Log presence (not values) of critical envs at boot
 const hasIC = Boolean(process.env.INTEGRATION_CLIENT_ID);
 const hasIS = Boolean(process.env.INTEGRATION_CLIENT_SECRET);
-console.log('[server] Integration creds present?', { INTEGRATION_CLIENT_ID: hasIC, INTEGRATION_CLIENT_SECRET: hasIS });
-
-// Startup env verification with masking (last 6 chars)
-console.log('[INT] marketplaceId (server):', (process.env.SHARETRIBE_MARKETPLACE_ID || '').slice(-6));
-console.log('[INT] clientId (integration) …', (process.env.INTEGRATION_CLIENT_ID || '').slice(-6));
-console.log('[WEB] marketplaceId (client):', (process.env.REACT_APP_SHARETRIBE_MARKETPLACE_ID || '').slice(-6));
+console.log('[server] Integration creds present?', {
+  INTEGRATION_CLIENT_ID: hasIC,
+  INTEGRATION_CLIENT_SECRET: hasIS,
+});
 
 // Setup Sentry
 // Note 1: This needs to happen before other express requires
@@ -55,11 +53,15 @@ const { getExtractors } = require('./importer');
 
 // Import SSR renderer with fallback
 let renderer;
-try { renderer = require('./ssr/renderer'); }
-catch { renderer = require('./renderer'); }
+try {
+  renderer = require('./ssr/renderer');
+} catch {
+  renderer = require('./renderer');
+}
 console.log('[server] renderer keys:', Object.keys(renderer || {}));
 
 const dataLoader = require('./dataLoader');
+const { generateCSPNonce, csp } = require('./csp');
 const sdkUtils = require('./api-util/sdk');
 
 const buildDir = path.join(__dirname, '..', 'build');
@@ -73,6 +75,10 @@ const redirectSSL =
     : process.env.REACT_APP_SHARETRIBE_USING_SSL;
 const REDIRECT_SSL = redirectSSL === 'true';
 const TRUST_PROXY = process.env.SERVER_SHARETRIBE_TRUST_PROXY || null;
+const CSP = process.env.REACT_APP_CSP;
+const CSP_MODE = process.env.CSP_MODE || 'report'; // 'block' for prod, 'report' for test
+const cspReportUrl = '/csp-report';
+const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
 
 // Health check - must return 200 for Render
@@ -85,7 +91,7 @@ app.get('/__ssr-info', (_req, res) => {
   if (process.env.NODE_ENV === 'production' && process.env.SHOW_SSR_INFO !== '1') {
     return res.status(404).json({ ok: false, error: 'Not found' });
   }
-  
+
   try {
     const manifest = require(path.join(buildDir, 'asset-manifest.json'));
     const files = manifest.files || {};
@@ -110,8 +116,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'https://localhost:3000',
   'https://sherbrt.com',
   'https://www.sherbrt.com',
-  'https://web-template-1.onrender.com',       // Render test client
-  'https://sherbrt-test.onrender.com'          // any other Render env we use
+  'https://web-template-1.onrender.com', // Render test client
+  'https://sherbrt-test.onrender.com', // any other Render env we use
 ];
 
 const envAllowed = (process.env.CORS_ALLOW_ORIGIN || '')
@@ -133,8 +139,8 @@ const corsOptions = {
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  methods: ['GET','HEAD','PUT','PATCH','POST','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 };
 
 app.use(require('cors')(corsOptions));
@@ -156,69 +162,49 @@ app.use(
 
 // The helmet middleware sets various HTTP headers to improve security.
 // See: https://www.npmjs.com/package/helmet
-// CSP is configured to allow Mapbox and our own static files
+// Helmet 4 doesn't disable CSP by default so we need to do that explicitly.
+// If csp is enabled we will add that separately.
 
 app.use(
   helmet({
+    contentSecurityPolicy: false,
     referrerPolicy: {
       policy: 'origin',
     },
   })
 );
 
-app.use(
-  helmet.contentSecurityPolicy({
-    useDefaults: true,
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: [
-        "'self'",                // Allow our own static JS
-        "https://api.mapbox.com",
-        "https://*.mapbox.com",
-        "https://js.stripe.com", // Stripe SDK
-      ],
-      styleSrc: [
-        "'self'",
-        "https://api.mapbox.com",
-        "'unsafe-inline'",        // Needed for Mapbox inline styles
-      ],
-      imgSrc: [
-        "'self'",
-        "data:",
-        "blob:",
-        "https://cdn.st-api.com",
-        "https://images.sharetribe.com",
-        "https://*.imgix.net",
-        "https://api.mapbox.com",
-        "https://*.tiles.mapbox.com",
-        "https://*.stripe.com",  // Stripe images
-      ],
-      connectSrc: [
-        "'self'",
-        "https://flex-api.sharetribe.com",
-        "https://cdn.st-api.com",
-        "https://api.mapbox.com",
-        "https://events.mapbox.com",
-        "https://api.stripe.com", // Stripe API
-        "https://m.stripe.network",
-        "https://r.stripe.com",
-        "https://*.stripe.com",
-      ],
-      frameSrc: [
-        "'self'",
-        "https://js.stripe.com",     // Stripe Elements iframe
-        "https://hooks.stripe.com",
-        "https://m.stripe.network",
-        "https://*.stripe.com",
-      ],
-      workerSrc: ["'self'", "blob:"],
-      objectSrc: ["'none'"],
-      frameAncestors: ["'self'"],
-      baseUri: ["'self'"],
-      formAction: ["'self'"],
-    },
-  })
-);
+if (cspEnabled) {
+  app.use(generateCSPNonce);
+
+  // When a CSP directive is violated, the browser posts a JSON body
+  // to the defined report URL and we need to parse this body.
+  app.use(
+    bodyParser.json({
+      type: ['json', 'application/csp-report'],
+    })
+  );
+
+  // CSP can be turned on in report or block mode. In report mode, the
+  // browser checks the policy and calls the report URL when the
+  // policy is violated, but doesn't block any requests. In block
+  // mode, the browser also blocks the requests.
+
+  // Build CSP policies
+  const cspPolicies = csp({ mode: CSP_MODE, reportUri: cspReportUrl });
+
+  // Log CSP mode at startup
+  console.log(`🔐 CSP mode: ${CSP_MODE}`);
+
+  if (CSP_MODE === 'block') {
+    // Apply both enforce and reportOnly middlewares (enforce first)
+    app.use(cspPolicies.enforce);
+    app.use(cspPolicies.reportOnly);
+  } else {
+    // Apply only reportOnly middleware
+    app.use(cspPolicies.reportOnly);
+  }
+}
 
 // Set up integration SDK for QR and other privileged operations
 const { getIntegrationSdk } = require('./api-util/integrationSdk');
@@ -232,7 +218,9 @@ function buildIntegrationSdk() {
       return sdk;
     }
   } catch (err) {
-    console.warn('⚠️ Missing INTEGRATION_CLIENT_ID/INTEGRATION_CLIENT_SECRET – integrationSdk not set');
+    console.warn(
+      '⚠️ Missing INTEGRATION_CLIENT_ID/INTEGRATION_CLIENT_SECRET – integrationSdk not set'
+    );
     console.warn('   Error:', err.message);
   }
   return null;
@@ -302,9 +290,6 @@ if (!dev) {
 // a 3rd party identity provider (e.g. Facebook or Google)
 app.use(passport.initialize());
 
-// Server-side routes that do not render the application
-app.use('/api', apiRouter);
-
 // Top Lenders API
 const { fetchTopLenders } = require('./topLenders');
 app.get('/api/top-lenders', async (req, res) => {
@@ -329,16 +314,19 @@ app.get('/api/top-lenders', async (req, res) => {
 // Decodes compact tokens and redirects to long URLs (Shippo labels, tracking, etc.)
 const { expandShortToken } = require('./api-util/shortlink');
 
-app.get('/r/:t', async (req, res) => {
+app.get('/r/:token', async (req, res) => {
   try {
-    const url = await expandShortToken(req.params.t);
+    const url = await expandShortToken(req.params.token);
     console.log('[SHORTLINK] Redirecting to:', url.substring(0, 50) + '...');
     res.redirect(302, url);
   } catch (e) {
     console.error('[SHORTLINK] Invalid token:', e.message);
-    res.status(400).send('Invalid link');
+    res.status(400).send('Invalid or expired link');
   }
 });
+
+// Server-side routes that do not render the application
+app.use('/api', apiRouter);
 
 // Redis smoke test endpoint - standalone test for Redis connection and QR functionality
 const { getRedis } = require('./redis');
@@ -411,33 +399,6 @@ app.get('/api/qr/test', async (req, res) => {
   return res.status(result.ok ? 200 : 500).json(result);
 });
 
-// Integration SDK smoke test endpoint - verify credentials and marketplace access
-app.get('/api/integration-smoke', async (_req, res) => {
-  try {
-    const flexIntegrationSdk = integrationSdk || getIntegrationSdk();
-    if (!flexIntegrationSdk) {
-      return res.status(500).json({
-        ok: false,
-        error: 'Integration SDK not initialized',
-        message: 'Check INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET'
-      });
-    }
-    
-    const mp = await flexIntegrationSdk.marketplace.show();
-    res.json({ 
-      ok: true, 
-      marketplace: mp.data?.data?.id 
-    });
-  } catch (e) {
-    res.status(e?.status || e?.response?.status || 500).json({
-      ok: false,
-      status: e?.status || e?.response?.status,
-      data: e?.data || e?.response?.data,
-      message: e?.message,
-    });
-  }
-});
-
 const noCacheHeaders = {
   'Cache-control': 'no-cache, no-store, must-revalidate',
 };
@@ -486,8 +447,8 @@ app.get('*', async (req, res, next) => {
       const shim = {
         collectChunks: x => x,
         getScriptTags: () => '',
-        getLinkTags:   () => '',
-        getStyleTags:  () => '',
+        getLinkTags: () => '',
+        getStyleTags: () => '',
       };
       const finalExtractor = extractor || shim;
       data.extractor = finalExtractor;
@@ -500,8 +461,8 @@ app.get('*', async (req, res, next) => {
       const shim = {
         collectChunks: x => x,
         getScriptTags: () => '',
-        getLinkTags:   () => '',
-        getStyleTags:  () => '',
+        getLinkTags: () => '',
+        getStyleTags: () => '',
       };
       data.extractor = shim;
       data.loadableExtractor = shim;
@@ -537,6 +498,23 @@ app.get('*', async (req, res, next) => {
 // Set error handler. If Sentry is set up, all error responses
 // will be logged there.
 log.setupExpressErrorHandler(app);
+
+if (cspEnabled) {
+  // Dig out the value of the given CSP report key from the request body.
+  const reportValue = (req, key) => {
+    const report = req.body ? req.body['csp-report'] : null;
+    return report && report[key] ? report[key] : key;
+  };
+
+  // Handler for CSP violation reports.
+  app.post(cspReportUrl, (req, res) => {
+    const effectiveDirective = reportValue(req, 'effective-directive');
+    const blockedUri = reportValue(req, 'blocked-uri');
+    const msg = `CSP: ${effectiveDirective} doesn't allow ${blockedUri}`;
+    log.error(new Error(msg), 'csp-violation');
+    res.status(204).end();
+  });
+}
 
 const server = app.listen(PORT, () => {
   const mode = process.env.NODE_ENV || 'development';

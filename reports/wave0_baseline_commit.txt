@@ -1,0 +1,7 @@
+commit edd07741a4d5545287a8fb9f7bed67f590a6bbca
+Author:     Amalia Bornstein <amalyb@gmail.com>
+AuthorDate: Thu Sep 25 15:16:33 2025 -0700
+Commit:     Amalia Bornstein <amalyb@gmail.com>
+CommitDate: Thu Sep 25 15:16:33 2025 -0700
+
+    checkout: de-dup ADDR_ENABLED; use centralized envFlags

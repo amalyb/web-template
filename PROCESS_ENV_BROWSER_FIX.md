@@ -161,4 +161,3 @@ The fix eliminates all direct `process.env` accesses in client-side code by:
 
 The checkout page will no longer crash on localhost, and the CardElement flow will work correctly with `REACT_APP_USE_STRIPE_PAYMENT_ELEMENT=false`.
 
-

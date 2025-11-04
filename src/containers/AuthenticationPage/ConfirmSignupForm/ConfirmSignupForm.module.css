@@ -50,8 +50,9 @@
 
 .birthdayContainer {
   display: flex;
-  gap: 12px;
+  justify-content: space-between;
   margin-top: 24px;
+  gap: 1rem;
 
   @media (--viewportMedium) {
     margin-top: 32px;
@@ -59,7 +60,14 @@
 }
 
 .birthdayField {
-  flex: 1;
+  flex-grow: 1;
+}
+
+.helperText {
+  font-size: 14px;
+  color: #757575;
+  margin-top: 6px;
+  line-height: 1.4;
 }
 
 .helperText {

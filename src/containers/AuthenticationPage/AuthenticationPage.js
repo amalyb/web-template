@@ -205,6 +205,11 @@ export const AuthenticationForms = props => {
     const { userType, email, password, fname, lname, displayName, shippingZip, instagramHandle, birthdayMonth, birthdayDay, birthdayYear, ...rest } = values;
     const displayNameMaybe = displayName ? { displayName: displayName.trim() } : {};
 
+    // Calculate zodiac sign for lenders
+    const zodiac = userType === 'lender' && birthdayMonth && birthdayDay 
+      ? getZodiacSign(birthdayMonth, birthdayDay) 
+      : null;
+
     const params = {
       email,
       password,
@@ -224,10 +229,15 @@ export const AuthenticationForms = props => {
         ...pickUserFieldsData(rest, 'private', userType, userFields),
       },
       protectedData: {
+        ...(zodiac && { zodiacSign: zodiac }),
         ...pickUserFieldsData(rest, 'protected', userType, userFields),
         ...getNonUserFieldParams(rest, userFields),
       },
     };
+
+    console.log('🔍 [AuthenticationPage] Values received from SignupForm:', values);
+    console.log('🔍 [AuthenticationPage] Rest of values:', rest);
+    console.log('🔍 [AuthenticationPage] Final params for signup:', params);
 
     submitSignup(params);
   };
@@ -314,7 +324,6 @@ const ConfirmIdProviderInfoForm = props => {
     const { idpToken, email, firstName, lastName, idpId } = authInfo;
 
     const {
-      userType,
       email: newEmail,
       firstName: newFirstName,
       lastName: newLastName,
@@ -338,7 +347,6 @@ const ConfirmIdProviderInfoForm = props => {
     // and they can't be fetched directly from idp provider (e.g. Facebook)
 
     const authParams = {
-      ...(newEmail !== email && { email: newEmail }),
       ...(newFirstName !== firstName && { firstName: newFirstName }),
       ...(newLastName !== lastName && { lastName: newLastName }),
     };

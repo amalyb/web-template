@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import classNames from 'classnames';
 
-import { LinkedLogo } from '../../components';
+// Direct imports to avoid circular deps via barrel
+import LinkedLogo from '../../components/Logo/LinkedLogo';
 
 import css from './CheckoutPage.module.css';
 

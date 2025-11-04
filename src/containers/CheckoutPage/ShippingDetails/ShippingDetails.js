@@ -5,7 +5,9 @@ import { FormattedMessage, intlShape } from '../../../util/reactIntl';
 import * as validators from '../../../util/validators';
 import getCountryCodes from '../../../translations/countryCodes';
 
-import { FieldSelect, FieldTextInput, Heading } from '../../../components';
+import FieldSelect from '../../../components/FieldSelect/FieldSelect';
+import FieldTextInput from '../../../components/FieldTextInput/FieldTextInput';
+import { Heading } from '../../../components/Heading/Heading';
 
 import css from './ShippingDetails.module.css';
 
