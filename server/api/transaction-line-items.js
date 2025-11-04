@@ -6,7 +6,7 @@ const { constructValidLineItems } = require('../api-util/lineItemHelpers');
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
 
-module.exports = (req, res) => {
+module.exports = async (req, res) => {
   const { isOwnListing, listingId: rawListingId, orderData } = req.body;
 
   // Add debugging for incoming data
@@ -26,49 +26,64 @@ module.exports = (req, res) => {
   // Use the normalized string directly - SDK should handle it
   const idParam = listingId;
 
-  const listingPromise = () =>
-    isOwnListing ? sdk.ownListings.show({ id: idParam }) : sdk.listings.show({ id: idParam });
+  try {
+    // Get current user ID for shipping estimates
+    let currentUserId = null;
+    try {
+      const currentUserResponse = await sdk.currentUser.show({ id: 'me' });
+      currentUserId = currentUserResponse?.data?.data?.id?.uuid || null;
+      console.log('[transaction-line-items] Current user ID:', currentUserId);
+    } catch (err) {
+      console.log('[transaction-line-items] Could not fetch current user (may be logged out):', err.message);
+    }
 
-  Promise.all([listingPromise(), fetchCommission(sdk)])
-    .then(([showListingResponse, fetchAssetsResponse]) => {
-      const listing = showListingResponse.data.data;
-      const commissionAsset = fetchAssetsResponse.data.data[0];
+    const listingPromise = () =>
+      isOwnListing ? sdk.ownListings.show({ id: idParam }) : sdk.listings.show({ id: idParam });
 
-      const { providerCommission, customerCommission } =
-        commissionAsset?.type === 'jsonAsset' ? commissionAsset.attributes.data : {};
+    const [showListingResponse, fetchAssetsResponse] = await Promise.all([
+      listingPromise(),
+      fetchCommission(sdk)
+    ]);
 
-      const lineItems = transactionLineItems(
-        listing,
-        orderData,
-        providerCommission,
-        customerCommission
-      );
+    const listing = showListingResponse.data.data;
+    const commissionAsset = fetchAssetsResponse.data.data[0];
 
-      // Because we are using returned lineItems directly in this template we need to use the helper function
-      // to add some attributes like lineTotal and reversal that Marketplace API also adds to the response.
-      const validLineItems = constructValidLineItems(lineItems);
+    const { providerCommission, customerCommission } =
+      commissionAsset?.type === 'jsonAsset' ? commissionAsset.attributes.data : {};
 
-      // Pull dates for the UI (adjust to match your client payload)
-      const raw = orderData || {};
-      const breakdownData = raw.bookingDates || {
-        startDate: raw.bookingStart,
-        endDate: raw.bookingEnd,
-      };
+    // Pass SDK and currentUserId for shipping estimation
+    const lineItems = await transactionLineItems(
+      listing,
+      orderData,
+      providerCommission,
+      customerCommission,
+      { currentUserId, sdk }
+    );
 
-      // Build the payload the client expects
-      const payload = {
-        lineItems: validLineItems,
-        breakdownData,          // { startDate, endDate }
-        bookingDates: breakdownData, // keep both keys if your UI reads either
-      };
+    // Because we are using returned lineItems directly in this template we need to use the helper function
+    // to add some attributes like lineTotal and reversal that Marketplace API also adds to the response.
+    const validLineItems = constructValidLineItems(lineItems);
 
-      res
-        .status(200)
-        .set('Content-Type', 'application/transit+json')
-        .send(serialize(payload))
-        .end();
-    })
-    .catch(e => {
-      handleError(res, e);
-    });
+    // Pull dates for the UI (adjust to match your client payload)
+    const raw = orderData || {};
+    const breakdownData = raw.bookingDates || {
+      startDate: raw.bookingStart,
+      endDate: raw.bookingEnd,
+    };
+
+    // Build the payload the client expects
+    const payload = {
+      lineItems: validLineItems,
+      breakdownData,          // { startDate, endDate }
+      bookingDates: breakdownData, // keep both keys if your UI reads either
+    };
+
+    res
+      .status(200)
+      .set('Content-Type', 'application/transit+json')
+      .send(serialize(payload))
+      .end();
+  } catch (e) {
+    handleError(res, e);
+  }
 };

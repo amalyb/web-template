@@ -7,6 +7,213 @@ const {
 } = require('./lineItemHelpers');
 const { types } = require('sharetribe-flex-sdk');
 const { Money } = types;
+const { estimateRoundTrip } = require('../lib/shipping');
+const { DEBUG_SHIPPING_VERBOSE } = require('../config/shipping');
+
+// Verbose logging helper
+const vlog = (...args) => DEBUG_SHIPPING_VERBOSE && console.log(...args);
+
+const LINE_ITEM_ESTIMATED_SHIPPING = 'line-item/estimated-shipping';
+
+/**
+ * Fetch borrower and lender ZIP codes
+ * Strategy: Try to get lender ZIP from listing include first, then fetch separately if needed
+ * @param {Object} params - { listingId, currentUserId, sdk }
+ * @returns {Promise<{ borrowerZip: string|null, lenderZip: string|null }>}
+ */
+async function getZips({ listingId, currentUserId, sdk }) {
+  try {
+    if (!sdk) {
+      console.log('[getZips] No SDK provided');
+      return { borrowerZip: null, lenderZip: null };
+    }
+
+    // Fetch listing with author profile included (minimize API calls)
+    const { data: listingData } = await sdk.listings.show({ 
+      id: listingId, 
+      include: ['author', 'author.profile'],
+      'fields.user': ['profile'],
+      'fields.profile': ['publicData']
+    });
+    
+    const listing = listingData?.data;
+    const included = listingData?.included || [];
+    
+    // Extract lender info from relationships
+    const lenderId = listing?.relationships?.author?.data?.id?.uuid;
+
+    if (!lenderId) {
+      console.log('[getZips] No lender ID found in listing');
+      return { borrowerZip: null, lenderZip: null };
+    }
+
+    console.log('[getZips] Found lender', { 
+      hasLenderId: !!lenderId,
+      hasBorrowerId: !!currentUserId 
+    });
+
+    // Try to extract lender ZIP from included data (listing already fetched author)
+    let lenderZip = null;
+    let viaIncludedAuthor = false;
+    const lenderUser = included.find(inc => 
+      inc.type === 'user' && inc.id?.uuid === lenderId
+    );
+    
+    if (lenderUser) {
+      lenderZip = lenderUser?.attributes?.profile?.publicData?.shippingZip ||
+                  lenderUser?.attributes?.profile?.protectedData?.shippingZip ||
+                  null;
+      viaIncludedAuthor = !!lenderZip;
+      vlog('[getZips] Lender ZIP from listing include', { hasLenderZip: !!lenderZip });
+      console.log('[getZips] Lender ZIP from listing include', { hasLenderZip: !!lenderZip });
+    }
+
+    // If lender ZIP not in included data, fetch separately
+    if (!lenderZip && lenderId) {
+      try {
+        const { data: lenderData } = await sdk.users.show({
+          id: lenderId,
+          include: ['profile'],
+          'fields.user': ['profile'],
+          'fields.profile': ['publicData']
+        });
+        
+        const lenderProfile = lenderData?.data?.attributes?.profile;
+        lenderZip = lenderProfile?.publicData?.shippingZip ||
+                    lenderProfile?.protectedData?.shippingZip ||
+                    null;
+        vlog('[getZips] Lender ZIP from separate fetch', { hasLenderZip: !!lenderZip });
+        console.log('[getZips] Lender ZIP from separate fetch', { hasLenderZip: !!lenderZip });
+      } catch (err) {
+        vlog('[getZips] Error fetching lender', { error: err.message });
+        console.error('[getZips] Error fetching lender:', err.message);
+      }
+    }
+
+    // Fetch borrower (current user) ZIP
+    let borrowerZip = null;
+    if (currentUserId) {
+      try {
+        const { data: borrowerData } = await sdk.users.show({
+          id: currentUserId,
+          include: ['profile'],
+          'fields.user': ['profile'],
+          'fields.profile': ['publicData']
+        });
+        
+        const borrowerProfile = borrowerData?.data?.attributes?.profile;
+        borrowerZip = borrowerProfile?.publicData?.shippingZip ||
+                      borrowerProfile?.protectedData?.shippingZip ||
+                      null;
+        vlog('[getZips] Borrower ZIP fetched', { hasBorrowerZip: !!borrowerZip });
+        console.log('[getZips] Borrower ZIP fetched', { hasBorrowerZip: !!borrowerZip });
+      } catch (err) {
+        vlog('[getZips] Error fetching borrower', { error: err.message });
+        console.error('[getZips] Error fetching borrower:', err.message);
+      }
+    }
+
+    vlog('[getZips]', { 
+      hasBorrowerZip: !!borrowerZip, 
+      hasLenderZip: !!lenderZip,
+      viaIncludedAuthor 
+    });
+    console.log('[getZips] Result', { 
+      hasBorrowerZip: !!borrowerZip, 
+      hasLenderZip: !!lenderZip 
+    });
+    
+    return { borrowerZip, lenderZip };
+  } catch (err) {
+    console.error('[getZips] Error:', err.message);
+    return { borrowerZip: null, lenderZip: null };
+  }
+}
+
+/**
+ * Build shipping line item with estimate or calculatedAtCheckout fallback
+ * @param {Object} params - { listing, currentUserId, sdk }
+ * @returns {Promise<Object>} Line item object
+ */
+async function buildShippingLine({ listing, currentUserId, sdk }) {
+  try {
+    const { borrowerZip, lenderZip } = await getZips({ 
+      listingId: listing.id.uuid, 
+      currentUserId, 
+      sdk 
+    });
+
+    if (!borrowerZip || !lenderZip) {
+      vlog('[buildShippingLine] Missing ZIPs', { 
+        hasBorrowerZip: !!borrowerZip, 
+        hasLenderZip: !!lenderZip 
+      });
+      vlog('[buildShippingLine] fallback calculatedAtCheckout');
+      console.log('[buildShippingLine] Missing ZIPs, using calculatedAtCheckout');
+      return {
+        code: LINE_ITEM_ESTIMATED_SHIPPING,
+        // zero-priced placeholder keeps totals math happy
+        unitPrice: new Money(0, 'USD'),
+        quantity: 1,
+        includeFor: ['customer'],
+        calculatedAtCheckout: true,
+      };
+    }
+
+    // Optional: read per-listing parcel from listing.publicData
+    const parcel = listing?.attributes?.publicData?.parcel || null;
+    vlog('[buildShippingLine] Calling estimateRoundTrip', { 
+      hasBorrowerZip: !!borrowerZip,
+      hasLenderZip: !!lenderZip,
+      hasParcel: !!parcel 
+    });
+
+    const est = await estimateRoundTrip({ lenderZip, borrowerZip, parcel });
+    if (!est) {
+      vlog('[buildShippingLine] Estimate failed');
+      vlog('[buildShippingLine] fallback calculatedAtCheckout');
+      console.log('[buildShippingLine] Estimate failed, using calculatedAtCheckout');
+      return {
+        code: LINE_ITEM_ESTIMATED_SHIPPING,
+        // zero-priced placeholder keeps totals math happy
+        unitPrice: new Money(0, 'USD'),
+        quantity: 1,
+        includeFor: ['customer'],
+        calculatedAtCheckout: true,
+      };
+    }
+
+    vlog('[buildShippingLine]', {
+      hasBorrowerZip: !!borrowerZip,
+      hasLenderZip: !!lenderZip,
+      estOk: !!est,
+      amountCents: est?.amountCents
+    });
+    vlog('[buildShippingLine] moneyType', { 
+      ctor: (new Money(1,'USD')).constructor?.name 
+    });
+    console.log('[buildShippingLine] Estimate successful', est);
+    return {
+      code: LINE_ITEM_ESTIMATED_SHIPPING,
+      unitPrice: new Money(est.amountCents, est.currency),
+      quantity: 1,
+      includeFor: ['customer'],
+      calculatedAtCheckout: false,
+    };
+  } catch (e) {
+    vlog('[buildShippingLine] Error caught', { error: e.message });
+    vlog('[buildShippingLine] fallback calculatedAtCheckout');
+    console.error('[buildShippingLine] Error:', e.message);
+    // keep UI resilient - zero-priced placeholder keeps totals math happy
+    return {
+      code: LINE_ITEM_ESTIMATED_SHIPPING,
+      unitPrice: new Money(0, 'USD'),
+      quantity: 1,
+      includeFor: ['customer'],
+      calculatedAtCheckout: true,
+    };
+  }
+}
 
 /**
  * Get quantity and add extra line-items that are related to delivery method
@@ -136,9 +343,10 @@ const getDateRangeQuantityAndLineItems = (orderData, code) => {
  * @param {Object} orderData
  * @param {Object} providerCommission
  * @param {Object} customerCommission
- * @returns {Array} lineItems
+ * @param {Object} options - Optional { currentUserId, sdk } for shipping estimation
+ * @returns {Promise<Array>} lineItems
  */
-exports.transactionLineItems = (listing, orderData, providerCommission, customerCommission) => {
+exports.transactionLineItems = async (listing, orderData, providerCommission, customerCommission, options = {}) => {
   const { publicData, price: flatPrice } = listing.attributes;
   const unitType = publicData.unitType;
   const currency = flatPrice.currency;
@@ -262,11 +470,25 @@ exports.transactionLineItems = (listing, orderData, providerCommission, customer
       }]
     : [];
 
-  // Final lineItems array: only order, discount (if any), and commission line items (no extraLineItems).
+  // Build shipping line item if we have the necessary context
+  let shippingLineItem = null;
+  if (options.currentUserId && options.sdk) {
+    console.log('[transactionLineItems] Building shipping estimate');
+    shippingLineItem = await buildShippingLine({ 
+      listing, 
+      currentUserId: options.currentUserId, 
+      sdk: options.sdk 
+    });
+  } else {
+    console.log('[transactionLineItems] No currentUserId/sdk, skipping shipping estimate');
+  }
+
+  // Final lineItems array: order, discount, commissions, and shipping
   const lineItems = [
     ...subtotalLineItems,
     ...providerCommissionMaybe,
-    ...customerCommissionMaybe
+    ...customerCommissionMaybe,
+    ...(shippingLineItem ? [shippingLineItem] : [])
   ];
 
   // Calculate and log payin/payout totals for debugging

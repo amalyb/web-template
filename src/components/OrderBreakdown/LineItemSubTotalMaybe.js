@@ -37,7 +37,7 @@ const isCommission = lineItem => {
 };
 
 /**
- * Returns non-commission, non-reversal line items (excluding shipping estimate)
+ * Returns non-commission, non-reversal line items
  */
 const nonCommissionNonReversalLineItems = lineItems => {
   return lineItems.filter(

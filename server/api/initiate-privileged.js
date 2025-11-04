@@ -102,12 +102,23 @@ module.exports = (req, res) => {
       const { providerCommission, customerCommission } =
         commissionAsset?.type === 'jsonAsset' ? commissionAsset.attributes.data : {};
 
-      // Calculate line items
-      const lineItems = transactionLineItems(
+      // Get current user ID for shipping estimates (if available)
+      let currentUserId = null;
+      try {
+        const currentUserResponse = await sdk.currentUser.show({ id: 'me' });
+        currentUserId = currentUserResponse?.data?.data?.id?.uuid || null;
+        console.log('[initiate-privileged] Current user ID:', currentUserId);
+      } catch (err) {
+        console.log('[initiate-privileged] Could not fetch current user:', err.message);
+      }
+
+      // Calculate line items (now async with shipping estimation)
+      const lineItems = await transactionLineItems(
         listing,
         { ...orderData, ...bodyParams.params },
         providerCommission,
-        customerCommission
+        customerCommission,
+        { currentUserId, sdk }
       );
 
       // Prepare transaction body

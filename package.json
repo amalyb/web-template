@@ -69,7 +69,8 @@
     "smoothscroll-polyfill": "^0.4.0",
     "source-map-support": "^0.5.21",
     "twilio": "^5.7.1",
-    "unified": "^9.2.2"
+    "unified": "^9.2.2",
+    "zipcodes": "^8.0.0"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.0",

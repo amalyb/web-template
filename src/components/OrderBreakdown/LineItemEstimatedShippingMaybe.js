@@ -25,13 +25,10 @@ const LineItemEstimatedShippingMaybe = props => {
   }
 
   // Decide what to show on the right-hand side
-  let valueText = null;
-  if (shippingItem.lineTotal) {
-    valueText = formatMoney(intl, shippingItem.lineTotal);
-  } else {
-    // No estimate yet (missing ZIPs or can't compute)
-    valueText = 'calculated at checkout';
-  }
+  // ALWAYS show "calculated at checkout" when flag is true, regardless of lineTotal
+  const valueText = shippingItem.calculatedAtCheckout === true
+    ? 'calculated at checkout'
+    : formatMoney(intl, shippingItem.lineTotal);
 
   return (
     <div className={css.lineItem}>

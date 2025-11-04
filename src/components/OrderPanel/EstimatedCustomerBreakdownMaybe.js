@@ -200,6 +200,10 @@ const estimatedTotalPrice = (lineItems, marketplaceCurrency) => {
     console.log('Is Money instance:', lineItem.lineTotal instanceof Money);
     console.log('Object details:', lineItem.lineTotal);
     
+    if (!lineItem.lineTotal) {
+      // Skip items without a numeric line total (e.g., estimated shipping placeholder)
+      return sum;
+    }
     validateMoneyObject(lineItem.lineTotal, 'lineItem.lineTotal');
     const numericPrice = convertMoneyToNumber(lineItem.lineTotal);
     return new Decimal(numericPrice).add(sum);
@@ -220,6 +224,14 @@ const estimatedTotalPrice = (lineItems, marketplaceCurrency) => {
 
   debugLog('estimatedTotalPrice result', result);
   return result;
+};
+
+// Provider total mirrors estimatedTotalPrice, but for provider-included items
+const estimatedProviderTotalPrice = (lineItems, marketplaceCurrency) => {
+  const providerItems = (lineItems || []).filter(
+    li => Array.isArray(li.includeFor) && li.includeFor.includes('provider')
+  );
+  return estimatedTotalPrice(providerItems, marketplaceCurrency);
 };
 
 const estimatedBooking = (bookingStart, bookingEnd, lineItemUnitType, timeZone = 'Etc/UTC') => {
@@ -385,7 +397,7 @@ const EstimatedCustomerBreakdownMaybe = props => {
   };
 
   try {
-    const { breakdownData: rawBreakdownData = {}, lineItems: rawLineItems, timeZone, currency, marketplaceName, processName, shippingEstimateCents, borrowerZip, lenderZip } = props;
+    const { breakdownData: rawBreakdownData = {}, lineItems: rawLineItems, timeZone, currency, marketplaceName, processName, shippingEstimateCents } = props;
     
     // Apply parsing guard
     const breakdownData = parseMaybe(rawBreakdownData) || {};
@@ -490,7 +502,7 @@ const EstimatedCustomerBreakdownMaybe = props => {
 
     // Remove all frontend discount logic. Only use the provided lineItems.
     let adjustedLineItems = parsedLineItems;
-    
+
     // Create the shipping line item (with real or null value)
     const shippingLineItem = shippingEstimateCents != null
       ? {
@@ -500,66 +512,43 @@ const EstimatedCustomerBreakdownMaybe = props => {
           lineTotal: new Money(shippingEstimateCents, currency),
           unitPrice: new Money(shippingEstimateCents, currency),
           quantity: new Decimal(1),
+          calculatedAtCheckout: false,
         }
       : {
           code: LINE_ITEM_ESTIMATED_SHIPPING,
           includeFor: ['customer'],
           reversal: false,
-          // lineTotal is intentionally null -> tells UI to say "calculated at checkout"
-          lineTotal: null,
-          // Give unitPrice a valid Money(0) to avoid PropType warnings in other line item components
+          // IMPORTANT: keep Money to avoid crashes downstream
+          lineTotal: new Money(0, currency),
           unitPrice: new Money(0, currency),
           quantity: new Decimal(1),
+          calculatedAtCheckout: true,
         };
 
-    // Only add shipping to calculation if we have a real value
-    // (null shipping will be added to the transaction's lineItems array later for display)
-    if (shippingEstimateCents != null) {
-      adjustedLineItems = [...adjustedLineItems, shippingLineItem];
-    }
+    // Always append the synthetic shipping line for display and/or calculation
+    adjustedLineItems = [...adjustedLineItems, shippingLineItem];
 
-    let process = null;
-    try {
-      process = getProcess(processName);
-    } catch (e) {
-      return (
-        <div className={css.error}>
-          <FormattedMessage id="OrderPanel.unknownTransactionProcess" />
-        </div>
-      );
-    }
+    // Compute customer and provider totals; only numeric lineTotals are counted inside helper
+    const customerLineItems = adjustedLineItems.filter(item =>
+      (item.includeFor || []).includes('customer')
+    );
 
-    const shouldHaveBooking = [LINE_ITEM_DAY, LINE_ITEM_NIGHT].includes(lineItemUnitType);
-    const hasLineItems = parsedLineItems && parsedLineItems.length > 0;
-    const hasRequiredBookingData = !shouldHaveBooking || (startDate && endDate);
+    const payinTotal = estimatedTotalPrice(customerLineItems, currency);
+    const payoutTotal = estimatedProviderTotalPrice(adjustedLineItems, currency);
 
-    let tx =
-      hasLineItems && hasRequiredBookingData
-        ? estimatedCustomerTransaction(
-            adjustedLineItems,
-            startDate,
-            endDate,
-            lineItemUnitType,
-            timeZone,
-            process,
-            processName,
-            currency
-          )
-        : null;
+    const tx = {
+      id: 'estimated-tx',
+      attributes: {
+        lineItems: adjustedLineItems,
+        payinTotal,
+        payoutTotal,
+      },
+      booking: startDate && endDate ? estimatedBooking(startDate, endDate, lineItemUnitType, timeZone) : null,
+    };
 
-    // If we have a transaction but shipping estimate is null,
-    // add the placeholder shipping line item for display only
-    if (tx && shippingEstimateCents == null) {
-      tx = {
-        ...tx,
-        attributes: {
-          ...tx.attributes,
-          lineItems: [...tx.attributes.lineItems, shippingLineItem],
-        },
-      };
-    }
+    console.debug('[breakdown-tx]', tx);
 
-    return tx ? (
+    return (
       <OrderBreakdown
         className={css.receipt}
         userRole="customer"
@@ -568,8 +557,9 @@ const EstimatedCustomerBreakdownMaybe = props => {
         timeZone={timeZone}
         currency={currency}
         marketplaceName={marketplaceName}
+        processName={processName}
       />
-    ) : null;
+    );
   } catch (error) {
     debugLog('Component Error', {
       error: error?.toString(),

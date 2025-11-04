@@ -234,7 +234,6 @@ const OrderPanel = props => {
     fetchLineItemsInProgress,
     fetchLineItemsError,
     payoutDetailsWarning,
-    currentUser,
     hidePrice = false,
   } = props;
 
@@ -324,9 +323,6 @@ const OrderPanel = props => {
     price,
     marketplaceCurrency,
     listingId: listing.id,
-    listing,
-    author,
-    currentUser,
     isOwnListing,
     marketplaceName,
     onFetchTransactionLineItems,
