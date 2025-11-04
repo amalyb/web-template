@@ -927,6 +927,16 @@ module.exports = async (req, res) => {
     const { providerCommission, customerCommission } =
       commissionAsset?.type === 'jsonAsset' ? commissionAsset.attributes.data : {};
 
+    // Get current user ID for shipping estimates (if available)
+    let currentUserId = null;
+    try {
+      const currentUserResponse = await sdk.currentUser.show({ id: 'me' });
+      currentUserId = currentUserResponse?.data?.data?.id?.uuid || null;
+      console.log('[transition-privileged] Current user ID:', currentUserId);
+    } catch (err) {
+      console.log('[transition-privileged] Could not fetch current user:', err.message);
+    }
+
     // Debug log for orderData
     console.log("📦 orderData for lineItems:", orderData);
 
@@ -934,11 +944,12 @@ module.exports = async (req, res) => {
     let transition = bodyParams?.transition;
     if (transition !== 'transition/accept') {
       if (orderData) {
-        lineItems = transactionLineItems(
+        lineItems = await transactionLineItems(
           listing,
           { ...orderData, ...bodyParams.params },
           providerCommission,
-          customerCommission
+          customerCommission,
+          { currentUserId, sdk }
         );
       } else {
         console.warn("⚠️ No orderData provided for non-accept transition. This may cause issues.");

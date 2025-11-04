@@ -1,68 +1,24 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
-const { utcToZonedTime, format } = require('date-fns-tz');
-const { startOfDay } = require('date-fns');
 
-// Shipping client initialization - supports EasyPost and Shippo
-let shippingClient, useEasyPost = process.env.EASYPOST_ENABLED === 'true';
+// Shipping client initialization (modern Shippo SDK)
+let shippo = null;
 
-if (useEasyPost) {
-  const EasyPost = require('@easypost/api');
-  shippingClient = new EasyPost(process.env.EASYPOST_MODE === 'test'
-    ? process.env.EASYPOST_TEST_API_KEY
-    : process.env.EASYPOST_API_KEY
-  );
-  console.log('[Shipping] Using EasyPost integration');
-} else {
-  // Safe Shippo bootstrap that works in both older and newer SDK shapes,
-  // AND won't crash locally if there's no token.
-
-  try {
-    const rawShippo = require('shippo');
-
-    // Handle both possible SDK styles:
-    //  - function style: const shippo = require('shippo')('TOKEN')
-    //  - constructor style: const Shippo = require('shippo'); new Shippo('TOKEN')
-    const token = process.env.SHIPPO_API_TOKEN || process.env.SHIPPO_TOKEN || 'DUMMY_TOKEN_FOR_DEV';
-
-    let clientCandidate;
-    if (typeof rawShippo === 'function') {
-      // Old style SDK
-      clientCandidate = rawShippo(token);
-    } else if (typeof rawShippo === 'object' && typeof rawShippo.default === 'function') {
-      // Some builds export { default: [Function] }
-      clientCandidate = rawShippo.default(token);
-    } else {
-      // Try "new" style
-      clientCandidate = new rawShippo(token);
-    }
-
-    shippingClient = clientCandidate;
-    console.log('[shipping] Shippo client initialized (dev-safe).');
-  } catch (err) {
-    console.warn('[shipping] Shippo module not available or failed to init. Using stub for dev.', err);
-
-    // Minimal stub so the rest of server can boot locally.
-    shippingClient = {
-      // Add any methods your code calls at startup, or leave empty if nothing is called until label purchase time.
-      shipment: {
-        create: async () => {
-          throw new Error('Shippo disabled in dev');
-        },
-      },
-      transaction: {
-        create: async () => {
-          throw new Error('Shippo disabled in dev');
-        },
-      },
-    };
+try {
+  const { Shippo } = require('shippo');
+  if (process.env.SHIPPO_API_TOKEN) {
+    shippo = new Shippo({ apiKeyHeader: process.env.SHIPPO_API_TOKEN });
+    console.log('[shipping] Shippo client initialized (new SDK)');
+  } else {
+    console.log('[shipping] SHIPPO_API_TOKEN not set; estimator will fall back');
   }
-
-  // export whatever the rest of shipping.js expects
-  const shippo = shippingClient;
-
-  console.log('[Shipping] Using Shippo integration');
+} catch (e) {
+  console.log('[shipping] Failed to require shippo; estimator will fall back:', e?.message);
+  shippo = null;
 }
+
+// For backwards compatibility with other parts of the codebase
+const shippingClient = shippo;
 
 const LEAD_MODE = process.env.SHIP_LEAD_MODE || 'static';
 const LEAD_FLOOR = Number(process.env.SHIP_LEAD_DAYS || 2);
@@ -123,46 +79,35 @@ async function resolveZipsFromTx(tx, opts = {}) {
 }
 
 /**
- * Compute lead days from miles using realistic transit thresholds
- * @param {number} miles - Distance in miles
- * @returns {number} Lead days before booking start
- */
-function leadDaysFromMiles(miles) {
-  if (miles <= 50) return 1;
-  if (miles <= 250) return 2;
-  if (miles <= 600) return 3;
-  if (miles <= 1500) return 4;
-  return 5;
-}
-
-/**
  * Compute lead days based on distance between origin and destination
- * Uses realistic distance thresholds:
- * - ≤50 miles: 1 day
- * - ≤250 miles: 2 days
- * - ≤600 miles: 3 days
- * - ≤1500 miles: 4 days
- * - >1500 miles: 5 days
+ * Uses simple distance buckets:
+ * - ≤200 miles: 1 day (respecting floor)
+ * - 200-1000 miles: 2 days (respecting floor)
+ * - >1000 miles: 3 days (respecting floor)
  * 
  * @param {Object} params - { fromZip, toZip }
- * @returns {Promise<{leadDays: number, miles: number|null}>}
+ * @returns {Promise<number>} Lead days (between LEAD_FLOOR and LEAD_MAX)
  */
 async function computeLeadDaysDynamic({ fromZip, toZip }) {
-  if (!fromZip || !toZip) {
-    const staticFloor = Number(process.env.SHIP_LEAD_DAYS || 0);
-    const lead = Math.max(1, staticFloor);
-    return { leadDays: lead, miles: null };
-  }
+  if (!fromZip || !toZip) return LEAD_FLOOR;
 
   const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
-  if (!fromLL || !toLL) {
-    const staticFloor = Number(process.env.SHIP_LEAD_DAYS || 0);
-    const lead = Math.max(1, staticFloor);
-    return { leadDays: lead, miles: null };
-  }
+  if (!fromLL || !toLL) return LEAD_FLOOR;
 
   const miles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
-  const lead = leadDaysFromMiles(miles);
+
+  // Buckets (tuneable): ≤200mi:1d, 200–1000mi:2d, >1000mi:3d
+  let lead = LEAD_FLOOR;
+  if (miles <= 200) {
+    lead = Math.max(1, LEAD_FLOOR);
+  } else if (miles <= 1000) {
+    lead = Math.max(2, LEAD_FLOOR);
+  } else {
+    lead = Math.max(3, LEAD_FLOOR);
+  }
+
+  // Cap to LEAD_MAX
+  lead = Math.min(lead, LEAD_MAX);
 
   // Debug log (safe/structured)
   console.log('[ship-by:distance]', {
@@ -170,9 +115,11 @@ async function computeLeadDaysDynamic({ fromZip, toZip }) {
     toZip,
     miles: Math.round(miles),
     chosenLeadDays: lead,
+    floor: LEAD_FLOOR,
+    max: LEAD_MAX,
   });
 
-  return { leadDays: lead, miles };
+  return lead;
 }
 
 /**
@@ -192,42 +139,31 @@ function adjustIfSundayUTC(date) {
 }
 
 /**
- * Compute ship-by date and metadata for a transaction
+ * Compute ship-by date for a transaction
  * Supports both static and distance-based lead time calculation
  * 
  * @param {Object} tx - Transaction object with booking and address data
  * @param {Object} opts - Options { preferLabelAddresses: boolean }
- * @returns {Promise<{shipByDate: Date, leadDays: number, miles: number|null, mode: string}>}
+ * @returns {Promise<Date|null>} Ship-by date or null if cannot be computed
  */
-async function computeShipBy(tx, opts = {}) {
+async function computeShipByDate(tx, opts = {}) {
   const startISO = getBookingStartISO(tx);
-  if (!startISO) {
-    return { shipByDate: null, leadDays: 0, miles: null, mode: 'none' };
-  }
+  if (!startISO) return null;
 
   const start = new Date(startISO);
-  if (Number.isNaN(+start)) {
-    return { shipByDate: null, leadDays: 0, miles: null, mode: 'none' };
-  }
+  if (Number.isNaN(+start)) return null;
   
   // Normalize to UTC midnight to avoid timezone shifts
   start.setUTCHours(0, 0, 0, 0);
 
   let leadDays = LEAD_FLOOR;
-  let miles = null;
-  let mode = 'static';
 
   if (LEAD_MODE === 'distance') {
     const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
     console.log('[ship-by] zips', { fromZip, toZip });
-    const result = await computeLeadDaysDynamic({ fromZip, toZip });
-    leadDays = result.leadDays;
-    miles = result.miles;
-    mode = miles != null ? 'distance' : 'static';
+    leadDays = await computeLeadDaysDynamic({ fromZip, toZip });
   } else {
     // static (existing behavior)
-    const staticFloor = Number(process.env.SHIP_LEAD_DAYS || 0);
-    leadDays = Math.max(1, staticFloor);
     console.log('[ship-by:static]', { chosenLeadDays: leadDays });
   }
 
@@ -245,53 +181,353 @@ async function computeShipBy(tx, opts = {}) {
       reason: 'sunday_to_saturday',
     });
   }
-  
-  // Final verification log
-  console.log('[ship-by:final]', {
-    startISO: startISO,
-    leadDays: leadDays,
-    miles: miles ? Math.round(miles) : null,
-    shipByISO: adjusted.toISOString(),
-    mode: mode
-  });
 
-  return { shipByDate: adjusted, leadDays, miles, mode };
+  return adjusted;
 }
 
-/**
- * Legacy wrapper for backward compatibility
- * @deprecated Use computeShipBy instead
- */
-async function computeShipByDate(tx, opts = {}) {
-  const result = await computeShipBy(tx, opts);
-  return result.shipByDate;
-}
-
-/**
- * Format ship-by date for SMS display (Pacific Time, start-of-day)
- * @param {Date} date - The date to format
- * @returns {string|null} Formatted date string or null
- */
 function formatShipBy(date) {
   if (!date) return null;
   try {
-    const tz = 'America/Los_Angeles';
-    const z = utcToZonedTime(new Date(date), tz);
-    const sod = startOfDay(z);
-    return format(sod, 'MMM d', { timeZone: tz });
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC', // keep display aligned with UTC calculations
+    });
   } catch {
     return null;
   }
 }
 
+const { defaultParcel, preferredServices, includeReturn, DEBUG_SHIPPING_VERBOSE } = require('../config/shipping');
+
+// Verbose logging helper (only logs when DEBUG_SHIPPING_VERBOSE=1)
+const vlog = (...args) => DEBUG_SHIPPING_VERBOSE && console.log(...args);
+
+// In-memory cache for shipping estimates
+const estimateCache = new Map();
+const CACHE_TTL_MS = 20 * 60 * 1000; // 20 minutes
+
+/**
+ * Generate cache key for estimates
+ */
+function getCacheKey({ fromZip, toZip, parcel }) {
+  const parcelSig = parcel 
+    ? `${parcel.length}x${parcel.width}x${parcel.height}x${parcel.weightOz}`
+    : 'default';
+  const servicesSig = preferredServices.join(',');
+  return `${fromZip}:${toZip}:${parcelSig}:${servicesSig}:${includeReturn}`;
+}
+
+/**
+ * Get cached estimate if available and not expired
+ */
+function getCachedEstimate(key) {
+  const cached = estimateCache.get(key);
+  if (!cached) return null;
+  
+  if (Date.now() - cached.timestamp > CACHE_TTL_MS) {
+    estimateCache.delete(key);
+    return null;
+  }
+  
+  return cached.value;
+}
+
+/**
+ * Store estimate in cache
+ */
+function setCachedEstimate(key, value) {
+  estimateCache.set(key, {
+    value,
+    timestamp: Date.now()
+  });
+  
+  // Simple cache size limit (prevent memory leak)
+  if (estimateCache.size > 1000) {
+    const firstKey = estimateCache.keys().next().value;
+    estimateCache.delete(firstKey);
+  }
+}
+
+/**
+ * Default parcel specification (used when no parcel is provided)
+ */
+const defaultParcelSpec = { length: 12, width: 9, height: 3, weightOz: 16 };
+
+/**
+ * Build parcel payload for Shippo (strings + units, no template)
+ */
+const toShippoParcel = (parcel) => {
+  const p = parcel || {};
+  const d = defaultParcelSpec;
+  return {
+    // All fields must be strings per Shippo zod schema
+    length: String(p.length ?? d.length),
+    width:  String(p.width  ?? d.width),
+    height: String(p.height ?? d.height),
+    distanceUnit: 'in',   // allowed: "cm"|"in"|"ft"|"m"|"mm"|"yd"
+    weight: String(p.weightOz ?? d.weightOz),
+    massUnit: 'oz',       // allowed: "g"|"kg"|"lb"|"oz"
+    // DO NOT set `template` when sending explicit dimensions
+  };
+};
+
+const zipcodes = require('zipcodes');
+
+/**
+ * Build address payload for Shippo (zip/country + validate:false)
+ * Uses zipcodes package to automatically look up city/state for any U.S. ZIP
+ */
+const toShippoAddress = (zipRaw) => {
+  const zip = String(zipRaw || '').trim();
+  const lookup = zipcodes.lookup(zip) || {};
+  const { city = 'City', state = 'CA' } = lookup;
+
+  return {
+    name: 'Sherbrt User',
+    street1: 'N/A',
+    city,
+    state,
+    zip,
+    country: 'US',
+    validate: false,
+  };
+};
+
+/**
+ * Create a promise that times out after specified ms
+ */
+function withTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Shippo API timeout')), timeoutMs)
+    )
+  ]);
+}
+
+/**
+ * Runtime detection of Shippo rates method (supports multiple SDK shapes)
+ * Returns an async function that calls the appropriate method, or null if not found
+ */
+const detectRatesMethod = (shippo) => {
+  if (!shippo) return null;
+  
+  // Modern SDK: shippo.shipments.create(...) returns shipment with rates
+  if (shippo.shipments && typeof shippo.shipments.create === 'function') {
+    return async (payload) => {
+      const shipment = await shippo.shipments.create(payload);
+      // Modern SDK returns shipment object with rates array
+      return shipment;
+    };
+  }
+  
+  // Legacy: rates.estimate(...)
+  if (shippo.rates && typeof shippo.rates.estimate === 'function') {
+    return async (payload) => shippo.rates.estimate(payload);
+  }
+  
+  // Legacy: shipments.rates(...)
+  if (shippo.shipments && typeof shippo.shipments.rates === 'function') {
+    return async (payload) => shippo.shipments.rates(payload);
+  }
+  
+  // Older factory style: shippo.shipment?.rates(...)
+  if (shippo.shipment && typeof shippo.shipment.rates === 'function') {
+    return async (payload) => shippo.shipment.rates(payload);
+  }
+  
+  return null;
+};
+
+/**
+ * Estimate one-way shipping between two ZIPs with timeout and retry.
+ * Returns { amountCents, currency, debug } or null on failure.
+ */
+async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
+  if (!shippo || !process.env.SHIPPO_API_TOKEN) {
+    vlog('[estimateOneWay] Shippo not configured', { 
+      hasClient: !!shippo,
+      hasToken: !!process.env.SHIPPO_API_TOKEN 
+    });
+    return null;
+  }
+  if (!fromZip || !toZip) {
+    vlog('[estimateOneWay] Missing zips', { 
+      hasFromZip: !!fromZip, 
+      hasToZip: !!toZip 
+    });
+    return null;
+  }
+
+  // Build address and parcel payloads
+  const addressFrom = toShippoAddress(fromZip);
+  const addressTo = toShippoAddress(toZip);
+  const parcelPayload = toShippoParcel(parcel);
+
+  // Detect the appropriate rates method
+  const callRates = detectRatesMethod(shippo);
+  if (!callRates) {
+    vlog('[estimateOneWay] No compatible rates method on Shippo client', {
+      keys: Object.keys(shippo || {}),
+    });
+    return null;
+  }
+
+  // Check cache
+  const cacheKey = getCacheKey({ fromZip, toZip, parcel });
+  const cached = getCachedEstimate(cacheKey);
+  if (cached) {
+    vlog('[estimateOneWay] Cache hit', { amountCents: cached.amountCents });
+    return cached;
+  }
+
+  try {
+    vlog('[estimateOneWay] Creating shipment for rate estimate', { 
+      hasFromZip: !!fromZip,
+      hasToZip: !!toZip,
+      hasParcel: !!parcelPayload,
+      retryCount
+    });
+    
+    const payload = { addressFrom, addressTo, parcels: [parcelPayload] };
+    vlog('[estimateOneWay] Payload preview', {
+      addressFrom: { city: addressFrom.city, state: addressFrom.state, zip: addressFrom.zip, country: addressFrom.country },
+      addressTo:   { city: addressTo.city, state: addressTo.state, zip: addressTo.zip, country: addressTo.country },
+      parcel: parcelPayload,
+    });
+    
+    // Get rates using detected method
+    const ratesResp = await withTimeout(callRates(payload), 5000);
+
+    // Normalize shapes: modern SDK returns {rates: [...]}, legacy may return {results: [...]} or array
+    const allRates = Array.isArray(ratesResp?.rates)
+      ? ratesResp.rates
+      : (Array.isArray(ratesResp?.results) 
+        ? ratesResp.results 
+        : (Array.isArray(ratesResp) ? ratesResp : []));
+    
+    vlog('[estimateOneWay] rates', { 
+      count: allRates.length, 
+      sample: allRates.slice(0, 3).map(r => ({ 
+        carrier: r.carrier || r.provider, 
+        service: r.service || r.provider_service, 
+        amount: r.amount, 
+        currency: r.currency 
+      })) 
+    });
+
+    if (!allRates.length) return null;
+
+    const { preferredServices = [] } = require('../config/shipping');
+    const nameOf = r => ((r.carrier || r.provider || '') + ' ' + (r.service || r.provider_service || '')).trim();
+    const filtered = preferredServices.length
+      ? allRates.filter(r => preferredServices.includes(nameOf(r)))
+      : allRates;
+    
+    vlog('[estimateOneWay] filter', { 
+      filteredCount: filtered.length, 
+      unfilteredCount: allRates.length, 
+      preferred: preferredServices 
+    });
+
+    const chosen = (filtered.length ? filtered : allRates)
+      .slice()
+      .sort((a, b) => parseFloat(a.amount) - parseFloat(b.amount))[0];
+
+    if (!chosen || chosen.amount == null) return null;
+
+    const result = {
+      amountCents: Math.round(parseFloat(chosen.amount) * 100),
+      currency: chosen.currency || 'USD',
+      debug: { chosen: nameOf(chosen) }
+    };
+    
+    // Cache successful result
+    setCachedEstimate(cacheKey, result);
+    
+    vlog('[estimateOneWay] Estimate successful', {
+      amountCents: result.amountCents,
+      service: result.debug.chosen
+    });
+    return result;
+  } catch (err) {
+    const msg = (err && (err.message || err.toString())) || 'unknown error';
+    vlog('[estimateOneWay] Error caught', { message: msg });
+    
+    // Retry once on network errors
+    const isNetworkError = err.message?.includes('timeout') || 
+                          err.message?.includes('ECONNREFUSED') ||
+                          err.message?.includes('ETIMEDOUT') ||
+                          err.code === 'ENOTFOUND';
+    
+    if (isNetworkError && retryCount < 1) {
+      vlog('[estimateOneWay] Network error, retrying', { 
+        error: err.message,
+        retryCount: retryCount + 1 
+      });
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return estimateOneWay({ fromZip, toZip, parcel }, retryCount + 1);
+    }
+    
+    return null;
+  }
+}
+
+/**
+ * Estimate round trip (outbound + return) if includeReturn=true.
+ */
+async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
+  vlog('[estimateRoundTrip] Starting', { 
+    hasLenderZip: !!lenderZip,
+    hasBorrowerZip: !!borrowerZip,
+    includeReturn 
+  });
+  
+  const out = await estimateOneWay({ fromZip: lenderZip, toZip: borrowerZip, parcel });
+  if (!out) {
+    vlog('[estimateRoundTrip] Outbound estimate failed - returning null');
+    return null;
+  }
+
+  if (!includeReturn) {
+    vlog('[estimateRoundTrip] Return not included, using outbound only');
+    return out;
+  }
+
+  const ret = await estimateOneWay({ fromZip: borrowerZip, toZip: lenderZip, parcel });
+  if (!ret) {
+    vlog('[estimateRoundTrip] Return estimate failed, using outbound only (best-effort)');
+    return out; // best-effort
+  }
+
+  if (ret.currency !== out.currency) {
+    vlog('[estimateRoundTrip] Currency mismatch, using outbound only');
+    return out; // keep it simple
+  }
+
+  const result = {
+    amountCents: out.amountCents + ret.amountCents,
+    currency: out.currency,
+    debug: { out: out.debug, ret: ret.debug },
+  };
+  
+  vlog('[estimateRoundTrip] Round trip estimate successful', {
+    totalAmountCents: result.amountCents,
+    outboundCents: out.amountCents,
+    returnCents: ret.amountCents
+  });
+  return result;
+}
+
 module.exports = { 
   shippingClient,
-  useEasyPost,
-  computeShipBy,
+  shippo,
   computeShipByDate, 
   formatShipBy, 
   getBookingStartISO,
   resolveZipsFromTx,
   computeLeadDaysDynamic,
-  leadDaysFromMiles,
+  estimateOneWay,
+  estimateRoundTrip,
 };

@@ -17,6 +17,7 @@ import {
   LISTING_UNIT_TYPES,
   propTypes,
 } from '../../util/types';
+import { LINE_ITEM_ESTIMATED_SHIPPING } from '../../util/types';
 
 import LineItemBookingPeriod from './LineItemBookingPeriod';
 import LineItemBasePriceMaybe from './LineItemBasePriceMaybe';
@@ -31,6 +32,7 @@ import LineItemRefundMaybe from './LineItemRefundMaybe';
 import LineItemTotalPrice from './LineItemTotalPrice';
 import LineItemUnknownItemsMaybe from './LineItemUnknownItemsMaybe';
 import LineItemDiscountMaybe from './LineItemDiscountMaybe';
+import LineItemEstimatedShippingMaybe from './LineItemEstimatedShippingMaybe';
 
 import css from './OrderBreakdown.module.css';
 
@@ -68,6 +70,11 @@ export const OrderBreakdownComponent = props => {
   });
 
   const classes = classNames(rootClassName || css.root, className);
+
+  // Filter out the synthetic estimated shipping from generic/fallback mappers
+  const lineItemsWithoutEstimatedShipping = lineItems.filter(
+    li => li.code !== LINE_ITEM_ESTIMATED_SHIPPING
+  );
 
   /**
    * OrderBreakdown contains different line items:
@@ -118,16 +125,16 @@ export const OrderBreakdownComponent = props => {
       <LineItemDiscountMaybe lineItems={lineItems} intl={intl} />
       <LineItemShippingFeeMaybe lineItems={lineItems} intl={intl} />
       <LineItemPickupFeeMaybe lineItems={lineItems} intl={intl} />
-      <LineItemUnknownItemsMaybe lineItems={lineItems} isProvider={isProvider} intl={intl} />
+      <LineItemUnknownItemsMaybe lineItems={lineItemsWithoutEstimatedShipping} isProvider={isProvider} intl={intl} />
 
       <LineItemSubTotalMaybe
-        lineItems={lineItems}
+        lineItems={lineItemsWithoutEstimatedShipping}
         code={lineItemUnitType}
         userRole={userRole}
         intl={intl}
         marketplaceCurrency={currency}
       />
-      <LineItemRefundMaybe lineItems={lineItems} intl={intl} marketplaceCurrency={currency} />
+      <LineItemRefundMaybe lineItems={lineItemsWithoutEstimatedShipping} intl={intl} marketplaceCurrency={currency} />
 
       <LineItemCustomerCommissionMaybe
         lineItems={lineItems}
@@ -141,6 +148,8 @@ export const OrderBreakdownComponent = props => {
         marketplaceName={marketplaceName}
         intl={intl}
       />
+
+      <LineItemEstimatedShippingMaybe lineItems={lineItems} intl={intl} />
 
       <LineItemProviderCommissionMaybe
         lineItems={lineItems}

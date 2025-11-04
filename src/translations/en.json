@@ -668,6 +668,7 @@
   "OrderBreakdown.refundCustomerFee": "Refund {marketplaceName} fee",
   "OrderBreakdown.refundProviderFee": "Refund {marketplaceName} fee",
   "OrderBreakdown.shippingFee": "Shipping",
+  "OrderBreakdown.estimatedShipping": "Shipping fee",
   "OrderBreakdown.subTotal": "Subtotal",
   "OrderBreakdown.total": "Total price",
   "OrderPanel.author": "{name}",
