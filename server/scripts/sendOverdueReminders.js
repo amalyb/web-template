@@ -1,6 +1,7 @@
 const { getTrustedSdk } = require('../api-util/sdk');
 const { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
+const { shortLink } = require('../api-util/shortlink');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -170,6 +171,9 @@ async function sendOverdueReminders() {
                             protectedData.returnShippingLabel ||
                             `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
       
+      const shortUrl = await shortLink(returnLabelUrl);
+      console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
+      
       // Check if we've already notified for this day
       const overdue = returnData.overdue || {};
       const lastNotifiedDay = overdue.lastNotifiedDay;
@@ -190,10 +194,10 @@ async function sendOverdueReminders() {
       let tag;
       
       if (daysLate === 1) {
-        message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${returnLabelUrl}`;
+        message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${shortUrl}`;
         tag = 'overdue_day1_to_borrower';
       } else if (daysLate === 2) {
-        message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${returnLabelUrl}`;
+        message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${shortUrl}`;
         tag = 'overdue_day2_to_borrower';
       } else if (daysLate === 3) {
         message = `⏰ 3 days late. Fees continue. Ship today to avoid full replacement.`;
@@ -204,7 +208,7 @@ async function sendOverdueReminders() {
       } else {
         // Day 5+
         const replacementAmount = 5000; // $50.00 in cents
-        message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${returnLabelUrl}`;
+        message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${shortUrl}`;
         tag = 'overdue_day5_to_borrower';
       }
       

@@ -82,7 +82,7 @@ async function buildLenderShipByMessage({ itemTitle, shipByDate, shippingArtifac
 
   // Construct carrier-friendly SMS message
   // Keep it short to avoid carrier filtering and message splitting
-  const message = `Sherbrt 🍧: Ship "${itemTitle}" by ${shipByDate}. Label: ${finalLink}`;
+  const message = `Sherbrt 🍧: Ship "${itemTitle}" by ${shipByDate}. Shipping label: ${finalLink}`;
 
   console.log('[buildLenderShipByMessage] Message built', {
     length: message.length,

@@ -12,6 +12,7 @@ try {
 
 // ✅ Use the correct SDK helper
 const { getTrustedSdk } = require('../api-util/sdk');
+const { shortLink } = require('../api-util/shortlink');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -174,7 +175,9 @@ async function sendReturnReminders() {
           }
         }
         
-        message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${returnLabelUrl} Thanks for sharing style 💌`;
+        const shortUrl = await shortLink(returnLabelUrl);
+        console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+        message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${shortUrl} Thanks for sharing style 💌`;
         tag = 'return_tminus1_to_borrower';
         
       } else if (deliveryEnd === today) {
@@ -185,10 +188,15 @@ async function sendReturnReminders() {
                               pd.shippingLabelUrl || 
                               pd.returnShippingLabel;
 
-        message = returnLabelUrl
-          ? `📦 Today's the day! Ship your Sherbrt item back. Return label: ${returnLabelUrl}`
-          : `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
-        tag = returnLabelUrl ? 'return_reminder_today' : 'return_reminder_today_no_label';
+        if (returnLabelUrl) {
+          const shortUrl = await shortLink(returnLabelUrl);
+          console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+          message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}`;
+          tag = 'return_reminder_today';
+        } else {
+          message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
+          tag = 'return_reminder_today_no_label';
+        }
         
       } else {
         // Tomorrow: Due tomorrow

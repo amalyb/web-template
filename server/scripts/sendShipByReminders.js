@@ -2,6 +2,7 @@ const { getTrustedSdk } = require('../api-util/sdk');
 let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
+const { shortLink } = require('../api-util/shortlink');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -169,6 +170,9 @@ async function sendShipByReminders() {
       const title = listing?.attributes?.title || 'your item';
       
       const qrUrl = `https://sherbrt.com/ship/${tx?.id?.uuid || tx?.id}`;
+      const shortUrl = await shortLink(qrUrl);
+      console.log('[SMS] shortlink', { type: 'shipby', short: shortUrl, original: qrUrl });
+      
       const reminders = outbound.reminders || {};
       
       let message = null;
@@ -182,17 +186,17 @@ async function sendShipByReminders() {
         
         if (isSameDay(todayDate, t48Date) && !reminders.t48) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_t48_to_lender';
           reminderKey = 't48';
         } else if (isSameDay(todayDate, t24Date) && !reminders.t24) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_t24_to_lender';
           reminderKey = 't24';
         } else if (isMorningOf(shipByDate) && !reminders.morning) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_morning_to_lender';
           reminderKey = 'morning';
         }
@@ -204,17 +208,17 @@ async function sendShipByReminders() {
         
         if (isSameDay(todayDate, plus24Date) && !reminders.short24) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_short24_to_lender';
           reminderKey = 'short24';
         } else if (isSameDay(todayDate, plus48Date) && !reminders.short48) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_short48_to_lender';
           reminderKey = 'short48';
         } else if (isSameDay(todayDate, t24Date) && !reminders.t24) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_t24_to_lender';
           reminderKey = 't24';
         }
