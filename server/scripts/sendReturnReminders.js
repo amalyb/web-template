@@ -10,10 +10,38 @@ try {
   sendSMS = () => Promise.resolve();
 }
 
-// ✅ Use centralized SDK factories
-const getFlexSdk = require('../util/getFlexSdk');              // Integration SDK (privileged)
-const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace SDK (reads)
+// ✅ Use the correct SDK helper
+const { getTrustedSdk } = require('../api-util/sdk');
 const { shortLink } = require('../api-util/shortlink');
+
+// Create a trusted SDK instance for scripts (no req needed)
+async function getScriptSdk() {
+  const sharetribeSdk = require('sharetribe-flex-sdk');
+  const CLIENT_ID = process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID;
+  const CLIENT_SECRET = process.env.SHARETRIBE_SDK_CLIENT_SECRET;
+  const BASE_URL = process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL;
+  
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error('Missing Sharetribe credentials: REACT_APP_SHARETRIBE_SDK_CLIENT_ID and SHARETRIBE_SDK_CLIENT_SECRET required');
+  }
+  
+  const sdk = sharetribeSdk.createInstance({
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    baseUrl: BASE_URL,
+  });
+  
+  // Exchange token to get trusted access
+  const response = await sdk.exchangeToken();
+  const trustedToken = response.data;
+  
+  return sharetribeSdk.createInstance({
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    baseUrl: BASE_URL,
+    tokenStore: sharetribeSdk.tokenStore.memoryStore(trustedToken),
+  });
+}
 
 // ---- CLI flags / env guards ----
 const argv = process.argv.slice(2);
@@ -47,22 +75,8 @@ function yyyymmdd(d) {
 async function sendReturnReminders() {
   console.log('🚀 Starting return reminder SMS script...');
   try {
-    // Initialize both SDKs: Marketplace for reads, Integration for privileged operations
-    const integSdk = getFlexSdk();           // for transitions (if needed)
-    const readSdk  = getMarketplaceSdk();    // for queries/search
-    console.log('✅ SDKs initialized (read + integ)');
-    
-    // Diagnostic startup logging
-    if (process.env.DIAG === '1') {
-      const mask = (v) => v ? v.slice(0, 6) + '…' + v.slice(-4) : '(not set)';
-      const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
-                      process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
-                      'https://flex-api.sharetribe.com';
-      console.log('[DIAG] Using SDKs: read=Marketplace, integ=Integration');
-      console.log('[DIAG] Marketplace clientId:', mask(process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID));
-      console.log('[DIAG] Integration clientId:', mask(process.env.INTEGRATION_CLIENT_ID));
-      console.log('[DIAG] Base URL:', baseUrl);
-    }
+    const sdk = await getScriptSdk();
+    console.log('✅ SDK initialized');
 
     // today/tomorrow window (allow overrides for testing)
     const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
@@ -78,53 +92,13 @@ async function sendReturnReminders() {
       perPage: 50,
     };
 
-    let res, txs, included;
-    try {
-      res = await readSdk.transactions.query(query);
-      txs = res?.data?.data || [];
-      included = new Map();
-      for (const inc of res?.data?.included || []) {
-        // key like "user/UUID"
-        const key = `${inc.type}/${inc.id?.uuid || inc.id}`;
-        included.set(key, inc);
-      }
-    } catch (queryError) {
-      const status = queryError.response?.status;
-      const data = queryError.response?.data;
-      
-      if (process.env.DIAG === '1') {
-        console.error('[DIAG] Query error details:', {
-          endpoint: 'transactions.query',
-          status,
-          data,
-          query,
-          errorMessage: queryError.message,
-          errorCode: queryError.code
-        });
-      }
-      
-      console.error('❌ Query failed', { 
-        status, 
-        query,
-        errorMessage: queryError.message
-      });
-      
-      if (status === 400) {
-        console.error('');
-        console.error('⚠️  400 BAD REQUEST - Possible causes:');
-        console.error('   1. Invalid query parameters (check perPage vs per_page)');
-        console.error('   2. Invalid deliveryEnd format or state value');
-        console.error('   3. Malformed include parameter');
-        console.error('');
-        if (data?.errors) {
-          console.error('   API Errors:');
-          data.errors.forEach((err, i) => {
-            console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
-          });
-        }
-      }
-      
-      throw queryError;
+    const res = await sdk.transactions.query(query);
+    const txs = res?.data?.data || [];
+    const included = new Map();
+    for (const inc of res?.data?.included || []) {
+      // key like "user/UUID"
+      const key = `${inc.type}/${inc.id?.uuid || inc.id}`;
+      included.set(key, inc);
     }
 
     console.log(`📊 Found ${txs.length} candidate transactions`);
@@ -180,7 +154,7 @@ async function sendReturnReminders() {
           
           // Update protectedData with return label info
           try {
-            await readSdk.transactions.update({
+            await sdk.transactions.update({
               id: tx.id,
               attributes: {
                 protectedData: {
@@ -245,7 +219,7 @@ async function sendReturnReminders() {
         // Mark T-1 as sent for idempotency
         if (deliveryEnd === tMinus1) {
           try {
-            await readSdk.transactions.update({
+            await sdk.transactions.update({
               id: tx.id,
               attributes: {
                 protectedData: {
