@@ -1,9 +1,8 @@
 const { getTrustedSdk } = require('../api-util/sdk');
-const { upsertProtectedData } = require('../lib/txData');
 let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
-const { getToday, diffDays, addDays, isSameDay, isMorningOf, logTimeState, timestamp, yyyymmdd } = require('../util/time');
+const { shortLink } = require('../api-util/shortlink');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -59,8 +58,34 @@ if (DRY) {
   };
 }
 
-// Note: Date helper functions (yyyymmdd, diffDays, addDays, isSameDay, isMorningOf)
-// are now centralized in server/util/time.js with FORCE_NOW/FORCE_TODAY support
+function yyyymmdd(d) {
+  // Always use UTC for consistent date handling
+  return new Date(d).toISOString().split('T')[0];
+}
+
+function diffDays(date1, date2) {
+  const d1 = new Date(date1 + 'T00:00:00.000Z'); // Force UTC
+  const d2 = new Date(date2 + 'T00:00:00.000Z'); // Force UTC
+  return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
+}
+
+function addDays(date, days) {
+  const result = new Date(date + 'T00:00:00.000Z'); // Force UTC
+  result.setUTCDate(result.getUTCDate() + days);
+  return result;
+}
+
+function isSameDay(date1, date2) {
+  return yyyymmdd(date1) === yyyymmdd(date2);
+}
+
+function isMorningOf(date) {
+  const now = new Date();
+  const target = new Date(date + 'T00:00:00.000Z'); // Force UTC
+  return isSameDay(now, target) && now.getUTCHours() >= 6 && now.getUTCHours() < 12;
+}
+
+// Removed local computeShipByDate - now using centralized helper from server/lib/shipping.js
 
 async function sendShipByReminders() {
   console.log('🚀 Starting ship-by reminder SMS script...');
@@ -69,10 +94,9 @@ async function sendShipByReminders() {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
 
-    const today = getToday(); // ← respects FORCE_TODAY
+    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
     const todayDate = new Date(today);
     
-    logTimeState(); // Log current time state with all overrides
     console.log(`📅 Processing reminders for: ${today}`);
 
     // Load accepted transactions with future ship-by dates and no first scan
@@ -87,12 +111,7 @@ async function sendShipByReminders() {
 
     const response = await sdk.transactions.query(query);
     const transactions = response.data.data;
-    const included = response.data.included || [];
-    
-    // Build Map index for included entities (array → Map)
-    const includedMap = new Map(
-      included.map(e => [`${e.type}/${e.id?.uuid || e.id}`, e])
-    );
+    const included = response.data.included;
 
     console.log(`📊 Found ${transactions.length} accepted transactions`);
 
@@ -109,8 +128,8 @@ async function sendShipByReminders() {
         continue;
       }
       
-      // Use centralized ship-by calculation (now async)
-      const shipByDate = await computeShipByDate(tx, { preferLabelAddresses: true });
+      // Use centralized ship-by calculation
+      const shipByDate = computeShipByDate(tx);
       if (!shipByDate) {
         console.warn(`⚠️ Could not compute ship-by date for tx ${tx?.id?.uuid || '(no id)'}`);
         continue;
@@ -128,7 +147,7 @@ async function sendShipByReminders() {
       // Get provider phone
       const providerRef = tx?.relationships?.provider?.data;
       const providerKey = providerRef ? `${providerRef.type}/${providerRef.id?.uuid || providerRef.id}` : null;
-      const provider = providerKey ? includedMap.get(providerKey) : null;
+      const provider = providerKey ? included.get(providerKey) : null;
       
       const providerPhone = provider?.attributes?.profile?.protectedData?.phone ||
                            provider?.attributes?.profile?.protectedData?.phoneNumber ||
@@ -147,16 +166,13 @@ async function sendShipByReminders() {
       // Get listing title and QR URL
       const listingRef = tx?.relationships?.listing?.data;
       const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
-      const listing = listingKey ? includedMap.get(listingKey) : null;
+      const listing = listingKey ? included.get(listingKey) : null;
       const title = listing?.attributes?.title || 'your item';
       
-      // Use URL helper with Shippo fallback support
-      const { buildShipLabelLink } = require('../util/url');
-      const shippoData = {
-        qr_code_url: protectedData?.outboundQrCodeUrl,
-        label_url: protectedData?.outboundLabelUrl,
-      };
-      const { url: qrUrl, strategy } = buildShipLabelLink(tx?.id?.uuid || tx?.id, shippoData, { preferQr: true });
+      const qrUrl = `https://sherbrt.com/ship/${tx?.id?.uuid || tx?.id}`;
+      const shortUrl = await shortLink(qrUrl);
+      console.log('[SMS] shortlink', { type: 'shipby', short: shortUrl, original: qrUrl });
+      
       const reminders = outbound.reminders || {};
       
       let message = null;
@@ -170,17 +186,17 @@ async function sendShipByReminders() {
         
         if (isSameDay(todayDate, t48Date) && !reminders.t48) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_t48_to_lender';
           reminderKey = 't48';
         } else if (isSameDay(todayDate, t24Date) && !reminders.t24) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_t24_to_lender';
           reminderKey = 't24';
         } else if (isMorningOf(shipByDate) && !reminders.morning) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_morning_to_lender';
           reminderKey = 'morning';
         }
@@ -192,17 +208,17 @@ async function sendShipByReminders() {
         
         if (isSameDay(todayDate, plus24Date) && !reminders.short24) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_short24_to_lender';
           reminderKey = 'short24';
         } else if (isSameDay(todayDate, plus48Date) && !reminders.short48) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_short48_to_lender';
           reminderKey = 'short48';
         } else if (isSameDay(todayDate, t24Date) && !reminders.t24) {
           const shipByStr = formatShipBy(shipByDate);
-          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${qrUrl}`;
+          message = `⏰ Reminder: please ship "${title}" by ${shipByStr}. QR: ${shortUrl}`;
           tag = 'shipby_t24_to_lender';
           reminderKey = 't24';
         }
@@ -212,7 +228,6 @@ async function sendShipByReminders() {
         if (VERBOSE) {
           console.log(`📬 To ${providerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
         }
-        console.log(`[SMS][${tag}] link=${qrUrl} strategy=${strategy} txId=${tx?.id?.uuid || tx?.id}`);
         
         try {
           await sendSMS(providerPhone, message, {
@@ -225,22 +240,22 @@ async function sendShipByReminders() {
           });
           
           // Mark reminder as sent
-          const updatedReminders = { ...reminders, [reminderKey]: timestamp() };
+          const updatedReminders = { ...reminders, [reminderKey]: new Date().toISOString() };
           
           try {
-            const txId = tx?.id?.uuid || tx?.id;
-            const result = await upsertProtectedData(txId, {
-              outbound: {
-                ...outbound,
-                reminders: updatedReminders
+            await sdk.transactions.update({
+              id: tx.id,
+              attributes: {
+                protectedData: {
+                  ...protectedData,
+                  outbound: {
+                    ...outbound,
+                    reminders: updatedReminders
+                  }
+                }
               }
-            }, { source: 'reminder' });
-            
-            if (result && result.success === false) {
-              console.error(`❌ Failed to update transaction reminders:`, result.error);
-            } else {
-              console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
-            }
+            });
+            console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
           } catch (updateError) {
             console.error(`❌ Failed to update transaction reminders:`, updateError.message);
           }

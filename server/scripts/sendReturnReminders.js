@@ -12,8 +12,7 @@ try {
 
 // ✅ Use the correct SDK helper
 const { getTrustedSdk } = require('../api-util/sdk');
-const { upsertProtectedData } = require('../lib/txData');
-const { getToday, getTomorrow, yyyymmdd, timestamp, logTimeState } = require('../util/time');
+const { shortLink } = require('../api-util/shortlink');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -68,8 +67,10 @@ if (DRY) {
   };
 }
 
-// Note: Date helper functions (yyyymmdd, getToday, getTomorrow, timestamp)
-// are now centralized in server/util/time.js with FORCE_TODAY/FORCE_TOMORROW support
+function yyyymmdd(d) {
+  // Always use UTC for consistent date handling
+  return new Date(d).toISOString().split('T')[0];
+}
 
 async function sendReturnReminders() {
   console.log('🚀 Starting return reminder SMS script...');
@@ -77,12 +78,10 @@ async function sendReturnReminders() {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
 
-    // today/tomorrow window (respects FORCE_TODAY/FORCE_TOMORROW)
-    const today = getToday();
-    const tomorrow = getTomorrow();
+    // today/tomorrow window (allow overrides for testing)
+    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
+    const tomorrow = process.env.FORCE_TOMORROW || yyyymmdd(Date.now() + 24 * 60 * 60 * 1000);
     const tMinus1 = yyyymmdd(new Date(today).getTime() - 24 * 60 * 60 * 1000);
-    
-    logTimeState(); // Log current time state with all overrides
     console.log(`📅 Window: t-1=${tMinus1}, today=${today}, tomorrow=${tomorrow}`);
 
     // Query transactions for T-1, today, and tomorrow
@@ -150,34 +149,35 @@ async function sendReturnReminders() {
         if (!returnLabelUrl && !returnData.tMinus1SentAt) {
           console.log(`🔧 Creating return label for tx ${tx?.id?.uuid || '(no id)'}`);
           // TODO: Call return label creation function here
-          // For now, we'll use app URL via helper
-          const { makeAppUrl } = require('../util/url');
-          returnLabelUrl = makeAppUrl(`/return/${tx?.id?.uuid || tx?.id}`);
+          // For now, we'll use a placeholder URL
+          returnLabelUrl = `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
           
           // Update protectedData with return label info
           try {
-            const txId = tx?.id?.uuid || tx?.id;
-            const result = await upsertProtectedData(txId, {
-              return: {
-                ...returnData,
-                label: {
-                  url: returnLabelUrl,
-                  createdAt: timestamp() // ← respects FORCE_NOW
+            await sdk.transactions.update({
+              id: tx.id,
+              attributes: {
+                protectedData: {
+                  ...pd,
+                  return: {
+                    ...returnData,
+                    label: {
+                      url: returnLabelUrl,
+                      createdAt: new Date().toISOString()
+                    }
+                  }
                 }
               }
-            }, { source: 'reminder' });
-            
-            if (result && result.success === false) {
-              console.error(`❌ Failed to create return label:`, result.error);
-            } else {
-              console.log(`💾 Created return label for tx ${tx?.id?.uuid || '(no id)'}`);
-            }
+            });
+            console.log(`💾 Created return label for tx ${tx?.id?.uuid || '(no id)'}`);
           } catch (updateError) {
             console.error(`❌ Failed to create return label:`, updateError.message);
           }
         }
         
-        message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${returnLabelUrl} Thanks for sharing style 💌`;
+        const shortUrl = await shortLink(returnLabelUrl);
+        console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+        message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${shortUrl} Thanks for sharing style 💌`;
         tag = 'return_tminus1_to_borrower';
         
       } else if (deliveryEnd === today) {
@@ -188,10 +188,15 @@ async function sendReturnReminders() {
                               pd.shippingLabelUrl || 
                               pd.returnShippingLabel;
 
-        message = returnLabelUrl
-          ? `📦 Today's the day! Ship your Sherbrt item back. Return label: ${returnLabelUrl}`
-          : `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
-        tag = returnLabelUrl ? 'return_reminder_today' : 'return_reminder_today_no_label';
+        if (returnLabelUrl) {
+          const shortUrl = await shortLink(returnLabelUrl);
+          console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+          message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}`;
+          tag = 'return_reminder_today';
+        } else {
+          message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
+          tag = 'return_reminder_today_no_label';
+        }
         
       } else {
         // Tomorrow: Due tomorrow
@@ -214,19 +219,19 @@ async function sendReturnReminders() {
         // Mark T-1 as sent for idempotency
         if (deliveryEnd === tMinus1) {
           try {
-            const txId = tx?.id?.uuid || tx?.id;
-            const result = await upsertProtectedData(txId, {
-              return: {
-                ...returnData,
-                tMinus1SentAt: timestamp() // ← respects FORCE_NOW
+            await sdk.transactions.update({
+              id: tx.id,
+              attributes: {
+                protectedData: {
+                  ...pd,
+                  return: {
+                    ...returnData,
+                    tMinus1SentAt: new Date().toISOString()
+                  }
+                }
               }
-            }, { source: 'reminder' });
-            
-            if (result && result.success === false) {
-              console.error(`❌ Failed to mark T-1 as sent:`, result.error);
-            } else {
-              console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
-            }
+            });
+            console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
           } catch (updateError) {
             console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
           }

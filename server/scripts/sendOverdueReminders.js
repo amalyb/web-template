@@ -1,9 +1,7 @@
 const { getTrustedSdk } = require('../api-util/sdk');
-const { upsertProtectedData } = require('../lib/txData');
 const { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
-const { makeAppUrl } = require('../util/url');
-const { getToday, getNow, getNext9AM, diffDays, timestamp, logTimeState } = require('../util/time');
+const { shortLink } = require('../api-util/shortlink');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -59,8 +57,16 @@ if (DRY) {
   };
 }
 
-// Note: Date helper functions (yyyymmdd, diffDays, getToday, getNow, getNext9AM, timestamp)
-// are now centralized in server/util/time.js with FORCE_NOW/FORCE_TODAY support
+function yyyymmdd(d) {
+  // Always use UTC for consistent date handling
+  return new Date(d).toISOString().split('T')[0];
+}
+
+function diffDays(date1, date2) {
+  const d1 = new Date(date1 + 'T00:00:00.000Z'); // Force UTC
+  const d2 = new Date(date2 + 'T00:00:00.000Z'); // Force UTC
+  return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
+}
 
 function isInTransit(trackingStatus) {
   const upperStatus = trackingStatus?.toUpperCase();
@@ -81,7 +87,7 @@ async function evaluateReplacementCharge(tx) {
   return {
     replacementAmount: 5000, // $50.00 in cents
     evaluated: true,
-    timestamp: timestamp() // ← respects FORCE_NOW
+    timestamp: new Date().toISOString()
   };
 }
 
@@ -92,10 +98,9 @@ async function sendOverdueReminders() {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
 
-    const today = getToday(); // ← respects FORCE_TODAY
+    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
     const todayDate = new Date(today);
     
-    logTimeState(); // Log current time state with all overrides
     console.log(`📅 Processing overdue reminders for: ${today}`);
 
     // Load delivered transactions where return date has passed and no first scan
@@ -159,13 +164,15 @@ async function sendOverdueReminders() {
       const listing = listingKey ? included.get(listingKey) : null;
       
       // Get return label URL
-      const { makeAppUrl } = require('../util/url');
       const returnLabelUrl = returnData.label?.url ||
                             protectedData.returnLabelUrl ||
                             protectedData.returnLabel ||
                             protectedData.shippingLabelUrl ||
                             protectedData.returnShippingLabel ||
-                            makeAppUrl(`/return/${tx?.id?.uuid || tx?.id}`);
+                            `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
+      
+      const shortUrl = await shortLink(returnLabelUrl);
+      console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
       
       // Check if we've already notified for this day
       const overdue = returnData.overdue || {};
@@ -187,10 +194,10 @@ async function sendOverdueReminders() {
       let tag;
       
       if (daysLate === 1) {
-        message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${returnLabelUrl}`;
+        message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${shortUrl}`;
         tag = 'overdue_day1_to_borrower';
       } else if (daysLate === 2) {
-        message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${returnLabelUrl}`;
+        message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${shortUrl}`;
         tag = 'overdue_day2_to_borrower';
       } else if (daysLate === 3) {
         message = `⏰ 3 days late. Fees continue. Ship today to avoid full replacement.`;
@@ -201,7 +208,7 @@ async function sendOverdueReminders() {
       } else {
         // Day 5+
         const replacementAmount = 5000; // $50.00 in cents
-        message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${returnLabelUrl}`;
+        message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${shortUrl}`;
         tag = 'overdue_day5_to_borrower';
       }
       
@@ -246,16 +253,16 @@ async function sendOverdueReminders() {
         }
         
         try {
-          const txId = tx?.id?.uuid || tx?.id;
-          const result = await upsertProtectedData(txId, {
-            return: updatedReturnData
-          }, { source: 'reminder' });
-          
-          if (result && result.success === false) {
-            console.error(`❌ Failed to update transaction fees and overdue tracking:`, result.error);
-          } else {
-            console.log(`💾 Updated transaction fees and overdue tracking for tx ${tx?.id?.uuid || '(no id)'}`);
-          }
+          await sdk.transactions.update({
+            id: tx.id,
+            attributes: {
+              protectedData: {
+                ...protectedData,
+                return: updatedReturnData
+              }
+            }
+          });
+          console.log(`💾 Updated transaction fees and overdue tracking for tx ${tx?.id?.uuid || '(no id)'}`);
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }
@@ -315,8 +322,12 @@ if (require.main === module) {
     };
     
     // Calculate time until next 9 AM UTC
-    const now = getNow(); // ← respects FORCE_NOW
-    const next9AM = getNext9AM(); // ← respects FORCE_NOW
+    const now = new Date();
+    const next9AM = new Date(now);
+    next9AM.setUTCHours(9, 0, 0, 0);
+    if (next9AM <= now) {
+      next9AM.setUTCDate(next9AM.getUTCDate() + 1);
+    }
     
     const msUntilNext9AM = next9AM.getTime() - now.getTime();
     console.log(`⏰ Next run scheduled for: ${next9AM.toISOString()}`);
