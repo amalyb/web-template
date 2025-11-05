@@ -19,6 +19,7 @@
  * @returns {string|null} return.trackingNumber - Tracking number
  * @returns {string|null} return.upsQrUrl - UPS QR code URL (if carrier is UPS)
  * @returns {string|null} return.upsLabelUrl - UPS label URL (if carrier is UPS)
+ * @returns {string|null} return.uspsQrUrl - USPS QR code URL (if carrier is USPS)
  * @returns {string|null} return.uspsLabelUrl - USPS label URL (if carrier is USPS)
  * @returns {string|null} return.trackingUrl - Tracking URL (from Shippo or constructed)
  * @returns {Object|null} return.raw - Raw Shippo transaction for debugging
@@ -31,6 +32,7 @@ function extractArtifacts({ carrier, trackingNumber, shippoTx }) {
       trackingNumber: trackingNumber || null,
       upsQrUrl: null,
       upsLabelUrl: null,
+      uspsQrUrl: null,
       uspsLabelUrl: null,
       trackingUrl: null,
       raw: null,
@@ -71,6 +73,7 @@ function extractArtifacts({ carrier, trackingNumber, shippoTx }) {
     trackingNumber: finalTrackingNumber,
     upsQrUrl: null,
     upsLabelUrl: null,
+    uspsQrUrl: null,
     uspsLabelUrl: null,
     trackingUrl: trackingUrlRaw,
     raw: shippoTx,
@@ -80,12 +83,13 @@ function extractArtifacts({ carrier, trackingNumber, shippoTx }) {
     artifacts.upsQrUrl = qrUrl;
     artifacts.upsLabelUrl = labelUrl;
   } else if (carrierNormalized === 'USPS') {
+    artifacts.uspsQrUrl = qrUrl;
     artifacts.uspsLabelUrl = labelUrl;
   }
 
   console.log('[extractArtifacts] Normalized:', {
     carrier: artifacts.carrier,
-    hasQr: !!artifacts.upsQrUrl,
+    hasQr: !!(artifacts.upsQrUrl || artifacts.uspsQrUrl),
     hasLabel: !!(artifacts.upsLabelUrl || artifacts.uspsLabelUrl),
     hasTracking: !!artifacts.trackingUrl,
   });

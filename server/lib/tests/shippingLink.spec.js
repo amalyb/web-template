@@ -12,7 +12,7 @@ const { buildLenderShipByMessage } = require('../sms/buildLenderShipByMessage');
 // Mock the environment variables and shortlink function
 jest.mock('../env', () => ({
   UPS_LINK_MODE: ['qr', 'label'],
-  USPS_LINK_MODE: ['label'],
+  USPS_LINK_MODE: ['qr', 'label'],
   ALLOW_TRACKING_IN_LENDER_SHIP: false,
   SHORTLINK_ENABLED: true,
 }));
@@ -46,6 +46,7 @@ describe('extractArtifacts', () => {
       trackingNumber: '1Z999AA10123456784',
       upsQrUrl: 'https://shippo.com/qr/ups-qr-123.png',
       upsLabelUrl: 'https://shippo.com/label/ups-123.pdf',
+      uspsQrUrl: null,
       uspsLabelUrl: null,
       trackingUrl: 'https://ups.com/track/1Z999AA10123456784',
     });
@@ -56,7 +57,7 @@ describe('extractArtifacts', () => {
       tracking_number: '9400111899223344556677',
       tracking_url_provider: 'https://tools.usps.com/go/TrackConfirmAction',
       label_url: 'https://shippo.com/label/usps-456.pdf',
-      qr_code_url: null, // USPS doesn't have QR codes
+      qr_code_url: null,
     };
 
     const artifacts = extractArtifacts({
@@ -70,6 +71,32 @@ describe('extractArtifacts', () => {
       trackingNumber: '9400111899223344556677',
       upsQrUrl: null,
       upsLabelUrl: null,
+      uspsQrUrl: null,
+      uspsLabelUrl: 'https://shippo.com/label/usps-456.pdf',
+      trackingUrl: 'https://tools.usps.com/go/TrackConfirmAction',
+    });
+  });
+
+  test('extracts USPS artifacts with QR code', () => {
+    const shippoTx = {
+      tracking_number: '9400111899223344556677',
+      tracking_url_provider: 'https://tools.usps.com/go/TrackConfirmAction',
+      label_url: 'https://shippo.com/label/usps-456.pdf',
+      qr_code_url: 'https://shippo.com/qr/usps-qr-456.png',
+    };
+
+    const artifacts = extractArtifacts({
+      carrier: 'USPS',
+      trackingNumber: '9400111899223344556677',
+      shippoTx,
+    });
+
+    expect(artifacts).toMatchObject({
+      carrier: 'USPS',
+      trackingNumber: '9400111899223344556677',
+      upsQrUrl: null,
+      upsLabelUrl: null,
+      uspsQrUrl: 'https://shippo.com/qr/usps-qr-456.png',
       uspsLabelUrl: 'https://shippo.com/label/usps-456.pdf',
       trackingUrl: 'https://tools.usps.com/go/TrackConfirmAction',
     });
@@ -107,6 +134,7 @@ describe('extractArtifacts', () => {
       trackingNumber: '1Z999AA10123456784',
       upsQrUrl: null,
       upsLabelUrl: null,
+      uspsQrUrl: null,
       uspsLabelUrl: null,
       trackingUrl: null,
       raw: null,
@@ -121,6 +149,7 @@ describe('pickShipmentLink', () => {
         carrier: 'UPS',
         upsQrUrl: 'https://shippo.com/qr/ups-qr.png',
         upsLabelUrl: 'https://shippo.com/label/ups-label.pdf',
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       };
@@ -134,6 +163,7 @@ describe('pickShipmentLink', () => {
         carrier: 'UPS',
         upsQrUrl: null,
         upsLabelUrl: 'https://shippo.com/label/ups-label.pdf',
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       };
@@ -142,11 +172,26 @@ describe('pickShipmentLink', () => {
       expect(link).toBe('https://shippo.com/label/ups-label.pdf');
     });
 
-    test('returns USPS label when carrier is USPS', () => {
+    test('returns USPS QR code when available', () => {
       const artifacts = {
         carrier: 'USPS',
         upsQrUrl: null,
         upsLabelUrl: null,
+        uspsQrUrl: 'https://shippo.com/qr/usps-qr.png',
+        uspsLabelUrl: 'https://shippo.com/label/usps-label.pdf',
+        trackingUrl: 'https://tools.usps.com/go/Track',
+      };
+
+      const link = pickShipmentLink(artifacts, { phase: 'initial-lender' });
+      expect(link).toBe('https://shippo.com/qr/usps-qr.png');
+    });
+
+    test('returns USPS label when QR not available', () => {
+      const artifacts = {
+        carrier: 'USPS',
+        upsQrUrl: null,
+        upsLabelUrl: null,
+        uspsQrUrl: null,
         uspsLabelUrl: 'https://shippo.com/label/usps-label.pdf',
         trackingUrl: 'https://tools.usps.com/go/Track',
       };
@@ -160,6 +205,7 @@ describe('pickShipmentLink', () => {
         carrier: 'UPS',
         upsQrUrl: null,
         upsLabelUrl: null,
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       };
@@ -173,6 +219,7 @@ describe('pickShipmentLink', () => {
         carrier: 'UPS',
         upsQrUrl: null,
         upsLabelUrl: null,
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       };
@@ -190,6 +237,7 @@ describe('pickShipmentLink', () => {
         carrier: 'UPS',
         upsQrUrl: null,
         upsLabelUrl: null,
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       };
@@ -204,6 +252,7 @@ describe('pickShipmentLink', () => {
         carrier: 'UPS',
         upsQrUrl: null,
         upsLabelUrl: 'https://shippo.com/label/ups-label.pdf',
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       };
@@ -229,6 +278,7 @@ describe('buildLenderShipByMessage', () => {
         carrier: 'UPS',
         upsQrUrl: 'https://shippo.com/qr/ups-qr-123.png',
         upsLabelUrl: 'https://shippo.com/label/ups-label-123.pdf',
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/123',
       },
@@ -249,6 +299,7 @@ describe('buildLenderShipByMessage', () => {
         carrier: 'UPS',
         upsQrUrl: null,
         upsLabelUrl: 'https://shippo.com/label/ups-label-456.pdf',
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: 'https://ups.com/track/456',
       },
@@ -261,7 +312,28 @@ describe('buildLenderShipByMessage', () => {
     expect(makeShortLink).toHaveBeenCalledWith('https://shippo.com/label/ups-label-456.pdf');
   });
 
-  test('builds message with USPS label', async () => {
+  test('builds message with USPS QR code and shortlink', async () => {
+    const message = await buildLenderShipByMessage({
+      itemTitle: 'Fujifilm X-T4',
+      shipByDate: 'Mar 1',
+      shippingArtifacts: {
+        carrier: 'USPS',
+        upsQrUrl: null,
+        upsLabelUrl: null,
+        uspsQrUrl: 'https://shippo.com/qr/usps-qr-789.png',
+        uspsLabelUrl: 'https://shippo.com/label/usps-label-789.pdf',
+        trackingUrl: 'https://tools.usps.com/go/Track',
+      },
+    });
+
+    expect(message).toContain('Sherbrt 🍧');
+    expect(message).toContain('Ship "Fujifilm X-T4"');
+    expect(message).toContain('by Mar 1');
+    expect(message).toContain('Label: https://sherbrt.com/r/');
+    expect(makeShortLink).toHaveBeenCalledWith('https://shippo.com/qr/usps-qr-789.png');
+  });
+
+  test('builds message with USPS label (no QR)', async () => {
     const message = await buildLenderShipByMessage({
       itemTitle: 'Nikon Z6',
       shipByDate: 'Feb 20',
@@ -269,6 +341,7 @@ describe('buildLenderShipByMessage', () => {
         carrier: 'USPS',
         upsQrUrl: null,
         upsLabelUrl: null,
+        uspsQrUrl: null,
         uspsLabelUrl: 'https://shippo.com/label/usps-label-789.pdf',
         trackingUrl: 'https://tools.usps.com/go/Track',
       },
@@ -290,6 +363,7 @@ describe('buildLenderShipByMessage', () => {
           carrier: 'UPS',
           upsQrUrl: null,
           upsLabelUrl: null,
+          uspsQrUrl: null,
           uspsLabelUrl: null,
           trackingUrl: 'https://ups.com/track/999', // Only tracking available
         },
@@ -307,6 +381,7 @@ describe('buildLenderShipByMessage', () => {
         carrier: 'UPS',
         upsQrUrl: 'https://shippo.com/qr/qr.png',
         upsLabelUrl: 'https://shippo.com/label/label.pdf',
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: null,
       },
@@ -327,6 +402,7 @@ describe('buildLenderShipByMessage', () => {
         carrier: 'UPS',
         upsQrUrl: 'https://shippo.com/qr/qr.png',
         upsLabelUrl: null,
+        uspsQrUrl: null,
         uspsLabelUrl: null,
         trackingUrl: null,
       },

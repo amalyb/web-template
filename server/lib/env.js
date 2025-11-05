@@ -27,8 +27,8 @@ const UPS_LINK_MODE = (process.env.UPS_LINK_MODE || 'qr,label')
 
 /**
  * USPS link mode preferences (comma-separated)
- * Options: 'label', 'tracking'
- * Default: 'label' (USPS doesn't have QR codes)
+ * Options: 'qr', 'label', 'tracking'
+ * Default: 'label' (set to 'qr,label' to prefer QR codes when available)
  */
 const USPS_LINK_MODE = (process.env.USPS_LINK_MODE || 'label')
   .split(',')

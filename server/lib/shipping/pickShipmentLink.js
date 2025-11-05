@@ -19,13 +19,14 @@ const {
  * Business rules:
  * 1. Initial lender shipment: NEVER return tracking URLs (QR/label only)
  * 2. UPS preferred order: QR > label > (tracking if allowed)
- * 3. USPS preferred order: label > (tracking if allowed)
+ * 3. USPS preferred order: QR > label > (tracking if allowed)
  * 4. Respect env-configured link mode preferences
  * 
  * @param {Object} artifacts - Shipping artifacts from extractArtifacts()
  * @param {string} artifacts.carrier - Carrier name (UPS, USPS, etc.)
  * @param {string|null} artifacts.upsQrUrl - UPS QR code URL
  * @param {string|null} artifacts.upsLabelUrl - UPS label URL
+ * @param {string|null} artifacts.uspsQrUrl - USPS QR code URL
  * @param {string|null} artifacts.uspsLabelUrl - USPS label URL
  * @param {string|null} artifacts.trackingUrl - Tracking URL
  * @param {Object} [context] - Context for link selection
@@ -85,6 +86,11 @@ function pickShipmentLink(artifacts, context = { phase: 'initial-lender' }) {
   if (carrier === 'USPS') {
     // Try each mode in configured order
     for (const mode of USPS_LINK_MODE) {
+      if (mode === 'qr' && artifacts.uspsQrUrl) {
+        console.log('[pickShipmentLink] Selected USPS QR code');
+        return artifacts.uspsQrUrl;
+      }
+      
       if (mode === 'label' && artifacts.uspsLabelUrl) {
         console.log('[pickShipmentLink] Selected USPS label');
         return artifacts.uspsLabelUrl;
@@ -123,7 +129,7 @@ function pickShipmentLink(artifacts, context = { phase: 'initial-lender' }) {
   console.warn('[pickShipmentLink] No compliant link available', {
     phase,
     carrier,
-    hasQr: !!artifacts.upsQrUrl,
+    hasQr: !!(artifacts.upsQrUrl || artifacts.uspsQrUrl),
     hasLabel: !!(artifacts.upsLabelUrl || artifacts.uspsLabelUrl),
     hasTracking: !!artifacts.trackingUrl,
   });
