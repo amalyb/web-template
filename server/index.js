@@ -19,6 +19,19 @@ require('source-map-support').install();
 // Configure process.env with .env.* files
 require('./env').configureEnv();
 
+// ──────────────────────────────────────────────────────────────────────────────
+// GLOBAL CRASH HANDLERS (must be at top, before any async code)
+// ──────────────────────────────────────────────────────────────────────────────
+process.on('uncaughtException', err => {
+  console.error('[FATAL] uncaughtException', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', err => {
+  console.error('[FATAL] unhandledRejection', err);
+  process.exit(1);
+});
+
 // Log presence (not values) of critical envs at boot
 const hasIC = Boolean(process.env.INTEGRATION_CLIENT_ID);
 const hasIS = Boolean(process.env.INTEGRATION_CLIENT_SECRET);
@@ -80,6 +93,11 @@ const CSP_MODE = process.env.CSP_MODE || 'report'; // 'block' for prod, 'report'
 const cspReportUrl = '/csp-report';
 const cspEnabled = CSP === 'block' || CSP === 'report';
 const app = express();
+
+// ──────────────────────────────────────────────────────────────────────────────
+// TRUST PROXY (must be set before SSL enforcement)
+// ──────────────────────────────────────────────────────────────────────────────
+app.set('trust proxy', true);
 
 // Health check - must return 200 for Render
 app.get('/healthz', (_req, res) => res.status(200).send('ok'));
@@ -229,20 +247,13 @@ function buildIntegrationSdk() {
 const integrationSdk = buildIntegrationSdk();
 
 // Redirect HTTP to HTTPS if REDIRECT_SSL is `true`.
-// This also works behind reverse proxies (load balancers) as they are for example used by Heroku.
-// In such cases, however, the TRUST_PROXY parameter has to be set (see below)
+// This works behind reverse proxies (load balancers) like Render/Heroku.
+// Note: trust proxy is already set at app initialization (line 100)
 //
 // Read more: https://github.com/aredo/express-enforces-ssl
 //
 if (REDIRECT_SSL) {
-  app.use(enforceSsl());
-}
-
-// Behind Render/Heroku, trust the proxy so req.protocol/host reflect original request.
-if (process.env.NODE_ENV === 'production') {
-  app.set('trust proxy', 1);
-} else if (process.env.TRUST_PROXY) {
-  app.set('trust proxy', process.env.TRUST_PROXY);
+  app.use(enforceSsl({ trustProtoHeader: true }));
 }
 
 app.use(compression());

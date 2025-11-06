@@ -240,6 +240,17 @@ async function createShippingLabels({
   console.log('📋 [SHIPPO] Using protectedData:', protectedData);
   
   // ──────────────────────────────────────────────────────────────────────────────
+  // ENVIRONMENT VARIABLES (declare at function scope, before try block)
+  // ──────────────────────────────────────────────────────────────────────────────
+  const isProduction = String(process.env.SHIPPO_MODE || '').toLowerCase() === 'production';
+  
+  // Guard: ensure SHIPPO_API_TOKEN is present
+  if (!process.env.SHIPPO_API_TOKEN) {
+    console.error('[shippo] missing SHIPPO_API_TOKEN');
+    return { success: false, reason: 'missing_api_token' };
+  }
+  
+  // ──────────────────────────────────────────────────────────────────────────────
   // EMAIL SUPPRESSION CONFIGURATION
   // ──────────────────────────────────────────────────────────────────────────────
   // Check if recipient email suppression is enabled (to prevent UPS Quantum View emails)
@@ -345,11 +356,6 @@ async function createShippingLabels({
     return { success: false, reason: 'incomplete_customer_address' };
   }
   
-  if (!process.env.SHIPPO_API_TOKEN) {
-    console.warn('⚠️ [SHIPPO] SHIPPO_API_TOKEN missing — skipping label creation');
-    return { success: false, reason: 'missing_api_token' };
-  }
-  
   try {
     console.log('📦 [SHIPPO] Creating outbound shipment (provider → customer)...');
     
@@ -397,7 +403,7 @@ async function createShippingLabels({
     // ──────────────────────────────────────────────────────────────────────────────
     // SANDBOX CARRIER ACCOUNT RESTRICTION: Restrict to USPS/UPS test accounts
     // ──────────────────────────────────────────────────────────────────────────────
-    const isProduction = String(process.env.SHIPPO_MODE || '').toLowerCase() === 'production';
+    // Note: isProduction declared at function scope above for proper scoping
     let carrierAccounts = [];
     
     if (!isProduction) {
@@ -1928,11 +1934,3 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
     });
   }
 };
-
-// Add a top-level handler for unhandled promise rejections to help diagnose Render 'failed service' issues
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-  // Optionally exit the process if desired:
-  // process.exit(1);
-});
-
