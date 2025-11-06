@@ -16,7 +16,7 @@
   "AddressForm.email": "Email Address",
   "AddressForm.emailPlaceholder": "your@email.com",
   "AddressForm.phone": "Phone Number",
-  "AddressForm.phonePlaceholder": "+1 (555) 123-4567",
+  "AddressForm.phonePlaceholder": "(555) 123-4567",
   "AddressForm.labels.fullName": "Full Name",
   "AddressForm.labels.street1": "Street Address (Line 1)",
   "AddressForm.labels.street2": "Apartment / Suite / Unit (Line 2)",

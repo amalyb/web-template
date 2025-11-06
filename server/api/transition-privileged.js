@@ -1416,6 +1416,16 @@ module.exports = async (req, res) => {
       if (effectiveTransition === 'transition/accept') {
         console.log('📨 Preparing to send SMS for transition/accept');
         
+        // DEBUG_SMS: Enhanced diagnostic logging
+        if (process.env.DEBUG_SMS === '1') {
+          console.log('[sms] accept handler invoked', {
+            transactionId,
+            isSpeculative,
+            effectiveTransition,
+            timestamp: new Date().toISOString()
+          });
+        }
+        
         // Skip SMS on speculative calls
         if (isSpeculative) {
           console.log('⏭️ Skipping SMS - speculative call');
@@ -1435,6 +1445,18 @@ module.exports = async (req, res) => {
             borrowerPhone: maskPhone(borrowerPhone), 
             lenderPhone: maskPhone(lenderPhone) 
           });
+          
+          // DEBUG_SMS: Show phone resolution details
+          if (process.env.DEBUG_SMS === '1') {
+            console.log('[sms] phone resolution detail:', {
+              pdCustomerPhone: maskPhone(pd.customerPhone),
+              txPdCustomerPhone: maskPhone(txPD.customerPhone),
+              pdProviderPhone: maskPhone(pd.providerPhone),
+              txPdProviderPhone: maskPhone(txPD.providerPhone),
+              resolvedBorrower: maskPhone(borrowerPhone),
+              resolvedLender: maskPhone(lenderPhone)
+            });
+          }
           
           // Get listing info for messages
           const listingTitle = listing?.attributes?.title || 'your item';

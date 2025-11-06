@@ -11,7 +11,7 @@ import { ensureTransaction } from '../../util/data';
 import { createSlug } from '../../util/urlHelpers';
 import { isTransactionInitiateListingNotFoundError } from '../../util/errors';
 import { getProcess, isBookingProcessAlias } from '../../transactions/transaction';
-import { normalizePhoneE164 } from '../../util/phone';
+// Phone normalization moved to server-side only
 import { IS_DEV, __DEV__, USE_PAYMENT_ELEMENT } from '../../util/envFlags';
 
 // Import shared components
@@ -342,8 +342,8 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   // Log formValues for debugging
   console.log('Form values on submit:', formValues);
 
-  // Normalize contact phone to E.164 format
-  const normalizedContactPhone = normalizePhoneE164(contactPhone);
+  // Pass raw digits to server (server will normalize to E.164)
+  const normalizedContactPhone = contactPhone;
   console.log('📞 Contact phone normalized:', contactPhone, '→', normalizedContactPhone);
 
   // Determine which address to use (shipping or billing)
@@ -352,7 +352,7 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
   // Determine which phone to use for this transaction
   // Priority: shipping.phone (if useDifferentPhone) > contactPhone
   const useShippingPhone = !shippingSameAsBilling && shipping?.useDifferentPhone;
-  const normalizedShippingPhone = useShippingPhone ? normalizePhoneE164(shipping.phone) : null;
+  const normalizedShippingPhone = useShippingPhone ? shipping.phone : null;
   const finalPhone = normalizedShippingPhone || normalizedContactPhone || '';
   
   console.log('📞 Phone decision:', {
@@ -635,8 +635,8 @@ const validateCheckout = values => {
   
   if (!values.contactPhone?.trim()) {
     errors.contactPhone = 'Phone is required';
-  } else if (!/^(\+1\d{10}|\d{10})$/.test(values.contactPhone.trim().replace(/[^\d+]/g, ''))) {
-    errors.contactPhone = 'Phone must be 10 digits or +1 format';
+  } else if (!/^\d{10,11}$/.test(values.contactPhone.trim().replace(/\D/g, ''))) {
+    errors.contactPhone = 'Phone must be 10 digits';
   }
   
   // Validate billing address
@@ -670,8 +670,8 @@ const validateCheckout = values => {
       const phoneDigits = (s.phone || '').trim().replace(/[^\d+]/g, '');
       if (!phoneDigits) {
         errors['shipping.phone'] = 'Delivery phone is required';
-      } else if (!/^(\+1\d{10}|\d{10})$/.test(phoneDigits)) {
-        errors['shipping.phone'] = 'Phone must be 10 digits or +1 format';
+      } else if (!/^\d{10,11}$/.test(phoneDigits)) {
+        errors['shipping.phone'] = 'Phone must be 10 digits';
       }
     }
   }
@@ -1192,7 +1192,7 @@ export const CheckoutPageWithPayment = props => {
                                         name="shipping.phone"
                                         type="tel"
                                         label={intl.formatMessage({ id: 'CheckoutPage.deliveryPhoneLabel', defaultMessage: 'Delivery Phone' })}
-                                        placeholder={intl.formatMessage({ id: 'CheckoutPage.deliveryPhonePlaceholder', defaultMessage: '+14155550123' })}
+                                        placeholder={intl.formatMessage({ id: 'CheckoutPage.deliveryPhonePlaceholder', defaultMessage: '(415) 555-0123' })}
                                         autoComplete="tel"
                                       />
                                     )}

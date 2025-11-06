@@ -10,7 +10,7 @@ import { Field, useFormState } from 'react-final-form';
 import FieldTextInput from '../FieldTextInput/FieldTextInput';
 import FieldSelect from '../FieldSelect/FieldSelect';
 import { US_STATES } from '../../util/geoData';
-import { normalizeStreet1AndStreet2, normalizePhoneE164 } from '../../util/addressNormalizers';
+import { normalizeStreet1AndStreet2 } from '../../util/addressNormalizers';
 import css from './SharedAddressFields.module.css';
 
 /**
@@ -201,37 +201,19 @@ export default function SharedAddressFields({
         )}
       </Field>
 
-      {/* Phone Number - E.164 normalization */}
+      {/* Phone Number - UI stores digits only, server normalizes to E.164 */}
       {showPhone && (
-        <Field 
+        <FieldTextInput
+          className={css.field}
+          id={field('phone')}
           name={field('phone')}
-          parse={(value) => {
-            // Don't normalize while typing, only on blur
-            return value;
-          }}
-          format={(value) => value}
-        >
-          {({ input, meta }) => (
-            <FieldTextInput
-              {...input}
-              className={css.field}
-              id={field('phone')}
-              label="Phone Number *"
-              placeholder="(555) 123-4567"
-              type="tel"
-              required={!!requiredFields.phone}
-              autoComplete="tel"
-              disabled={disabled}
-              meta={meta}
-              onBlur={(e) => {
-                // Normalize to E.164 on blur
-                const normalized = normalizePhoneE164(e.target.value, '1');
-                input.onChange(normalized);
-                input.onBlur(e);
-              }}
-            />
-          )}
-        </Field>
+          label="Phone Number *"
+          placeholder="(555) 123-4567"
+          type="tel"
+          required={!!requiredFields.phone}
+          autoComplete="tel"
+          disabled={disabled}
+        />
       )}
     </div>
   );

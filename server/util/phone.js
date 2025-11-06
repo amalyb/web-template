@@ -124,8 +124,22 @@ function formatPhoneForDisplay(phone) {
   return phone;
 }
 
+/**
+ * Alias for normalizePhoneE164 with simplified API
+ * Accepts raw digits like "5103997781" or "15103997781"
+ * Returns E.164 like "+15103997781" (default country US)
+ * 
+ * @param {string} raw - Raw phone digits
+ * @param {string} defaultCountry - Default country (default: 'US')
+ * @returns {string|null} - E.164 formatted phone or null if invalid
+ */
+function toE164(raw, defaultCountry = 'US') {
+  return normalizePhoneE164(raw, defaultCountry);
+}
+
 module.exports = {
   normalizePhoneE164,
+  toE164,
   isValidPhone,
   formatPhoneForDisplay,
 };

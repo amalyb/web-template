@@ -1,5 +1,6 @@
 const twilio = require('twilio');
 const { maskPhone } = require('./phone');
+const { toE164 } = require('../util/phone');
 const { attempt, sent, failed } = require('./metrics');
 console.log('📦 Twilio module loaded');
 
@@ -11,19 +12,6 @@ const client = twilio(
 // In-memory duplicate prevention (resets on restart)
 const recentSends = new Map(); // key: `${transactionId}:${transition}:${role}`, value: timestamp
 const DUPLICATE_WINDOW_MS = 60000; // 60 seconds
-
-// Helper function to normalize phone number to E.164 format
-function normalizePhoneNumber(phone) {
-  if (!phone) return null;
-  const digits = String(phone).replace(/\D/g, '');
-  if (!digits) return null;
-
-  // US default if 10 digits
-  if (digits.length === 10) return `+1${digits}`;
-
-  // If it already includes country code
-  return `+${digits}`;
-}
 
 // E.164 validation
 function isE164(num) { 
@@ -66,6 +54,7 @@ const stopList = new Set();
 // DRY_RUN and ONLY_PHONE guards
 const DRY_RUN = process.env.SMS_DRY_RUN === '1';
 const ONLY_PHONE = process.env.ONLY_PHONE || null;
+const DEBUG_SMS = process.env.DEBUG_SMS === '1';
 
 /**
  * sendSMS(phone, message, opts?)
@@ -80,35 +69,71 @@ const ONLY_PHONE = process.env.ONLY_PHONE || null;
 async function sendSMS(to, message, opts = {}) {
   const { role, transactionId, transition, tag, meta } = opts;
   
+  // DEBUG_SMS: Print configuration on first call
+  if (DEBUG_SMS && !sendSMS._configLogged) {
+    console.info('[sms] cfg', {
+      enabled: !!process.env.TWILIO_ACCOUNT_SID && !!process.env.TWILIO_AUTH_TOKEN,
+      fromSet: !!process.env.TWILIO_MESSAGING_SERVICE_SID || !!process.env.TWILIO_PHONE_NUMBER,
+      sidSet: !!process.env.TWILIO_ACCOUNT_SID,
+      tokenSet: !!process.env.TWILIO_AUTH_TOKEN,
+      messagingServiceSidSet: !!process.env.TWILIO_MESSAGING_SERVICE_SID,
+      phoneNumberSet: !!process.env.TWILIO_PHONE_NUMBER,
+      dryRun: DRY_RUN,
+      onlyPhone: ONLY_PHONE ? '***' + ONLY_PHONE.slice(-4) : null,
+    });
+    sendSMS._configLogged = true;
+  }
+  
   if (!role && process.env.METRICS_LOG === '1') {
     console.warn('[metrics] skipped: no role provided to sendSMS');
   }
 
   if (!to || !message) {
-    console.warn('📭 Missing phone number or message');
+    if (DEBUG_SMS) {
+      console.warn('[sms] skipped: missing phone or message', { to: !!to, message: !!message, tag });
+    } else {
+      console.warn('📭 Missing phone number or message');
+    }
     return Promise.resolve();
   }
 
-  // Normalize the phone number to E.164 first
-  const toE164 = normalizePhoneNumber(to);
+  // Normalize the phone number to E.164 format (server-side only)
+  // Client sends raw digits like "5103997781", we convert to "+15103997781"
+  const toE164Phone = toE164(to);
   
   // ONLY_PHONE filter - compare normalized numbers
   if (ONLY_PHONE) {
-    const onlyE164 = normalizePhoneNumber(ONLY_PHONE);
-    if (onlyE164 && toE164 !== onlyE164) {
-      console.log('[sms] ONLY_PHONE set, skipping', { to: maskPhone(toE164), ONLY_PHONE: maskPhone(onlyE164), template: tag });
+    const onlyE164Phone = toE164(ONLY_PHONE);
+    if (onlyE164Phone && toE164Phone !== onlyE164Phone) {
+      if (DEBUG_SMS) {
+        console.log('[sms] skipped: ONLY_PHONE filter', { to: maskPhone(toE164Phone), ONLY_PHONE: maskPhone(onlyE164Phone), tag });
+      } else {
+        console.log('[sms] ONLY_PHONE set, skipping', { to: maskPhone(toE164Phone), ONLY_PHONE: maskPhone(onlyE164Phone), template: tag });
+      }
       return Promise.resolve();
     }
   }
 
   // DRY_RUN guard - log what would be sent
   if (DRY_RUN) {
-    console.log('[sms][DRY_RUN] would send:', { to, template: tag, body: message });
+    if (DEBUG_SMS) {
+      console.log('[sms] DRY_RUN mode - would send:', { to: maskPhone(toE164Phone), tag, bodyLength: message.length });
+    } else {
+      console.log('[sms][DRY_RUN] would send:', { to, template: tag, body: message });
+    }
     return Promise.resolve();
   }
 
   if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
-    console.warn('⚠️ Twilio env vars missing — skipping SMS');
+    if (DEBUG_SMS) {
+      console.warn('[sms] skipped: Twilio credentials missing', {
+        sidSet: !!process.env.TWILIO_ACCOUNT_SID,
+        tokenSet: !!process.env.TWILIO_AUTH_TOKEN,
+        tag
+      });
+    } else {
+      console.warn('⚠️ Twilio env vars missing — skipping SMS');
+    }
     return Promise.resolve();
   }
 
@@ -120,23 +145,23 @@ async function sendSMS(to, message, opts = {}) {
     }
   }
 
-  // toE164 already computed above for ONLY_PHONE check
-  if (!toE164) {
+  // Validate normalized phone
+  if (!toE164Phone) {
     console.warn(`📱 Invalid phone number format: ${to}`);
     if (role) failed(role, 'invalid_format');
     return Promise.resolve();
   }
 
   // E.164 validation
-  if (!isE164(toE164)) {
+  if (!isE164(toE164Phone)) {
     console.warn('[SMS] invalid phone, aborting:', to ? maskPhone(to) : 'null');
     if (role) failed(role, 'invalid_e164');
     return Promise.resolve();
   }
 
   // Check STOP list
-  if (stopList.has(toE164)) {
-    console.warn('[SMS] suppressed: number opted out (STOP):', maskPhone(toE164));
+  if (stopList.has(toE164Phone)) {
+    console.warn('[SMS] suppressed: number opted out (STOP):', maskPhone(toE164Phone));
     return { suppressed: true, reason: 'stop_list' };
   }
 
@@ -153,11 +178,11 @@ async function sendSMS(to, message, opts = {}) {
   // Enhanced logging with tag and meta information
   const metaJson = meta ? JSON.stringify(meta) : '{}';
   const bodyJson = JSON.stringify(message);
-  console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164)} meta=${metaJson} body=${bodyJson}`);
+  console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164Phone)} meta=${metaJson} body=${bodyJson}`);
   
   if (devFullLogs) {
     console.debug('[DEV ONLY] Raw number:', to);
-    console.debug('[DEV ONLY] E.164 number:', toE164);
+    console.debug('[DEV ONLY] E.164 number:', toE164Phone);
     console.debug('[DEV ONLY] Caller function:', caller);
   }
 
@@ -176,7 +201,7 @@ async function sendSMS(to, message, opts = {}) {
   }
 
   const payload = {
-    to: toE164, // real E.164 - unmasked
+    to: toE164Phone, // real E.164 - unmasked
     body: message,
     statusCallback: statusCallbackUrl,
   };
@@ -191,27 +216,64 @@ async function sendSMS(to, message, opts = {}) {
     payload.from = process.env.TWILIO_PHONE_NUMBER;
   }
 
+  // DEBUG_SMS: Log before API call
+  if (DEBUG_SMS) {
+    console.info('[sms] send start', { 
+      to: maskPhone(toE164Phone), 
+      tag: tag || 'none', 
+      txId: transactionId || 'none',
+      role,
+      transition
+    });
+  }
+
   return client.messages
     .create(payload)
     .then(msg => {
       // Success
       if (role) sent(role);
-      console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164)} meta=${metaJson} body=${bodyJson} sid=${msg.sid}`);
+      console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164Phone)} meta=${metaJson} body=${bodyJson} sid=${msg.sid}`);
+      
+      // DEBUG_SMS: Enhanced success logging
+      if (DEBUG_SMS) {
+        console.info('[sms] send ok', { 
+          to: maskPhone(toE164Phone), 
+          sid: msg.sid, 
+          status: msg.status,
+          tag: tag || 'none',
+          txId: transactionId || 'none'
+        });
+      }
+      
       return msg;
     })
     .catch(err => {
       // Optional: map Twilio error codes as before (21610 etc.)
       const code = err?.code || err?.status || 'unknown';
       if (role) failed(role, code);
-      console.warn('[SMS] failed', { 
-        code, 
-        rawPhone: maskPhone(to), 
-        e164Phone: maskPhone(toE164),
-        error: err.message 
-      });
+      
+      // DEBUG_SMS: Enhanced error logging
+      if (DEBUG_SMS) {
+        console.error('[sms] send fail', { 
+          to: maskPhone(toE164Phone), 
+          code: err.code, 
+          status: err.status,
+          message: err.message,
+          moreInfo: err.moreInfo,
+          tag: tag || 'none',
+          txId: transactionId || 'none'
+        });
+      } else {
+        console.warn('[SMS] failed', { 
+          code, 
+          rawPhone: maskPhone(to), 
+          e164Phone: maskPhone(toE164Phone),
+          error: err.message 
+        });
+      }
 
       // 21610: STOP. Avoid future sends in this process.
-      if (String(code) === '21610') stopList.add(toE164);
+      if (String(code) === '21610') stopList.add(toE164Phone);
       throw err;
     });
 }
