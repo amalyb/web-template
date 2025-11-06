@@ -119,10 +119,33 @@ const buildReturnLabelLink = (transactionId, shippoData = {}) => {
   };
 };
 
+/**
+ * Build an order page URL for a transaction
+ *
+ * @param {string|object} transactionId - Transaction ID (UUID string or object with .uuid)
+ * @returns {string} Full order page URL (e.g., https://sherbrt.com/order/690bcaf8-...)
+ *
+ * @example
+ * orderUrl('690bcaf8-daa7-4052-ac6d-cf22b0a49cd9')
+ * // => 'https://sherbrt.com/order/690bcaf8-daa7-4052-ac6d-cf22b0a49cd9'
+ */
+const orderUrl = (transactionId) => {
+  // Extract UUID if transactionId is an object
+  const txId = transactionId?.uuid || transactionId;
+  
+  if (!txId) {
+    console.warn('[URL] orderUrl called with invalid transactionId:', transactionId);
+    return makeAppUrl('/'); // Fallback to site root
+  }
+  
+  return makeAppUrl(`/order/${txId}`);
+};
+
 module.exports = {
   getBaseUrl,
   makeAppUrl,
   getSmsLinkStrategy,
   buildShipLabelLink,
   buildReturnLabelLink,
+  orderUrl,
 };
