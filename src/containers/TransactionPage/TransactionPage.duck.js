@@ -745,10 +745,23 @@ export const makeTransition = (txId, transitionName, params) => (dispatch, getSt
       providerEmail: params.providerEmail,
     };
 
+    // ⭐ APARTMENT DEBUG: Log providerStreet2 before cleaning
+    console.log('🔍 [APARTMENT DEBUG] Duck providerPD.providerStreet2:', {
+      value: providerPD.providerStreet2,
+      hasValue: !!providerPD.providerStreet2,
+      type: typeof providerPD.providerStreet2,
+    });
+
     // Clean provider fields - don't send empty strings that could overwrite existing data
     const cleanedProviderPD = Object.fromEntries(
       Object.entries(providerPD).filter(([, v]) => v != null && String(v).trim() !== '')
     );
+
+    // ⭐ APARTMENT DEBUG: Log providerStreet2 after cleaning
+    console.log('🔍 [APARTMENT DEBUG] Duck cleanedProviderPD.providerStreet2:', {
+      value: cleanedProviderPD.providerStreet2,
+      included: 'providerStreet2' in cleanedProviderPD,
+    });
 
     // Merge customer fields from transaction with cleaned provider fields
     const outgoingPD = { ...txPD, ...cleanedProviderPD };

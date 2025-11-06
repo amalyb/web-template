@@ -207,11 +207,23 @@ async function createShippingLabels({
   const suppress = String(process.env.SHIPPO_SUPPRESS_RECIPIENT_EMAIL || '').toLowerCase() === 'true';
   console.log('[SHIPPO] Recipient email suppression:', suppress ? 'ON' : 'OFF');
   
+  // ⭐ EXPLICIT PROVIDER STREET2 EXTRACTION with fallback
+  const providerStreet2Value = protectedData.providerStreet2 || protectedData.providerApt || '';
+  
+  // ⭐ APARTMENT DEBUG: Log raw protectedData before extraction
+  console.log('🔍 [APARTMENT DEBUG] Raw protectedData fields:', {
+    providerStreet: protectedData.providerStreet,
+    providerStreet2: protectedData.providerStreet2,
+    providerApt: protectedData.providerApt,
+    resolvedStreet2: providerStreet2Value,
+    hasStreet2: !!providerStreet2Value,
+  });
+  
   // Extract raw address data from protectedData
   const rawProviderAddress = {
     name: protectedData.providerName || 'Provider',
     street1: protectedData.providerStreet,
-    street2: protectedData.providerStreet2,
+    street2: providerStreet2Value,  // Use resolved value with fallback
     city: protectedData.providerCity,
     state: protectedData.providerState,
     zip: protectedData.providerZip,
@@ -241,6 +253,24 @@ async function createShippingLabels({
   // Log addresses for debugging
   console.log('🏷️ [SHIPPO] Provider address (from):', addressFrom);
   console.log('🏷️ [SHIPPO] Customer address (to):', addressTo);
+  
+  // ⭐ APARTMENT DEBUG: Explicit check for street2
+  console.log('🔍 [APARTMENT DEBUG] Built addressFrom:', {
+    hasStreet2: !!addressFrom.street2,
+    street2Value: addressFrom.street2,
+    fullAddress: addressFrom
+  });
+  
+  // ⭐ ASSERT: If protectedData had street2 but addressFrom doesn't, flag it
+  if (providerStreet2Value && !addressFrom.street2) {
+    console.error('❌ [APARTMENT ASSERT] street2 was in protectedData but is MISSING from addressFrom!', {
+      protectedData_street2: providerStreet2Value,
+      addressFrom_street2: addressFrom.street2,
+      rawProviderAddress_street2: rawProviderAddress.street2
+    });
+  } else if (providerStreet2Value && addressFrom.street2) {
+    console.log('✅ [APARTMENT CONFIRMED] street2 successfully made it to addressFrom:', addressFrom.street2);
+  }
   
   // Runtime guard: ensure no email leaks when suppression is ON
   if (suppress && addressTo.email) {
@@ -1028,10 +1058,24 @@ module.exports = async (req, res) => {
           console.log('🔍 [DEBUG] Incoming protectedData:', incomingProtectedData);
           console.log('🔍 [DEBUG] Transaction customer relationship:', transaction?.data?.data?.relationships?.customer);
           
+          // ⭐ APARTMENT DEBUG: Log incoming providerStreet2 specifically
+          console.log('🔍 [APARTMENT DEBUG] Incoming providerStreet2:', {
+            hasField: 'providerStreet2' in incomingProtectedData,
+            value: incomingProtectedData.providerStreet2,
+            type: typeof incomingProtectedData.providerStreet2,
+            isEmpty: incomingProtectedData.providerStreet2 === '',
+          });
+          
           // Remove blank updates from incoming data
           const cleaned = Object.fromEntries(
             Object.entries(incomingProtectedData).filter(([, v]) => v != null && String(v).trim() !== '')
           );
+          
+          // ⭐ APARTMENT DEBUG: Log cleaned providerStreet2
+          console.log('🔍 [APARTMENT DEBUG] After cleaning:', {
+            hasProviderStreet2: 'providerStreet2' in cleaned,
+            providerStreet2Value: cleaned.providerStreet2,
+          });
           
           // Now merge: transaction first, then cleaned updates
           const mergedProtectedData = { ...txProtectedData, ...cleaned };
@@ -1047,6 +1091,22 @@ module.exports = async (req, res) => {
             }
           }
           
+          // ⭐ EXPLICIT PROVIDER STREET2 HANDLING
+          // Ensure providerStreet2 is preserved with fallback to providerApt
+          if (!mergedProtectedData.providerStreet2 && incomingProtectedData.providerApt) {
+            mergedProtectedData.providerStreet2 = incomingProtectedData.providerApt;
+            console.log('🔍 [APARTMENT DEBUG] Used providerApt fallback:', incomingProtectedData.providerApt);
+          }
+          
+          // Assert log if providerStreet2 was in incoming but is now missing
+          if (incomingProtectedData.providerStreet2 && !mergedProtectedData.providerStreet2) {
+            console.error('❌ [APARTMENT ASSERT] providerStreet2 was present in incoming but is now MISSING!', {
+              incoming: incomingProtectedData.providerStreet2,
+              merged: mergedProtectedData.providerStreet2,
+              cleaned: cleaned.providerStreet2
+            });
+          }
+          
           console.log('[server accept] merged PD keys:', Object.keys(mergedProtectedData));
 
           // Set both params.protectedData and top-level fields from mergedProtectedData
@@ -1057,6 +1117,7 @@ module.exports = async (req, res) => {
           // Debug log for final merged provider fields
           console.log('✅ [MERGE FIX] Final merged provider fields:', {
             providerStreet: mergedProtectedData.providerStreet,
+            providerStreet2: mergedProtectedData.providerStreet2,  // ⭐ ADDED for apartment debugging
             providerCity: mergedProtectedData.providerCity,
             providerState: mergedProtectedData.providerState,
             providerZip: mergedProtectedData.providerZip,

@@ -251,6 +251,14 @@ export class TransactionPanelComponent extends Component {
             if (isProvider && this.state.addressValues) {
               console.log('🏠 [onAction] addressValues before merge:', this.state.addressValues);
               const { streetAddress, streetAddress2, city, state, zipCode, phoneNumber } = this.state.addressValues;
+              
+              // ⭐ APARTMENT DEBUG: Log streetAddress2 specifically
+              console.log('🔍 [APARTMENT DEBUG] Frontend streetAddress2:', {
+                value: streetAddress2,
+                type: typeof streetAddress2,
+                hasValue: !!streetAddress2,
+                isEmpty: streetAddress2 === '',
+              });
               // Validate that all required address fields are filled
               const requiredFields = { streetAddress, city, state, zipCode, phoneNumber };
               const missingFields = Object.entries(requiredFields)
@@ -300,6 +308,12 @@ export class TransactionPanelComponent extends Component {
                 providerName,
               };
               console.log('[accept] outgoingPD keys:', Object.keys(mergedProtectedData));
+              
+              // ⭐ APARTMENT DEBUG: Log merged providerStreet2
+              console.log('🔍 [APARTMENT DEBUG] Merged protectedData providerStreet2:', {
+                value: mergedProtectedData.providerStreet2,
+                included: 'providerStreet2' in mergedProtectedData,
+              });
               
               // --- FRONTEND FIX: Add all required fields at top-level of params as well ---
               Object.assign(params, {
