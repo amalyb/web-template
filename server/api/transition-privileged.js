@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, getSandboxCarrierAccounts, formatPhoneE164 } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink } = require('../util/url');
@@ -268,7 +268,7 @@ async function createShippingLabels({
     zip: protectedData.providerZip,
     country: 'US',
     email: protectedData.providerEmail,
-    phone: protectedData.providerPhone,
+    phone: formatPhoneE164(protectedData.providerPhone),  // Normalize to E.164
   };
   
   const rawCustomerAddress = {
@@ -280,7 +280,7 @@ async function createShippingLabels({
     zip: protectedData.customerZip,
     country: 'US',
     email: protectedData.customerEmail,
-    phone: protectedData.customerPhone,
+    phone: formatPhoneE164(protectedData.customerPhone),  // Normalize to E.164
   };
   
   // Build Shippo-compatible addresses with email suppression logic
@@ -394,13 +394,31 @@ async function createShippingLabels({
     addressFrom = keepStreet2(rawProviderAddress, addressFrom);
     addressTo = keepStreet2(rawCustomerAddress, addressTo);
 
+    // ──────────────────────────────────────────────────────────────────────────────
+    // SANDBOX CARRIER ACCOUNT RESTRICTION: Restrict to USPS/UPS test accounts
+    // ──────────────────────────────────────────────────────────────────────────────
+    const isProduction = String(process.env.SHIPPO_MODE || '').toLowerCase() === 'production';
+    let carrierAccounts = [];
+    
+    if (!isProduction) {
+      try {
+        // Dynamically load shippo client
+        const { shippo } = require('../lib/shipping');
+        carrierAccounts = await getSandboxCarrierAccounts(shippo);
+        console.log('[SHIPPO][SANDBOX] Using carrier accounts:', carrierAccounts);
+      } catch (err) {
+        console.warn('[SHIPPO][SANDBOX] Failed to get carrier accounts:', err.message);
+      }
+    }
+
     // Outbound shipment payload
     // Note: QR code will be requested per-carrier at purchase time (USPS only)
     const outboundPayload = {
       address_from: addressFrom,
       address_to: addressTo,
       parcels: [parcel],
-      async: false
+      async: false,
+      ...(carrierAccounts.length > 0 ? { carrier_accounts: carrierAccounts } : {})
     };
     
     // DEBUG: log the *exact* payload we will send to Shippo
@@ -512,7 +530,66 @@ async function createShippingLabels({
           JSON.stringify(outboundPayload, null, 2));
       }
       
-      return { success: false, reason: 'no_shipping_rates' };
+      // ────────────────────────────────────────────────────────────────────────────
+      // USPS-ONLY FALLBACK: If no rates, try again with USPS-only in sandbox
+      // ────────────────────────────────────────────────────────────────────────────
+      if (!isProduction && carrierAccounts.length > 0) {
+        console.warn('[SHIPPO][FALLBACK] Attempting USPS-only shipment...');
+        
+        // Find USPS account
+        const { shippo } = require('../lib/shipping');
+        const uspsAccount = carrierAccounts.find(async (accId) => {
+          try {
+            const acc = await shippo.carrieraccounts.retrieve(accId);
+            return acc?.carrier?.toUpperCase() === 'USPS';
+          } catch (e) {
+            return false;
+          }
+        });
+        
+        if (uspsAccount) {
+          try {
+            const uspsPayload = {
+              ...outboundPayload,
+              carrier_accounts: [uspsAccount]
+            };
+            
+            console.log('[SHIPPO][FALLBACK] Creating USPS-only shipment...');
+            const uspsShipmentRes = await withBackoff(
+              () => axios.post(
+                'https://api.goshippo.com/shipments/',
+                uspsPayload,
+                {
+                  headers: {
+                    'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+                    'Content-Type': 'application/json'
+                  }
+                }
+              ),
+              { retries: 2, baseMs: 600 }
+            );
+            
+            const uspsRates = uspsShipmentRes.data.rates || [];
+            if (uspsRates.length > 0) {
+              console.log('[SHIPPO][FALLBACK] ✅ USPS rates found:', uspsRates.length);
+              availableRates = uspsRates;
+              // Continue with rate selection
+            } else {
+              console.error('[SHIPPO][FALLBACK] ❌ No USPS rates available');
+              console.error('[SHIPPO][NO-USPS] Cannot proceed without rates');
+              return { success: false, reason: 'no_shipping_rates' };
+            }
+          } catch (fallbackErr) {
+            console.error('[SHIPPO][FALLBACK] Failed:', fallbackErr.message);
+            return { success: false, reason: 'no_shipping_rates' };
+          }
+        } else {
+          console.error('[SHIPPO][NO-USPS] No USPS account found in sandbox');
+          return { success: false, reason: 'no_shipping_rates' };
+        }
+      } else {
+        return { success: false, reason: 'no_shipping_rates' };
+      }
     }
     
     // Rate selection logic: use pickCheapestAllowedRate with shipByDate
@@ -818,7 +895,8 @@ async function createShippingLabels({
           address_from: returnAddressFrom,
           address_to: returnAddressTo,
           parcels: [parcel],
-          async: false
+          async: false,
+          ...(carrierAccounts.length > 0 ? { carrier_accounts: carrierAccounts } : {})
         };
         
         // DEBUG: log the *exact* payload we will send to Shippo
