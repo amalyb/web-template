@@ -466,7 +466,7 @@ async function createShippingLabels({
     // ──────────────────────────────────────────────────────────────────────────────
     // SANDBOX CARRIER FILTERING: Limit to UPS/USPS in non-production mode
     // ──────────────────────────────────────────────────────────────────────────────
-    const isProduction = String(process.env.SHIPPO_MODE || '').toLowerCase() === 'production';
+    // (isProduction already declared above for carrier account restriction)
     const allowedCarriers = ['UPS', 'USPS'];
     
     if (!isProduction && availableRates.length > 0) {
