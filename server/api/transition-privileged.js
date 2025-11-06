@@ -250,6 +250,20 @@ async function createShippingLabels({
   // Borrower (customer) email suppressed when flag is ON (to prevent UPS emails)
   const addressTo = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
   
+  // ──────────────────────────────────────────────────────────────────────────────
+  // EXPLICIT STREET2 GUARD: Ensure street2 is preserved in Shippo payload
+  // ──────────────────────────────────────────────────────────────────────────────
+  // Outbound: from.street2 = providerStreet2, to.street2 = customerStreet2
+  // If buildShippoAddress dropped street2, re-apply from raw data
+  if (rawProviderAddress.street2 && !addressFrom.street2) {
+    console.warn('[STREET2-GUARD] Re-applying addressFrom.street2 from raw data');
+    addressFrom.street2 = rawProviderAddress.street2;
+  }
+  if (rawCustomerAddress.street2 && !addressTo.street2) {
+    console.warn('[STREET2-GUARD] Re-applying addressTo.street2 from raw data');
+    addressTo.street2 = rawCustomerAddress.street2;
+  }
+  
   // Log addresses for debugging
   console.log('🏷️ [SHIPPO] Provider address (from):', addressFrom);
   console.log('🏷️ [SHIPPO] Customer address (to):', addressTo);
@@ -309,6 +323,31 @@ async function createShippingLabels({
       weight: '0.75',
       mass_unit: 'lb'
     };
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    // PRE-SHIPPO DIAGNOSTIC LOGGING (OUTBOUND)
+    // ──────────────────────────────────────────────────────────────────────────────
+    const redactPhone = s => s ? s.replace(/\d(?=\d{2})/g, '•') : s;
+    
+    console.info('[shippo][pre] outbound=true carrier=UPS/USPS');
+    console.info('[shippo][pre] address_from (provider→customer)', {
+      name: addressFrom?.name,
+      street1: addressFrom?.street1,
+      street2: addressFrom?.street2,     // ← MUST NOT be empty if we have an apt
+      city: addressFrom?.city,
+      state: addressFrom?.state,
+      zip: addressFrom?.zip,
+      phone: redactPhone(addressFrom?.phone)
+    });
+    console.info('[shippo][pre] address_to (customer)', {
+      name: addressTo?.name,
+      street1: addressTo?.street1,
+      street2: addressTo?.street2,       // ← MUST NOT be empty if recipient has an apt
+      city: addressTo?.city,
+      state: addressTo?.state,
+      zip: addressTo?.zip,
+      phone: redactPhone(addressTo?.phone)
+    });
 
     // Outbound shipment payload
     // Note: QR code will be requested per-carrier at purchase time (USPS only)
@@ -645,6 +684,42 @@ async function createShippingLabels({
           console.warn('[SHIPPO] Removing email from return label address_from due to suppression flag.');
           delete returnAddressFrom.email;
         }
+        
+        // ──────────────────────────────────────────────────────────────────────────────
+        // EXPLICIT STREET2 GUARD (RETURN LABEL): Ensure street2 is preserved
+        // ──────────────────────────────────────────────────────────────────────────────
+        // Return: from.street2 = customerStreet2, to.street2 = providerStreet2
+        if (rawCustomerAddress.street2 && !returnAddressFrom.street2) {
+          console.warn('[STREET2-GUARD][RETURN] Re-applying returnAddressFrom.street2 from raw data');
+          returnAddressFrom.street2 = rawCustomerAddress.street2;
+        }
+        if (rawProviderAddress.street2 && !returnAddressTo.street2) {
+          console.warn('[STREET2-GUARD][RETURN] Re-applying returnAddressTo.street2 from raw data');
+          returnAddressTo.street2 = rawProviderAddress.street2;
+        }
+        
+        // ──────────────────────────────────────────────────────────────────────────────
+        // PRE-SHIPPO DIAGNOSTIC LOGGING (RETURN)
+        // ──────────────────────────────────────────────────────────────────────────────
+        console.info('[shippo][pre] outbound=false carrier=UPS/USPS (return label)');
+        console.info('[shippo][pre][return] address_from (customer→provider)', {
+          name: returnAddressFrom?.name,
+          street1: returnAddressFrom?.street1,
+          street2: returnAddressFrom?.street2,     // ← MUST NOT be empty if customer has an apt
+          city: returnAddressFrom?.city,
+          state: returnAddressFrom?.state,
+          zip: returnAddressFrom?.zip,
+          phone: redactPhone(returnAddressFrom?.phone)
+        });
+        console.info('[shippo][pre][return] address_to (provider)', {
+          name: returnAddressTo?.name,
+          street1: returnAddressTo?.street1,
+          street2: returnAddressTo?.street2,       // ← MUST NOT be empty if provider has an apt
+          city: returnAddressTo?.city,
+          state: returnAddressTo?.state,
+          zip: returnAddressTo?.zip,
+          phone: redactPhone(returnAddressTo?.phone)
+        });
         
         const returnPayload = {
           address_from: returnAddressFrom,
