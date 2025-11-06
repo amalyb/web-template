@@ -93,10 +93,12 @@ function isValidPhone(phone) {
 }
 
 /**
- * Formats a phone number for display
+ * Formats a phone number for display (UI-friendly, no "+" prefix)
  * 
- * @param {string} phone - E.164 formatted phone number
- * @returns {string} - Formatted phone number for display (e.g., "+1 (555) 123-4567")
+ * @param {string} phone - E.164 formatted phone number or raw digits
+ * @returns {string} - Formatted phone number for display (e.g., "(555) 123-4567")
+ * 
+ * Policy: UI never shows "+" prefix. Server normalizes to E.164 before SMS.
  */
 function formatPhoneForDisplay(phone) {
   if (!phone || typeof phone !== 'string') {
@@ -105,15 +107,22 @@ function formatPhoneForDisplay(phone) {
 
   const cleaned = String(phone).trim().replace(/[^\d+]/g, '');
 
-  // US numbers in E.164 format: +1XXXXXXXXXX
+  // US numbers in E.164 format: +1XXXXXXXXXX -> (555) 123-4567
   if (cleaned.startsWith('+1') && cleaned.length === 12) {
     const number = cleaned.slice(2);
-    return `+1 (${number.slice(0, 3)}) ${number.slice(3, 6)}-${number.slice(6)}`;
+    return `(${number.slice(0, 3)}) ${number.slice(3, 6)}-${number.slice(6)}`;
   }
 
-  // Other E.164 format: just add spacing
+  // Other E.164 format with +: strip + and show digits only
   if (cleaned.startsWith('+') && cleaned.length >= 8) {
-    return cleaned;
+    const number = cleaned.slice(1);
+    // For US numbers (11 digits starting with 1), format nicely
+    if (number.startsWith('1') && number.length === 11) {
+      const usNumber = number.slice(1);
+      return `(${usNumber.slice(0, 3)}) ${usNumber.slice(3, 6)}-${usNumber.slice(6)}`;
+    }
+    // For other countries, just show digits without +
+    return number;
   }
 
   // 10-digit US format

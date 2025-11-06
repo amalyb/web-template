@@ -182,6 +182,31 @@ async function computeShipByDate(tx, opts = {}) {
     });
   }
 
+  // DEBUG_SHIPBY structured logging (guarded)
+  if (process.env.DEBUG_SHIPBY === '1') {
+    const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
+    let distanceMiles = null;
+    if (LEAD_MODE === 'distance' && fromZip && toZip) {
+      try {
+        const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
+        if (fromLL && toLL) {
+          distanceMiles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    console.info('[shipby] borrowStart=%s leadMode=%s fixedLeadDays=%s distanceMi=%s dynamicDays=%s chosenDays=%s shipBy=%s',
+      startISO,
+      LEAD_MODE,
+      LEAD_MODE === 'static' ? leadDays : null,
+      distanceMiles !== null ? Math.round(distanceMiles) : null,
+      LEAD_MODE === 'distance' ? leadDays : null,
+      leadDays,
+      adjusted.toISOString()
+    );
+  }
+
   return adjusted;
 }
 
@@ -564,6 +589,140 @@ async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
   return result;
 }
 
+// -- Keep street2 if a validator/normalizer dropped it ------------------------
+/**
+ * Re-applies street2 from original address if normalized/validated version lost it
+ * @param {Object} original - Original raw address with street2
+ * @param {Object} normalized - Normalized/validated address that may have lost street2
+ * @returns {Object} Normalized address with street2 preserved
+ */
+function keepStreet2(original, normalized) {
+  if (!original || !normalized) return normalized || original;
+  if (original.street2 && !normalized.street2) {
+    normalized.street2 = original.street2;
+  }
+  return normalized;
+}
+
+// -- Sandbox carrier account helper (cached) ----------------------------------
+let carrierAccountsCache = null;
+let carrierAccountsCacheTime = 0;
+const CARRIER_ACCOUNT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Get sandbox carrier accounts (USPS preferred, optionally UPS)
+ * Caches result for 5 minutes to avoid rate limits
+ * @param {Object} shippoClient - Shippo SDK instance
+ * @returns {Promise<string[]>} Array of carrier account object_ids
+ */
+async function getSandboxCarrierAccounts(shippoClient) {
+  const now = Date.now();
+  
+  // Return cached result if still valid
+  if (carrierAccountsCache && (now - carrierAccountsCacheTime) < CARRIER_ACCOUNT_CACHE_TTL_MS) {
+    console.log('[SHIPPO][CARRIER] Using cached carrier accounts:', carrierAccountsCache);
+    return carrierAccountsCache;
+  }
+  
+  if (!shippoClient) {
+    console.warn('[SHIPPO][CARRIER] No Shippo client available');
+    return [];
+  }
+  
+  try {
+    console.log('[SHIPPO][CARRIER] Fetching carrier accounts...');
+    
+    // List carrier accounts
+    const response = await shippoClient.carrieraccounts.list();
+    const accounts = response?.results || [];
+    
+    console.log('[SHIPPO][CARRIER] Found accounts:', accounts.map(a => ({
+      carrier: a.carrier,
+      object_id: a.object_id,
+      test: a.test
+    })));
+    
+    // Filter to USPS (and optionally UPS) test accounts
+    const uspsAccounts = accounts.filter(a => 
+      a.carrier?.toUpperCase() === 'USPS' && a.test === true && a.active !== false
+    );
+    const upsAccounts = accounts.filter(a => 
+      a.carrier?.toUpperCase() === 'UPS' && a.test === true && a.active !== false
+    );
+    
+    // Prefer USPS-only in sandbox for reliability
+    const selectedAccounts = uspsAccounts.length > 0 
+      ? uspsAccounts.map(a => a.object_id)
+      : [...uspsAccounts, ...upsAccounts].map(a => a.object_id);
+    
+    console.log('[SHIPPO][CARRIER] Selected carrier accounts:', selectedAccounts);
+    
+    // Cache the result
+    carrierAccountsCache = selectedAccounts;
+    carrierAccountsCacheTime = now;
+    
+    return selectedAccounts;
+  } catch (err) {
+    console.error('[SHIPPO][CARRIER] Failed to fetch carrier accounts:', err.message);
+    return [];
+  }
+}
+
+// -- Debug logger that prints the *exact* payload we send to Shippo -----------
+/**
+ * Logs Shippo payload with address details when DEBUG_SHIPPO=1
+ * @param {string} tag - Label for the log entry (e.g., "outbound:shipment")
+ * @param {Object} payload - Shippo API payload { address_from, address_to, parcels, extra }
+ */
+function logShippoPayload(tag, { address_from, address_to, parcels, extra }) {
+  if (process.env.DEBUG_SHIPPO !== '1') return;
+  const pick = a => a && ({
+    name: a.name, 
+    street1: a.street1, 
+    street2: a.street2,
+    city: a.city, 
+    state: a.state, 
+    zip: a.zip, 
+    country: a.country,
+  });
+  console.info(`[shippo][pre] ${tag}`, {
+    address_from: pick(address_from),
+    address_to: pick(address_to),
+    parcels,
+    ...(extra ? { extra } : {})
+  });
+}
+
+/**
+ * Format phone to E.164 (required by Shippo)
+ * @param {string} phone - Raw phone number
+ * @returns {string} E.164 formatted phone or empty string
+ */
+function formatPhoneE164(phone) {
+  if (!phone) return '';
+  
+  // Remove all non-digit characters except +
+  let cleaned = phone.replace(/[^\d+]/g, '');
+  
+  // If it doesn't start with +, assume US number and add +1
+  if (!cleaned.startsWith('+')) {
+    // Remove leading 1 if present
+    if (cleaned.startsWith('1') && cleaned.length === 11) {
+      cleaned = cleaned.substring(1);
+    }
+    cleaned = '+1' + cleaned;
+  }
+  
+  // Validate E.164 format (1-15 digits after +)
+  const e164Regex = /^\+[1-9]\d{1,14}$/;
+  if (!e164Regex.test(cleaned)) {
+    console.warn('[PHONE] Invalid E.164 format:', phone, '→', cleaned);
+    return phone; // Return original if normalization fails
+  }
+  
+  return cleaned;
+}
+
 module.exports = { 
   shippingClient,
   shippo,
@@ -575,6 +734,10 @@ module.exports = {
   computeLeadDaysDynamic,
   estimateOneWay,
   estimateRoundTrip,
+  keepStreet2,
+  logShippoPayload,
+  getSandboxCarrierAccounts,
+  formatPhoneE164,
 };
 
 // Optional sanity check for debugging
