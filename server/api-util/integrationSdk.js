@@ -103,7 +103,6 @@ async function txUpdateProtectedData(txId, protectedPatch, opts = {}) {
   
   // Prune to only allowed keys to prevent 400 errors
   const pruned = pruneProtectedData(protectedPatch);
-  const prunedCount = Object.keys(protectedPatch || {}).length - Object.keys(pruned).length;
   const ctx = { txId, keys: Object.keys(pruned), source: opts.source };
   
   try {
@@ -112,19 +111,14 @@ async function txUpdateProtectedData(txId, protectedPatch, opts = {}) {
       method: 'POST',
       path: `/transactions/${txId}/update_metadata`,
       bodyKeys: Object.keys(pruned),
-      prunedCount,
+      prunedCount: Object.keys(protectedPatch || {}).length - Object.keys(pruned).length,
     });
 
-    // NOTE: Integration API expects metadata: { protectedData: {...} }
-    const body = {
-      metadata: {
-        protectedData: pruned
-      }
-    };
-
+    // NOTE: Integration API method is updateMetadata, not update.
     const res = await sdk.transactions.updateMetadata({
-      id: txId,
-      ...body
+      id: txId,                 // string UUID, not SDK UUID object
+      protectedData: pruned,    // Use pruned data
+      // metadata: {}           // include if you also want to patch normal metadata
     });
 
     console.log('[INT][PD][OK]', ctx);
