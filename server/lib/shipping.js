@@ -564,6 +564,46 @@ async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
   return result;
 }
 
+// -- Keep street2 if a validator/normalizer dropped it ------------------------
+/**
+ * Re-applies street2 from original address if normalized/validated version lost it
+ * @param {Object} original - Original raw address with street2
+ * @param {Object} normalized - Normalized/validated address that may have lost street2
+ * @returns {Object} Normalized address with street2 preserved
+ */
+function keepStreet2(original, normalized) {
+  if (!original || !normalized) return normalized || original;
+  if (original.street2 && !normalized.street2) {
+    normalized.street2 = original.street2;
+  }
+  return normalized;
+}
+
+// -- Debug logger that prints the *exact* payload we send to Shippo -----------
+/**
+ * Logs Shippo payload with address details when DEBUG_SHIPPO=1
+ * @param {string} tag - Label for the log entry (e.g., "outbound:shipment")
+ * @param {Object} payload - Shippo API payload { address_from, address_to, parcels, extra }
+ */
+function logShippoPayload(tag, { address_from, address_to, parcels, extra }) {
+  if (process.env.DEBUG_SHIPPO !== '1') return;
+  const pick = a => a && ({
+    name: a.name, 
+    street1: a.street1, 
+    street2: a.street2,
+    city: a.city, 
+    state: a.state, 
+    zip: a.zip, 
+    country: a.country,
+  });
+  console.info(`[shippo][pre] ${tag}`, {
+    address_from: pick(address_from),
+    address_to: pick(address_to),
+    parcels,
+    ...(extra ? { extra } : {})
+  });
+}
+
 module.exports = { 
   shippingClient,
   shippo,
@@ -575,6 +615,8 @@ module.exports = {
   computeLeadDaysDynamic,
   estimateOneWay,
   estimateRoundTrip,
+  keepStreet2,
+  logShippoPayload,
 };
 
 // Optional sanity check for debugging
