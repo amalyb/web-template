@@ -1,36 +1,9 @@
-const { getTrustedSdk } = require('../api-util/sdk');
-const { sendSMS } = require('../api-util/sendSMS');
+const getFlexSdk = require('../util/getFlexSdk');              // Integration SDK (privileged)
+const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace SDK (reads)
+const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
-
-// Create a trusted SDK instance for scripts (no req needed)
-async function getScriptSdk() {
-  const sharetribeSdk = require('sharetribe-flex-sdk');
-  const CLIENT_ID = process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID;
-  const CLIENT_SECRET = process.env.SHARETRIBE_SDK_CLIENT_SECRET;
-  const BASE_URL = process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL;
-  
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error('Missing Sharetribe credentials: REACT_APP_SHARETRIBE_SDK_CLIENT_ID and SHARETRIBE_SDK_CLIENT_SECRET required');
-  }
-  
-  const sdk = sharetribeSdk.createInstance({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    baseUrl: BASE_URL,
-  });
-  
-  // Exchange token to get trusted access
-  const response = await sdk.exchangeToken();
-  const trustedToken = response.data;
-  
-  return sharetribeSdk.createInstance({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    baseUrl: BASE_URL,
-    tokenStore: sharetribeSdk.tokenStore.memoryStore(trustedToken),
-  });
-}
+const { applyCharges } = require('../lib/lateFees');
 
 // Parse command line arguments
 const argv = process.argv.slice(2);
@@ -40,13 +13,21 @@ const getOpt = (name, def) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : def;
 };
 
-const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
+// Normalize environment flags for both SMS and charges
+const DRY_RUN = process.env.DRY_RUN === '1' || process.env.SMS_DRY_RUN === '1' || has('--dry-run');
 const VERBOSE = has('--verbose') || process.env.VERBOSE === '1';
 const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
+const FORCE_NOW = process.env.FORCE_NOW ? new Date(process.env.FORCE_NOW) : null;
 
-if (DRY) {
-  const realSend = sendSMS;
+if (FORCE_NOW) {
+  console.log(`⏰ FORCE_NOW active: ${FORCE_NOW.toISOString()}`);
+}
+
+// Wrapper for sendSMS that respects DRY_RUN mode
+let sendSMS;
+if (DRY_RUN) {
+  console.log('🔍 DRY_RUN mode: SMS and charges will be simulated only');
   sendSMS = async (to, body, opts = {}) => {
     const { tag, meta } = opts;
     const metaJson = meta ? JSON.stringify(meta) : '{}';
@@ -55,6 +36,8 @@ if (DRY) {
     if (VERBOSE) console.log('opts:', opts);
     return { dryRun: true };
   };
+} else {
+  sendSMS = sendSMSOriginal;
 }
 
 function yyyymmdd(d) {
@@ -73,21 +56,17 @@ function isInTransit(trackingStatus) {
   return upperStatus === 'IN_TRANSIT' || upperStatus === 'ACCEPTED';
 }
 
+/**
+ * @deprecated This function is now handled by applyCharges() from lib/lateFees.js
+ * Kept for backward compatibility only. Do not use in new code.
+ */
 async function evaluateReplacementCharge(tx) {
-  // Stub function for replacement charge evaluation
-  console.log(`🔍 Evaluating replacement charge for tx ${tx?.id?.uuid || tx?.id}`);
-  
-  // TODO: Implement actual replacement charge logic
-  // This would typically involve:
-  // 1. Getting the listing price/value
-  // 2. Calculating replacement cost
-  // 3. Recording the charge intent
-  // 4. Potentially initiating Stripe charge
-  
+  console.warn('⚠️ evaluateReplacementCharge is deprecated. Use applyCharges() from lib/lateFees.js instead.');
   return {
-    replacementAmount: 5000, // $50.00 in cents
+    replacementAmount: 5000,
     evaluated: true,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    deprecated: true
   };
 }
 
@@ -95,8 +74,22 @@ async function sendOverdueReminders() {
   console.log('🚀 Starting overdue reminder SMS script...');
   
   try {
-    const sdk = await getScriptSdk();
-    console.log('✅ SDK initialized');
+    // Initialize both SDKs: Marketplace for reads, Integration for privileged operations
+    const integSdk = getFlexSdk();           // for transitions/charges
+    const readSdk  = getMarketplaceSdk();    // for queries/search
+    console.log('✅ SDKs initialized (read + integ)');
+    
+    // Diagnostic startup logging
+    if (process.env.DIAG === '1') {
+      const mask = (v) => v ? v.slice(0, 6) + '…' + v.slice(-4) : '(not set)';
+      const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
+                      process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
+                      'https://flex-api.sharetribe.com';
+      console.log('[DIAG] Using SDKs: read=Marketplace, integ=Integration');
+      console.log('[DIAG] Marketplace clientId:', mask(process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID));
+      console.log('[DIAG] Integration clientId:', mask(process.env.INTEGRATION_CLIENT_ID));
+      console.log('[DIAG] Base URL:', baseUrl);
+    }
 
     const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
     const todayDate = new Date(today);
@@ -107,16 +100,70 @@ async function sendOverdueReminders() {
     const query = {
       state: 'delivered',
       include: ['customer', 'listing'],
-      per_page: 100
+      per_page: 100  // snake_case for Marketplace SDK
     };
 
-    const response = await sdk.transactions.query(query);
-    const transactions = response.data.data;
-    const included = response.data.included;
+    let response, transactions, included;
+    try {
+      response = await readSdk.transactions.query(query);
+      transactions = response.data.data;
+      included = response.data.included;
+    } catch (queryError) {
+      // Debug logging for errors
+      const status = queryError.response?.status;
+      const data = queryError.response?.data;
+      const headers = queryError.response?.headers;
+      
+      if (process.env.DIAG === '1') {
+        console.error('[DIAG] Query error details:', {
+          endpoint: 'transactions.query',
+          status,
+          data,
+          query,
+          errorMessage: queryError.message,
+          errorCode: queryError.code
+        });
+      } else {
+        console.error('❌ Query failed', { 
+          status, 
+          query,
+          errorMessage: queryError.message
+        });
+      }
+      
+      // Helpful hint for 403 errors
+      if (status === 403) {
+        console.error('');
+        console.error('⚠️  403 FORBIDDEN - Possible causes:');
+        console.error('   1. Test environment credentials may be expired or invalid');
+        console.error('   2. Marketplace SDK may not have access to delivered state transactions');
+        console.error('   3. Try with INTEGRATION_CLIENT_ID/SECRET for broader access');
+        console.error('');
+      }
+      
+      // Helpful hint for 400 errors
+      if (status === 400) {
+        console.error('');
+        console.error('⚠️  400 BAD REQUEST - Possible causes:');
+        console.error('   1. Invalid query parameters (check per_page vs perPage)');
+        console.error('   2. Invalid state value or filter');
+        console.error('   3. Malformed include parameter');
+        console.error('');
+        if (data?.errors) {
+          console.error('   API Errors:');
+          data.errors.forEach((err, i) => {
+            console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
+          });
+        }
+      }
+      
+      throw queryError;
+    }
 
     console.log(`📊 Found ${transactions.length} delivered transactions`);
 
     let sent = 0, failed = 0, processed = 0;
+    let charged = 0, chargesFailed = 0;
 
     for (const tx of transactions) {
       processed++;
@@ -228,15 +275,10 @@ async function sendOverdueReminders() {
           }
         });
         
-        // Update transaction with fees and notification tracking
+        // Update transaction with SMS notification tracking only
+        // (Charges are now handled by applyCharges() below)
         const updatedReturnData = {
           ...returnData,
-          fees: {
-            ...fees,
-            perDayCents: perDayCents,
-            totalCents: totalCents,
-            startedAt: feesStartedAt
-          },
           overdue: {
             ...overdue,
             daysLate: daysLate,
@@ -244,16 +286,8 @@ async function sendOverdueReminders() {
           }
         };
         
-        // Evaluate replacement on Day 5 if not already evaluated
-        if (daysLate === 5 && !overdue.replacementEvaluated) {
-          const replacementResult = await evaluateReplacementCharge(tx);
-          updatedReturnData.overdue.replacementEvaluated = true;
-          updatedReturnData.overdue.replacementEvaluation = replacementResult;
-          console.log(`🔍 Evaluated replacement charge for Day 5: $${replacementResult.replacementAmount/100}`);
-        }
-        
         try {
-          await sdk.transactions.update({
+          await readSdk.transactions.update({
             id: tx.id,
             attributes: {
               protectedData: {
@@ -262,7 +296,7 @@ async function sendOverdueReminders() {
               }
             }
           });
-          console.log(`💾 Updated transaction fees and overdue tracking for tx ${tx?.id?.uuid || '(no id)'}`);
+          console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }
@@ -273,13 +307,98 @@ async function sendOverdueReminders() {
         failed++;
       }
       
+      // Apply charges (separate try/catch so charge failures don't block SMS)
+      try {
+        if (DRY_RUN) {
+          console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${tx?.id?.uuid || '(no id)'}`);
+        } else {
+          const chargeResult = await applyCharges({
+            sdkInstance: integSdk,  // Use Integration SDK for privileged transition
+            txId: tx.id.uuid || tx.id,
+            now: FORCE_NOW || new Date()
+          });
+          
+          if (chargeResult.charged) {
+            console.log(`💳 Charged ${chargeResult.items.join(' + ')} for tx ${tx?.id?.uuid || '(no id)'}`);
+            if (chargeResult.amounts) {
+              chargeResult.amounts.forEach(a => {
+                console.log(`   💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
+              });
+            }
+            charged++;
+          } else {
+            console.log(`ℹ️ No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'})`);
+          }
+        }
+      } catch (chargeError) {
+        if (process.env.DIAG === '1') {
+          console.error('[DIAG] Charge error details:', {
+            endpoint: 'transactions.transition (via applyCharges)',
+            status: chargeError.response?.status || chargeError.status,
+            data: chargeError.response?.data,
+            txId: tx?.id?.uuid || tx?.id,
+            errorMessage: chargeError.message,
+          });
+        }
+        
+        console.error(`❌ Charge failed for tx ${tx?.id?.uuid || '(no id)'}: ${chargeError.message}`);
+        
+        // Check for permission errors and provide helpful guidance
+        const status = chargeError.response?.status || chargeError.status;
+        const data = chargeError.response?.data;
+        
+        if (status === 403 || status === 401 ||
+            chargeError.message?.includes('403') || chargeError.message?.includes('401') ||
+            chargeError.message?.includes('permission') || chargeError.message?.includes('forbidden')) {
+          console.error('');
+          console.error('⚠️  PERMISSION ERROR DETECTED:');
+          console.error('   The transition/privileged-apply-late-fees requires proper permissions.');
+          console.error('   Possible fixes:');
+          console.error('   1. In process.edn, change :actor.role/operator to :actor.role/admin');
+          console.error('   2. Ensure your Integration app has operator-level privileges in Flex Console');
+          console.error('   3. Verify REACT_APP_SHARETRIBE_SDK_CLIENT_ID and SHARETRIBE_SDK_CLIENT_SECRET');
+          console.error('');
+        }
+        
+        if (status === 400) {
+          console.error('');
+          console.error('⚠️  400 BAD REQUEST - Possible causes:');
+          console.error('   1. Invalid transition parameters');
+          console.error('   2. Transaction state doesn\'t allow this transition');
+          console.error('   3. Transition name mismatch with process.edn');
+          console.error('');
+          if (data?.errors) {
+            console.error('   API Errors:');
+            data.errors.forEach((err, i) => {
+              console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
+            });
+          }
+        }
+        
+        chargesFailed++;
+      }
+      
       if (LIMIT && sent >= LIMIT) {
         console.log(`⏹️ Limit reached (${LIMIT}). Stopping.`);
         break;
       }
     }
     
-    console.log(`📊 Processed: ${processed}, Sent: ${sent}, Failed: ${failed}`);
+    // Final summary
+    console.log('');
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log('📊 OVERDUE REMINDERS RUN SUMMARY');
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log(`   Candidates processed: ${processed}`);
+    console.log(`   SMS sent:             ${sent}`);
+    console.log(`   SMS failed:           ${failed}`);
+    console.log(`   Charges applied:      ${charged}`);
+    console.log(`   Charges failed:       ${chargesFailed}`);
+    console.log('═══════════════════════════════════════════════════════════');
+    if (DRY_RUN) {
+      console.log('   Mode: DRY_RUN (no actual SMS or charges)');
+    }
+    console.log('');
     
   } catch (error) {
     console.error('❌ Fatal error:', error.message);
