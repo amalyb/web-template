@@ -182,6 +182,31 @@ async function computeShipByDate(tx, opts = {}) {
     });
   }
 
+  // DEBUG_SHIPBY structured logging (guarded)
+  if (process.env.DEBUG_SHIPBY === '1') {
+    const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
+    let distanceMiles = null;
+    if (LEAD_MODE === 'distance' && fromZip && toZip) {
+      try {
+        const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
+        if (fromLL && toLL) {
+          distanceMiles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    console.info('[shipby] borrowStart=%s leadMode=%s fixedLeadDays=%s distanceMi=%s dynamicDays=%s chosenDays=%s shipBy=%s',
+      startISO,
+      LEAD_MODE,
+      LEAD_MODE === 'static' ? leadDays : null,
+      distanceMiles !== null ? Math.round(distanceMiles) : null,
+      LEAD_MODE === 'distance' ? leadDays : null,
+      leadDays,
+      adjusted.toISOString()
+    );
+  }
+
   return adjusted;
 }
 
