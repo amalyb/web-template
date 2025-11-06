@@ -88,6 +88,45 @@ function pickBestOutboundLink({ carrier, qrUrl, labelUrl, trackingUrl }) {
   if (trackingUrl) return trackingUrl;
   return null;
 }
+
+/**
+ * Retry wrapper with exponential backoff for UPS 10429 "Too Many Requests" errors
+ * @param {Function} fn - Async function to execute
+ * @param {Object} opts - Options { retries, baseMs }
+ * @returns {Promise} Result of fn() or throws error after retries exhausted
+ */
+async function withBackoff(fn, { retries = 2, baseMs = 600 } = {}) {
+  try {
+    return await fn();
+  } catch (e) {
+    // Extract error code from various response shapes
+    const code = e?.response?.data?.messages?.[0]?.code || 
+                 e?.response?.data?.error?.code ||
+                 e?.code || '';
+    
+    // Check if this is a UPS 10429 rate limit error
+    const isRateLimit = String(code).includes('10429') || 
+                        (e?.response?.status === 429) ||
+                        (e?.message && e.message.includes('Too Many Requests'));
+    
+    if (retries > 0 && isRateLimit) {
+      const wait = baseMs * Math.pow(2, 2 - retries);
+      
+      if (process.env.DEBUG_SHIPPO === '1') {
+        console.warn('[shippo][retry] UPS 10429 or rate limit detected, backing off', { 
+          retriesLeft: retries, 
+          waitMs: wait,
+          code: code || 'unknown'
+        });
+      }
+      
+      await new Promise(r => setTimeout(r, wait));
+      return withBackoff(fn, { retries: retries - 1, baseMs });
+    }
+    
+    throw e;
+  }
+}
 // ---------------------------------------
 
 /**
@@ -329,16 +368,19 @@ async function createShippingLabels({
     };
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
 
-    // Create outbound shipment (provider → customer)
-    const shipmentRes = await axios.post(
-      'https://api.goshippo.com/shipments/',
-      outboundPayload,
-      {
-        headers: {
-          'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-          'Content-Type': 'application/json'
+    // Create outbound shipment (provider → customer) with retry on UPS 10429
+    const shipmentRes = await withBackoff(
+      () => axios.post(
+        'https://api.goshippo.com/shipments/',
+        outboundPayload,
+        {
+          headers: {
+            'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
+      ),
+      { retries: 2, baseMs: 600 }
     );
 
     console.log('📦 [SHIPPO] Outbound shipment created successfully');
@@ -358,10 +400,35 @@ async function createShippingLabels({
     });
     
     // Select a shipping rate from the available rates
-    const availableRates = shipmentRes.data.rates || [];
+    let availableRates = shipmentRes.data.rates || [];
     const shipmentData = shipmentRes.data;
     
-    console.log('📊 [SHIPPO] Available rates:', availableRates.length);
+    console.log('📊 [SHIPPO] Available rates (before filtering):', availableRates.length);
+    
+    // ──────────────────────────────────────────────────────────────────────────────
+    // SANDBOX CARRIER FILTERING: Limit to UPS/USPS in non-production mode
+    // ──────────────────────────────────────────────────────────────────────────────
+    const isProduction = String(process.env.SHIPPO_MODE || '').toLowerCase() === 'production';
+    const allowedCarriers = ['UPS', 'USPS'];
+    
+    if (!isProduction && availableRates.length > 0) {
+      const originalCount = availableRates.length;
+      availableRates = availableRates.filter(rate => {
+        const carrier = (rate.provider || rate.carrier || '').toUpperCase();
+        return allowedCarriers.includes(carrier);
+      });
+      
+      if (process.env.DEBUG_SHIPPO === '1') {
+        console.info('[shippo][sandbox] Filtered carriers to UPS/USPS only', {
+          mode: process.env.SHIPPO_MODE || 'sandbox',
+          originalCount,
+          filteredCount: availableRates.length,
+          allowedCarriers
+        });
+      }
+    }
+    
+    console.log('📊 [SHIPPO] Available rates (after filtering):', availableRates.length);
     
     // Diagnostics if no rates returned
     if (availableRates.length === 0) {
@@ -378,9 +445,10 @@ async function createShippingLabels({
         console.error('[SHIPPO][NO-RATES] carrier_accounts:', carriers);
       }
       
-      // Log addresses being used (masked)
+      // Log addresses being used (masked) - INCLUDING street2 for apartment debugging
       console.error('[SHIPPO][NO-RATES] address_from:', {
         street1: addressFrom.street1,
+        street2: addressFrom.street2 || '(none)',
         city: addressFrom.city,
         state: addressFrom.state,
         zip: addressFrom.zip,
@@ -388,6 +456,7 @@ async function createShippingLabels({
       });
       console.error('[SHIPPO][NO-RATES] address_to:', {
         street1: addressTo.street1,
+        street2: addressTo.street2 || '(none)',
         city: addressTo.city,
         state: addressTo.state,
         zip: addressTo.zip,
@@ -396,6 +465,12 @@ async function createShippingLabels({
       
       // Log parcel dimensions
       console.error('[SHIPPO][NO-RATES] parcel:', parcel);
+      
+      // Log the exact payload sent to Shippo (for comprehensive debugging)
+      if (process.env.DEBUG_SHIPPO === '1') {
+        console.error('[SHIPPO][NO-RATES] Full outbound payload sent to Shippo:', 
+          JSON.stringify(outboundPayload, null, 2));
+      }
       
       return { success: false, reason: 'no_shipping_rates' };
     }
@@ -444,15 +519,19 @@ async function createShippingLabels({
     
     console.log('📦 [SHIPPO] Added metadata.txId to transaction payload for webhook lookup');
     
-    const transactionRes = await axios.post(
-      'https://api.goshippo.com/transactions/',
-      transactionPayload,
-      {
-        headers: {
-          'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-          'Content-Type': 'application/json'
+    // Purchase label with retry on UPS 10429
+    const transactionRes = await withBackoff(
+      () => axios.post(
+        'https://api.goshippo.com/transactions/',
+        transactionPayload,
+        {
+          headers: {
+            'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
+      ),
+      { retries: 2, baseMs: 600 }
     );
 
     // Always assign before any checks to avoid TDZ
@@ -698,23 +777,49 @@ async function createShippingLabels({
           async: false
         };
 
-        const returnShipmentRes = await axios.post(
-          'https://api.goshippo.com/shipments/',
-          returnPayload,
-          {
-            headers: {
-              'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-              'Content-Type': 'application/json'
+        // Create return shipment with retry on UPS 10429
+        const returnShipmentRes = await withBackoff(
+          () => axios.post(
+            'https://api.goshippo.com/shipments/',
+            returnPayload,
+            {
+              headers: {
+                'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+                'Content-Type': 'application/json'
+              }
             }
-          }
+          ),
+          { retries: 2, baseMs: 600 }
         );
 
         console.log('📦 [SHIPPO] Return shipment created successfully');
         console.log('📦 [SHIPPO] Return Shipment ID:', returnShipmentRes.data.object_id);
         
         // Get return rates and select one
-        const returnRates = returnShipmentRes.data.rates || [];
+        let returnRates = returnShipmentRes.data.rates || [];
         const returnShipmentData = returnShipmentRes.data;
+        
+        console.log('📊 [SHIPPO][RETURN] Available rates (before filtering):', returnRates.length);
+        
+        // Apply same sandbox carrier filtering to return rates
+        if (!isProduction && returnRates.length > 0) {
+          const originalCount = returnRates.length;
+          returnRates = returnRates.filter(rate => {
+            const carrier = (rate.provider || rate.carrier || '').toUpperCase();
+            return allowedCarriers.includes(carrier);
+          });
+          
+          if (process.env.DEBUG_SHIPPO === '1') {
+            console.info('[shippo][sandbox][return] Filtered carriers to UPS/USPS only', {
+              mode: process.env.SHIPPO_MODE || 'sandbox',
+              originalCount,
+              filteredCount: returnRates.length,
+              allowedCarriers
+            });
+          }
+        }
+        
+        console.log('📊 [SHIPPO][RETURN] Available rates (after filtering):', returnRates.length);
         
         if (returnRates.length === 0) {
           console.warn('⚠️ [SHIPPO] No return rates available');
@@ -757,16 +862,19 @@ async function createShippingLabels({
           
           console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
           
-          // Purchase return label
-          const returnTransactionRes = await axios.post(
-            'https://api.goshippo.com/transactions/',
-            returnTransactionPayload,
-            {
-              headers: {
-                'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-                'Content-Type': 'application/json'
+          // Purchase return label with retry on UPS 10429
+          const returnTransactionRes = await withBackoff(
+            () => axios.post(
+              'https://api.goshippo.com/transactions/',
+              returnTransactionPayload,
+              {
+                headers: {
+                  'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+                  'Content-Type': 'application/json'
+                }
               }
-            }
+            ),
+            { retries: 2, baseMs: 600 }
           );
           
           if (returnTransactionRes.data.status === 'SUCCESS') {
