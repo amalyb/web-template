@@ -146,6 +146,7 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
       // Provider info from currentUser
       providerName: currentUser?.attributes?.profile?.displayName || '',
       providerStreet: '', // Will be filled by provider in TransactionPanel
+      providerStreet2: '', // Apartment, suite, etc. - will be filled by provider
       providerCity: '',
       providerState: '',
       providerZip: '',

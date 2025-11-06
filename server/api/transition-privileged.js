@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink } = require('../util/url');
@@ -388,6 +388,12 @@ async function createShippingLabels({
       phone: redactPhone(addressTo?.phone)
     });
 
+    // ──────────────────────────────────────────────────────────────────────────────
+    // RE-APPLY STREET2 GUARD: Preserve street2 if normalizer/validator dropped it
+    // ──────────────────────────────────────────────────────────────────────────────
+    addressFrom = keepStreet2(rawProviderAddress, addressFrom);
+    addressTo = keepStreet2(rawCustomerAddress, addressTo);
+
     // Outbound shipment payload
     // Note: QR code will be requested per-carrier at purchase time (USPS only)
     const outboundPayload = {
@@ -396,6 +402,10 @@ async function createShippingLabels({
       parcels: [parcel],
       async: false
     };
+    
+    // DEBUG: log the *exact* payload we will send to Shippo
+    logShippoPayload('outbound:shipment', { address_from: addressFrom, address_to: addressTo, parcels: [parcel] });
+    
     console.log('📦 [SHIPPO] Outbound shipment payload:', JSON.stringify(outboundPayload, null, 2));
 
     // Create outbound shipment (provider → customer) with retry on UPS 10429
@@ -476,22 +486,22 @@ async function createShippingLabels({
       }
       
       // Log addresses being used (masked) - INCLUDING street2 for apartment debugging
-      console.error('[SHIPPO][NO-RATES] address_from:', {
-        street1: addressFrom.street1,
-        street2: addressFrom.street2 || '(none)',
-        city: addressFrom.city,
-        state: addressFrom.state,
-        zip: addressFrom.zip,
-        country: addressFrom.country
-      });
-      console.error('[SHIPPO][NO-RATES] address_to:', {
-        street1: addressTo.street1,
-        street2: addressTo.street2 || '(none)',
-        city: addressTo.city,
-        state: addressTo.state,
-        zip: addressTo.zip,
-        country: addressTo.country
-      });
+      if (process.env.DEBUG_SHIPPO === '1') {
+        console.warn('[SHIPPO][NO-RATES] address_from:', {
+          street1: addressFrom?.street1,
+          street2: addressFrom?.street2,
+          city: addressFrom?.city,
+          state: addressFrom?.state,
+          zip: addressFrom?.zip
+        });
+        console.warn('[SHIPPO][NO-RATES] address_to:', {
+          street1: addressTo?.street1,
+          street2: addressTo?.street2,
+          city: addressTo?.city,
+          state: addressTo?.state,
+          zip: addressTo?.zip
+        });
+      }
       
       // Log parcel dimensions
       console.error('[SHIPPO][NO-RATES] parcel:', parcel);
@@ -755,8 +765,8 @@ async function createShippingLabels({
         // - address_from: customer (borrower) returning the item
         // - address_to: provider (lender) receiving the return
         // Apply email suppression to return label recipient (provider) as well
-        const returnAddressFrom = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
-        const returnAddressTo = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
+        let returnAddressFrom = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
+        let returnAddressTo = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
         
         // Runtime guard for return label too
         if (suppress && returnAddressFrom.email) {
@@ -765,17 +775,11 @@ async function createShippingLabels({
         }
         
         // ──────────────────────────────────────────────────────────────────────────────
-        // EXPLICIT STREET2 GUARD (RETURN LABEL): Ensure street2 is preserved
+        // RE-APPLY STREET2 GUARD (RETURN LABEL): Preserve street2 if normalizer dropped it
         // ──────────────────────────────────────────────────────────────────────────────
         // Return: from.street2 = customerStreet2, to.street2 = providerStreet2
-        if (rawCustomerAddress.street2 && !returnAddressFrom.street2) {
-          console.warn('[STREET2-GUARD][RETURN] Re-applying returnAddressFrom.street2 from raw data');
-          returnAddressFrom.street2 = rawCustomerAddress.street2;
-        }
-        if (rawProviderAddress.street2 && !returnAddressTo.street2) {
-          console.warn('[STREET2-GUARD][RETURN] Re-applying returnAddressTo.street2 from raw data');
-          returnAddressTo.street2 = rawProviderAddress.street2;
-        }
+        returnAddressFrom = keepStreet2(rawCustomerAddress, returnAddressFrom);
+        returnAddressTo = keepStreet2(rawProviderAddress, returnAddressTo);
         
         // ──────────────────────────────────────────────────────────────────────────────
         // PRE-SHIPPO DIAGNOSTIC LOGGING (RETURN)
@@ -806,6 +810,9 @@ async function createShippingLabels({
           parcels: [parcel],
           async: false
         };
+        
+        // DEBUG: log the *exact* payload we will send to Shippo
+        logShippoPayload('return:shipment', { address_from: returnAddressFrom, address_to: returnAddressTo, parcels: [parcel] });
 
         // Create return shipment with retry on UPS 10429
         const returnShipmentRes = await withBackoff(
