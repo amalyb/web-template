@@ -1757,7 +1757,6 @@ module.exports = async (req, res) => {
           const providerName = params?.protectedData?.providerName || 'the lender';
           
           // Build order page URL for borrower (resilient to different ID shapes)
-          const tx = response?.data?.data;
           const txIdForUrl = 
             tx?.id?.uuid ||
             transactionId?.uuid ||

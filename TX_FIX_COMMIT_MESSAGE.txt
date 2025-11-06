@@ -1,0 +1,19 @@
+Fix duplicate tx declaration causing Render crash
+
+- Remove duplicate const tx declaration at line 1760 in transition-privileged.js
+- tx already declared at line 1733 in same scope (accept handler)
+- Fixes SyntaxError: Identifier 'tx' has already been declared
+- Introduced during SMS link shortening implementation
+- No logic changes, only removes redundant redeclaration
+- Server now starts successfully without syntax errors
+
+Files changed:
+- server/api/transition-privileged.js
+
+Verification:
+- node -e "require('./server/api/transition-privileged.js')" ✅
+- npm run lint ✅
+- Remaining tx declarations: 2 (both in separate scopes)
+
+Impact: None - tx variable already had correct value from line 1733
+
