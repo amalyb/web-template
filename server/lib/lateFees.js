@@ -47,17 +47,15 @@ function computeLateDays(now, returnAt) {
 }
 
 /**
- * Check if return shipment has been scanned by carrier
+ * Check if return shipment has been scanned/accepted by carrier
  * 
- * Current policy: We continue charging late fees until carrier accepts the package.
- * Once scanned as "accepted" or "in_transit", late fees stop but replacement is prevented.
- * 
- * Adjust this logic if your policy differs (e.g., continue fees until delivered).
+ * Policy: Package is considered "in carrier's hands" once scanned as accepted or in-transit.
+ * This prevents replacement charges but does NOT stop late fees.
  * 
  * @param {Object} returnData - transaction.protectedData.return
  * @returns {boolean} True if package has been scanned/accepted by carrier
  */
-function isScanned(returnData) {
+function hasCarrierScan(returnData) {
   if (!returnData) return false;
   
   // Method 1: Check for firstScanAt timestamp (set by webhook)
@@ -72,6 +70,22 @@ function isScanned(returnData) {
   }
   
   return false;
+}
+
+/**
+ * Check if return shipment has been fully delivered
+ * 
+ * Policy: Late fees continue until the package is delivered back to the lender.
+ * Only terminal "delivered" status stops late fees.
+ * 
+ * @param {Object} returnData - transaction.protectedData.return
+ * @returns {boolean} True if package has been delivered
+ */
+function isDelivered(returnData) {
+  if (!returnData) return false;
+  
+  const status = returnData.status?.toLowerCase();
+  return status === 'delivered';
 }
 
 /**
@@ -190,14 +204,18 @@ async function applyCharges({ sdkInstance, txId, now }) {
     
     console.log(`[lateFees] Return due: ${ymd(returnDueAt)}, Now: ${ymd(now)}`);
     
-    // Check if already scanned
-    const scanned = isScanned(returnData);
-    if (scanned) {
-      console.log(`[lateFees] Package already scanned - no charges apply`);
+    // Check delivery status
+    const delivered = isDelivered(returnData);
+    const carrierHasPackage = hasCarrierScan(returnData);
+    
+    console.log(`[lateFees] Package status: delivered=${delivered}, carrierHasPackage=${carrierHasPackage}`);
+    
+    if (delivered) {
+      console.log(`[lateFees] Package already delivered - no charges apply`);
       return { 
         charged: false, 
-        reason: 'already-scanned',
-        scannedAt: returnData.firstScanAt || 'status-based'
+        reason: 'already-delivered',
+        deliveredAt: returnData.firstScanAt || 'status-based'
       };
     }
     
@@ -221,6 +239,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
     const todayYmd = ymd(now);
     
     // Late fee: Charge if we haven't charged today yet
+    // Policy: Continue charging late fees even when "in transit" - only stop when delivered
     if (lateDays >= 1 && lastLateFeeDayCharged !== todayYmd) {
       newLineItems.push({
         code: 'late-fee',
@@ -234,8 +253,9 @@ async function applyCharges({ sdkInstance, txId, now }) {
       console.log(`[lateFees] Late fee already charged today (${todayYmd})`);
     }
     
-    // Replacement: Charge if Day 5+, not scanned, and not already charged
-    if (lateDays >= 5 && !scanned && !replacementCharged) {
+    // Replacement: Charge if Day 5+, carrier hasn't scanned it, and not already charged
+    // Policy: No replacement if carrier has accepted/is transporting the package
+    if (lateDays >= 5 && !carrierHasPackage && !replacementCharged) {
       const replacementCents = getReplacementValue(listing);
       newLineItems.push({
         code: 'replacement',
