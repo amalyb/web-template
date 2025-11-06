@@ -19,6 +19,7 @@ import css from './ProviderAddressForm.module.css';
 const ProviderAddressForm = ({ initialValues, onChange }) => {
   // Map legacy field names to new field names for SharedAddressFields
   const mappedInitialValues = {
+    name: initialValues?.fullName || '',
     street: initialValues?.streetAddress || '',
     street2: initialValues?.streetAddress2 || '',
     city: initialValues?.city || '',
@@ -43,6 +44,7 @@ const ProviderAddressForm = ({ initialValues, onChange }) => {
             if (onChange) {
               // Map back to legacy field names for compatibility
               const mappedValues = {
+                fullName: values.name || '',
                 streetAddress: values.street || '',
                 streetAddress2: values.street2 || '',
                 city: values.city || '',
@@ -60,6 +62,7 @@ const ProviderAddressForm = ({ initialValues, onChange }) => {
               <SharedAddressFields
                 prefix="" // No prefix since we're using legacy field names
                 requiredFields={{
+                  name: true,
                   street: true,
                   city: true,
                   state: true,

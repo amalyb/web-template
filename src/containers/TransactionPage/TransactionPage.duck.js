@@ -827,6 +827,24 @@ export const makeTransition = (txId, transitionName, params) => (dispatch, getSt
       if (!response?.data?.data) {
         console.warn('⚠️ No transaction data in response after transition.');
       }
+      
+      // Debug log for after-accept
+      if (transitionName === 'transition/accept') {
+        const savedProtectedData = response?.data?.data?.attributes?.protectedData || {};
+        console.info('[providerAddress] after-accept', { 
+          savedFullName: savedProtectedData?.providerName, 
+          txId,
+          allProviderFields: {
+            providerName: savedProtectedData?.providerName,
+            providerStreet: savedProtectedData?.providerStreet,
+            providerStreet2: savedProtectedData?.providerStreet2,
+            providerCity: savedProtectedData?.providerCity,
+            providerState: savedProtectedData?.providerState,
+            providerZip: savedProtectedData?.providerZip,
+          }
+        });
+      }
+      
       dispatch(transitionSuccess());
       dispatch(fetchCurrentUserNotifications());
 

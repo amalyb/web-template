@@ -94,6 +94,7 @@ export class TransactionPanelComponent extends Component {
     this.state = {
       sendMessageFormFocused: false,
       addressValues: {
+        fullName: '',
         streetAddress: '',
         streetAddress2: '',
         city: '',
@@ -250,7 +251,7 @@ export class TransactionPanelComponent extends Component {
             
             if (isProvider && this.state.addressValues) {
               console.log('🏠 [onAction] addressValues before merge:', this.state.addressValues);
-              const { streetAddress, streetAddress2, city, state, zipCode, phoneNumber } = this.state.addressValues;
+              const { fullName, streetAddress, streetAddress2, city, state, zipCode, phoneNumber } = this.state.addressValues;
               
               // ⭐ APARTMENT DEBUG: Log streetAddress2 specifically
               console.log('🔍 [APARTMENT DEBUG] Frontend streetAddress2:', {
@@ -260,7 +261,7 @@ export class TransactionPanelComponent extends Component {
                 isEmpty: streetAddress2 === '',
               });
               // Validate that all required address fields are filled
-              const requiredFields = { streetAddress, city, state, zipCode, phoneNumber };
+              const requiredFields = { fullName, streetAddress, city, state, zipCode, phoneNumber };
               const missingFields = Object.entries(requiredFields)
                 .filter(([key, value]) => !value || value.trim() === '')
                 .map(([key]) => key);
@@ -271,9 +272,12 @@ export class TransactionPanelComponent extends Component {
               }
               // Get existing protectedData from transaction (includes customer shipping info)
               const existingProtectedData = protectedData || {};
-              // Get provider email and name from currentUser
+              // Get provider email from currentUser
               const providerEmail = currentUser?.attributes?.email || '';
-              const providerName = currentUser?.attributes?.profile?.displayName || '';
+              // Use fullName from form, fallback to currentUser display name
+              const providerName = fullName || currentUser?.attributes?.profile?.displayName || '';
+              
+              console.info('[providerAddress] submit', { fullName, providerName, txId: transaction?.id });
               const {
                 providerStreet: _providerStreet,
                 providerStreet2: _providerStreet2,
