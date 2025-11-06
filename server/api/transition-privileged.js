@@ -13,7 +13,7 @@ const { maskPhone } = require('../api-util/phone');
 const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, getSandboxCarrierAccounts, formatPhoneE164 } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
-const { buildShipLabelLink } = require('../util/url');
+const { buildShipLabelLink, orderUrl } = require('../util/url');
 const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
@@ -1756,9 +1756,24 @@ module.exports = async (req, res) => {
           const listingTitle = listing?.attributes?.title || 'your item';
           const providerName = params?.protectedData?.providerName || 'the lender';
           
-          // Build site base for borrower inbox link
-          const siteBase = process.env.ROOT_URL || (req ? `${req.protocol}://${req.get('host')}` : null);
-          const buyerLink = siteBase ? `${siteBase}/inbox/purchases` : '';
+          // Build order page URL for borrower (resilient to different ID shapes)
+          const tx = response?.data?.data;
+          const txIdForUrl = 
+            tx?.id?.uuid ||
+            transactionId?.uuid ||
+            transactionId ||
+            bodyParams?.params?.transactionId?.uuid;
+          const fullOrderUrl = orderUrl(txIdForUrl);
+          
+          // Use shortlink if available to keep SMS compact (emojis force UCS-2 encoding = 70 char segments)
+          // shortLink() already returns original URL if LINK_SECRET/Redis not configured
+          let buyerLink;
+          try {
+            buyerLink = await shortLink(fullOrderUrl);
+          } catch (err) {
+            console.warn('[sms] shortLink failed, using full URL:', err.message);
+            buyerLink = fullOrderUrl;
+          }
           
           // Borrower acceptance SMS: always try if borrowerPhone exists
           if (borrowerPhone) {
@@ -1766,6 +1781,9 @@ module.exports = async (req, res) => {
             const borrowerMessage = `🎉 Your Sherbrt request was accepted! 🍧
 "${listingTitle}" from ${providerName} is confirmed. 
 You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
+            
+            // Debug: log SMS length (Note: actual SMS segmentation depends on carrier encoding, newlines, etc.)
+            console.log('[sms] borrower_accept length:', borrowerMessage.length, 'chars');
             
             try {
               await sendSMS(borrowerPhone, borrowerMessage, { 
@@ -1834,7 +1852,28 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           console.log('🔍 Transition: transition/decline');
           
           if (borrowerPhone) {
-            const message = `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed!`;
+            // Build order page URL for borrower to view declined request (resilient to different ID shapes)
+            const tx = response?.data?.data;
+            const txIdForUrl = 
+              tx?.id?.uuid ||
+              transactionId?.uuid ||
+              transactionId ||
+              bodyParams?.params?.transactionId?.uuid;
+            const fullOrderUrl = orderUrl(txIdForUrl);
+            
+            // Use shortlink with defensive fallback
+            let declineLink;
+            try {
+              declineLink = await shortLink(fullOrderUrl);
+            } catch (err) {
+              console.warn('[sms] shortLink failed, using full URL:', err.message);
+              declineLink = fullOrderUrl;
+            }
+            
+            const message = `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed! ${declineLink}`;
+            
+            // Debug: log SMS length (Note: actual SMS segmentation depends on carrier encoding, newlines, etc.)
+            console.log('[sms] borrower_decline length:', message.length, 'chars');
             
             // Wrap sendSMS in try/catch with logs
             try {
