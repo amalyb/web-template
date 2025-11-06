@@ -273,9 +273,9 @@ async function createShippingLabels({
   
   // Build Shippo-compatible addresses with email suppression logic
   // Lender (provider) always keeps email for shippo notifications
-  const addressFrom = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
+  let addressFrom = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
   // Borrower (customer) email suppressed when flag is ON (to prevent UPS emails)
-  const addressTo = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
+  let addressTo = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
   
   // ──────────────────────────────────────────────────────────────────────────────
   // EXPLICIT STREET2 GUARD: Ensure street2 is preserved in Shippo payload
@@ -320,6 +320,11 @@ async function createShippingLabels({
     return { success: false, reason: 'missing_api_token' };
   }
   
+  let outboundLabelResult = null;
+  let returnLabelResult = null;
+  let shippoTransactionId = null;
+  let shippoRateId = null;
+
   try {
     console.log('📦 [SHIPPO] Creating outbound shipment (provider → customer)...');
     
@@ -587,8 +592,20 @@ async function createShippingLabels({
       service,
     });
 
+    shippoTransactionId = shippoTx.object_id;
+    shippoRateId = selectedRate?.object_id || null;
+    outboundLabelResult = {
+      label_url: labelUrl,
+      qr_code_url: qrUrl,
+      tracking_url_provider: trackingUrl,
+    };
+
     console.log('📦 [SHIPPO] Label purchased successfully!');
-    console.log('📦 [SHIPPO] Transaction ID:', shippoTx.object_id);
+    console.log('📦 [SHIPPO] Transaction ID:', shippoTransactionId);
+    console.log('[SHIPPO] Outbound label ready', {
+      transactionId: shippoTransactionId,
+      rateId: shippoRateId,
+    });
 
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
@@ -723,7 +740,6 @@ async function createShippingLabels({
     console.log('[SHIPPO][TX]', logTx(shippoTx));
 
     // Create return shipment (customer → provider) if we have return address
-    let returnLabelRes = null;
     let returnQrUrl = null;
     let returnTrackingUrl = null;
     
@@ -918,6 +934,11 @@ async function createShippingLabels({
             } catch (e) {
               console.error('❌ [PERSIST] Exception saving return label:', e.message);
             }
+
+            returnLabelResult = {
+              qr_code_url: returnQrUrl,
+              tracking_url_provider: returnTrackingUrl,
+            };
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
           }
@@ -989,17 +1010,25 @@ async function createShippingLabels({
       // Don't fail the label creation if SMS fails
     }
     
-    return { 
-      success: true, 
-      outboundLabel: {
+    if (!outboundLabelResult) {
+      outboundLabelResult = {
         label_url: labelUrl,
         qr_code_url: qrUrl,
-        tracking_url_provider: trackingUrl
-      }, 
-      returnLabel: returnQrUrl ? {
+        tracking_url_provider: trackingUrl,
+      };
+    }
+
+    if (!returnLabelResult && returnQrUrl) {
+      returnLabelResult = {
         qr_code_url: returnQrUrl,
-        tracking_url_provider: returnTrackingUrl
-      } : null
+        tracking_url_provider: returnTrackingUrl,
+      };
+    }
+
+    return { 
+      success: true, 
+      outboundLabel: outboundLabelResult,
+      returnLabel: returnLabelResult
     };
     
   } catch (err) {
@@ -1017,15 +1046,33 @@ async function createShippingLabels({
       };
       console.error('[SHIPPO] Label creation failed (Shippo API error)', details);
       return { success: false, reason: 'shippo_api_error', error: err.message };
-    } else {
-      // This is likely a downstream error (SMS, persistence, etc.) - don't mark label creation as failed
+    }
+
+    if (outboundLabelResult) {
+      // This is a downstream error (SMS, persistence, etc.) - label already created
       console.error('[SHIPPO] Downstream operation failed (label creation succeeded)', {
         name: err?.name,
         message: err?.message,
         stack: err?.stack?.split('\n')[0], // Just first line of stack
+        transactionId: shippoTransactionId,
       });
-      return { success: false, reason: 'downstream_error', error: err.message };
+      return {
+        success: true,
+        outboundLabel: outboundLabelResult,
+        returnLabel: returnLabelResult,
+        downstreamError: {
+          name: err?.name,
+          message: err?.message,
+        },
+      };
     }
+
+    console.error('[SHIPPO] Internal error during label flow', {
+      name: err?.name,
+      message: err?.message,
+      stack: err?.stack?.split('\n')[0],
+    });
+    return { success: false, reason: 'internal_error', error: err.message };
   }
 }
 
