@@ -119,6 +119,23 @@
    :actions [{:name :action/stripe-create-payout}],
    :from :state/accepted,
    :to :state/delivered}
+  ;; Privileged transition for applying late fees / replacement charges
+  ;; Called by sendOverdueReminders.js script to charge additional amounts
+  ;; after delivery (overdue returns)
+  {:name :transition/privileged-apply-late-fees,
+   :actor :actor.role/operator,
+   :actions
+   [;; Update protected data with fee/charge tracking
+    {:name :action/update-protected-data}
+    ;; Set line items from params (passed by script)
+    {:name :action/privileged-set-line-items}
+    ;; Create & confirm off-session PaymentIntent using saved payment method
+    ;; This charges the customer's saved card without their interaction
+    {:name :action/stripe-create-payment-intent}
+    {:name :action/stripe-confirm-payment-intent}],
+   :from :state/delivered,
+   :to :state/delivered,
+   :privileged? true}
   {:name :transition/cancel,
    :actor :actor.role/operator,
    :actions
