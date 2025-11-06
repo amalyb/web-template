@@ -1,51 +1,3 @@
-# Dry-Run Test Artifacts
-
-**Date:** November 06, 2025 14:09
-**Branch:** feat/overdue-prod-parity
-**Transaction ID:** 690d06cf-24c8-45af-8ad7-aec8e7d51b62
-**Environment:** .env.test (created with fixed base URL)
-
----
-
-## Summary
-
-✅ **Diagnostic tool working:** Loads env, connects to API, authenticates
-✅ **Base URL fixed:** https://flex-api.sharetribe.com
-❌ **Tests blocked:** 403 Forbidden - transaction in different environment
-
-**Conclusion:** Code is correct. Transaction 690d06cf-24c8-45af-8ad7-aec8e7d51b62 belongs to a different Sharetribe environment than the credentials in .env.test. Recommend testing on staging with matching environment.
-
----
-
-## Test Matrix (5-Day Simulation)
-
-```
-[ENV] {
-  SHORTLINK_BASE: '/r',
-  UPS_LINK_MODE: [ 'qr', 'label' ],
-  USPS_LINK_MODE: [ 'qr', 'label' ],
-  ALLOW_TRACKING_IN_LENDER_SHIP: false
-}
-[redis] REDIS_URL not set — using in-memory fallback (dev only)
-
-🔍 Overdue Flow Diagnostic Tool
-
-
-══════════════════════════════════════════════════════════════════════
-🔬 MATRIX MODE: 5-DAY OVERDUE SIMULATION
-══════════════════════════════════════════════════════════════════════
-Transaction: 690d06cf-24c8-45af-8ad7-aec8e7d51b62
-Testing escalation sequence: Day 1 → Day 5
-
-
-❌ Diagnostic failed: Request failed with status code 403
-```
-
----
-
-## Test Force-Now (Nov 11, 2025)
-
-```
 [ENV] {
   SHORTLINK_BASE: '/r',
   UPS_LINK_MODE: [ 'qr', 'label' ],
@@ -78,4 +30,3 @@ AxiosError: Request failed with status code 403
     at async main (/Users/amaliabornstein/shop-on-sherbet-cursor/scripts/diagnose-overdue.js:382:7)
 
 ❌ Diagnostic failed: Request failed with status code 403
-```
