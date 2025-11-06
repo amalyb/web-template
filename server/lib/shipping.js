@@ -607,7 +607,7 @@ function keepStreet2(original, normalized) {
 // -- Sandbox carrier account helper (cached) ----------------------------------
 let carrierAccountsCache = null;
 let carrierAccountsCacheTime = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const CARRIER_ACCOUNT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Get sandbox carrier accounts (USPS preferred, optionally UPS)
@@ -619,7 +619,7 @@ async function getSandboxCarrierAccounts(shippoClient) {
   const now = Date.now();
   
   // Return cached result if still valid
-  if (carrierAccountsCache && (now - carrierAccountsCacheTime) < CACHE_TTL_MS) {
+  if (carrierAccountsCache && (now - carrierAccountsCacheTime) < CARRIER_ACCOUNT_CACHE_TTL_MS) {
     console.log('[SHIPPO][CARRIER] Using cached carrier accounts:', carrierAccountsCache);
     return carrierAccountsCache;
   }
