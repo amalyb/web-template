@@ -285,9 +285,9 @@ async function createShippingLabels({
   
   // Build Shippo-compatible addresses with email suppression logic
   // Lender (provider) always keeps email for shippo notifications
-  const addressFrom = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
+  let addressFrom = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
   // Borrower (customer) email suppressed when flag is ON (to prevent UPS emails)
-  const addressTo = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
+  let addressTo = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
   
   // ──────────────────────────────────────────────────────────────────────────────
   // EXPLICIT STREET2 GUARD: Ensure street2 is preserved in Shippo payload
@@ -558,6 +558,16 @@ async function createShippingLabels({
     }
     
     console.log('📦 [SHIPPO] Added metadata.txId to transaction payload for webhook lookup');
+    
+    // DEBUG: Confirm addresses still have street2 before purchase
+    if (process.env.DEBUG_SHIPPO === '1') {
+      console.info('[shippo][pre] outbound:purchase', {
+        rate: selectedRate.object_id,
+        provider: selectedRate.provider,
+        address_from_street2: addressFrom?.street2,
+        address_to_street2: addressTo?.street2,
+      });
+    }
     
     // Purchase label with retry on UPS 10429
     const transactionRes = await withBackoff(
@@ -898,6 +908,16 @@ async function createShippingLabels({
           }
           
           console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
+          
+          // DEBUG: Confirm addresses still have street2 before return purchase
+          if (process.env.DEBUG_SHIPPO === '1') {
+            console.info('[shippo][pre] return:purchase', {
+              rate: returnSelectedRate.object_id,
+              provider: returnSelectedRate.provider,
+              address_from_street2: returnAddressFrom?.street2,
+              address_to_street2: returnAddressTo?.street2,
+            });
+          }
           
           // Purchase return label with retry on UPS 10429
           const returnTransactionRes = await withBackoff(
