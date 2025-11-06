@@ -4,6 +4,7 @@ import classNames from 'classnames';
 import getCountryCodes from '../../../translations/countryCodes';
 import { FormattedMessage } from '../../../util/reactIntl';
 import { Heading } from '../../../components';
+import { formatPhoneForDisplay } from '../../../util/phone';
 
 import AddressLinkMaybe from './AddressLinkMaybe';
 
@@ -39,7 +40,7 @@ const DeliveryInfoMaybe = props => {
     const { line1, line2, city, postalCode, state, country: countryCode } = address || {};
     const phoneMaybe = !!phoneNumber ? (
       <>
-        {phoneNumber}
+        {formatPhoneForDisplay(phoneNumber)}
         <br />
       </>
     ) : null;
