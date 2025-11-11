@@ -309,7 +309,7 @@
   "EditListingDetailsForm.createListingDraftError": "Failed to create a draft listing. Please try again.",
   "EditListingDetailsForm.defaultRequiredMessage": "Required",
   "EditListingDetailsForm.description": "Listing description",
-  "EditListingDetailsForm.detailsDescription": "Sherbrt accepts listings that are at least ~$150 in retail value, in good, gently used condition, and originally sold in retail within the past two years.",
+  "EditListingDetailsForm.detailsDescription": "Sherbrt accepts listings that are at least ~$100 in retail value, in good, gently used condition, and originally sold in retail within the past two years.",
   "EditListingDetailsForm.descriptionPlaceholder": "Describe your listing in more detail.",
   "EditListingDetailsForm.descriptionRequired": "You need to add a description.",
   "EditListingDetailsForm.incompatibleCurrency": "{marketplaceName} uses {marketplaceCurrency} as its currency. This listing type requires online payments, but Sharetribe's online payment system doesn't support {marketplaceCurrency} payments. If you want to publish a listing with this listing type, the currency of the marketplace needs to be changed.",
