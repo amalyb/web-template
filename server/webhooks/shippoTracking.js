@@ -472,7 +472,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       
       if (isDelivery) {
         // Send delivery SMS
-        message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
+        message = "🎁 Your Sherbrt borrow was delivered! 🍧 Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
         smsType = 'delivery';
         protectedDataUpdate = {
           ...protectedData,
@@ -691,7 +691,7 @@ if (process.env.TEST_ENDPOINTS) {
         
       } else if (isDelivered) {
         // Step-6 SMS: Item delivered to borrower
-        message = "Your Sherbrt borrow was delivered! Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
+        message = "🎁 Your Sherbrt borrow was delivered! 🍧 Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
         tag = SMS_TAGS.DELIVERY_TO_BORROWER;
         
         console.log(`[SMS:OUT] tag=item_delivered_to_borrower to=${borrowerPhone} msg="${message}"`);
