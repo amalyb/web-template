@@ -5,6 +5,7 @@
 */
 
 const fs = require('fs');
+const dotenv = require('dotenv');
 
 const NODE_ENV = process.env.NODE_ENV;
 
@@ -12,32 +13,25 @@ if (!NODE_ENV) {
   throw new Error('The NODE_ENV environment variable is required but was not specified.');
 }
 
-// https://github.com/bkeepers/dotenv#what-other-env-files-can-i-use
-var dotenvFiles = [
-  `.env.${NODE_ENV}.local`,
-  // Don't include `.env.local` for `test` environment
-  // since normally you expect tests to produce the same
-  // results for everyone
-  NODE_ENV !== 'test' && `.env.local`,
-  `.env.${NODE_ENV}`,
-  '.env',
-].filter(Boolean);
-
 const configureEnv = () => {
-  // Load environment variables from .env* files. Suppress warnings using silent
-  // if this file is missing. dotenv will never modify any environment variables
-  // that have already been set.
-  // https://github.com/motdotla/dotenv
-  dotenvFiles.forEach(dotenvFile => {
-    if (fs.existsSync(dotenvFile)) {
-      console.log('Loading env from file:' + dotenvFile);
-      require('dotenv-expand')(
-        require('dotenv').config({
-          path: dotenvFile,
-        })
-      );
-    }
-  });
+  // If dotenv/config preloaded, or explicit path set, do NOT re-load here.
+  if (process.env.DOTENV_CONFIG_PATH || process.env._DOTENV_PRELOADED) {
+    console.log(`Loading env from file:${process.env.DOTENV_CONFIG_PATH || '(preloaded by dotenv/config)'}`);
+  } else {
+    // Fallback order: test -> development -> default .env
+    const candidates = [
+      process.env.NODE_ENV === 'test' && fs.existsSync('.env.test') && '.env.test',
+      process.env.NODE_ENV === 'development' && fs.existsSync('.env.development') && '.env.development',
+      fs.existsSync('.env') && '.env',
+    ].filter(Boolean);
+    const path = candidates[0] || '.env';
+    
+    // Use dotenv-expand for variable expansion (mimics create-react-app behavior)
+    require('dotenv-expand')(
+      dotenv.config({ path })
+    );
+    console.log(`Loading env from file:${path}`);
+  }
 };
 
 module.exports = {
