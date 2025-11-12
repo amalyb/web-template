@@ -264,7 +264,26 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       const trackingNumber = data.tracking_number;
       const carrier = data.carrier;
       const trackingStatus = data.tracking_status?.status;
-      const metadata = data.metadata || {};
+      
+      // Parse metadata if it's a JSON string (Shippo may send it as string)
+      let parsedMetadata = data.metadata || {};
+      if (typeof parsedMetadata === 'string') {
+        try {
+          parsedMetadata = JSON.parse(parsedMetadata);
+        } catch (e) {
+          console.warn('[ShippoWebhook] Failed to parse metadata as JSON:', e.message);
+          parsedMetadata = {};
+        }
+      }
+      
+      // Support both transactionId (new) and txId (legacy) keys
+      const metadata = parsedMetadata || {};
+      const txId = metadata.transactionId || metadata.txId;
+      
+      // Warn if we're using legacy txId key
+      if (metadata.txId && !metadata.transactionId) {
+        console.warn('[ShippoWebhook] Legacy txId metadata detected; using txId as transactionId');
+      }
       
       console.log(`📦 Tracking Number: ${trackingNumber}`);
       console.log(`🚚 Carrier: ${carrier}`);
@@ -297,17 +316,17 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     let transaction = null;
     let matchStrategy = 'unknown';
     
-    // Method 1: Try to find by metadata.transactionId (preferred)
-    if (metadata.transactionId) {
-      console.log(`🔍 Looking up transaction by metadata.transactionId: ${metadata.transactionId}`);
+    // Method 1: Try to find by transaction ID from metadata (supports both transactionId and txId)
+    if (txId) {
+      console.log(`🔍 Looking up transaction by metadata transaction ID: ${txId}`);
       try {
         const sdk = await getTrustedSdk();
-        const response = await sdk.transactions.show({ id: metadata.transactionId });
+        const response = await sdk.transactions.show({ id: txId });
         transaction = response.data.data;
-        matchStrategy = 'metadata.transactionId';
-        console.log(`✅ Found transaction by metadata.transactionId: ${transaction.id}`);
+        matchStrategy = metadata.transactionId ? 'metadata.transactionId' : 'metadata.txId';
+        console.log(`✅ Found transaction by metadata transaction ID: ${transaction.id}`);
       } catch (error) {
-        console.warn(`⚠️ Failed to find transaction by metadata.transactionId: ${error.message}`);
+        console.warn(`⚠️ Failed to find transaction by metadata transaction ID: ${error.message}`);
       }
     }
     
