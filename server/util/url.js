@@ -1,20 +1,22 @@
 /**
  * URL Helper Functions
  *
- * Centralized URL building using ROOT_URL environment variable.
+ * Centralized URL building using SERVER_BASE_URL or ROOT_URL environment variable.
  * This ensures all application URLs (used in SMS, emails, etc.) use the correct domain
  * for the current environment (production, staging, development).
  *
  * Environment Variables:
- * - ROOT_URL: Base URL for the application (e.g., https://sherbrt.com, https://test.sherbrt.com)
+ * - SERVER_BASE_URL: Base URL for server-generated absolute URLs (preferred, e.g., http://localhost:3500)
+ * - ROOT_URL: Fallback base URL for the application (e.g., https://sherbrt.com, https://test.sherbrt.com)
  */
-
 /**
  * Get the base URL from environment, removing trailing slashes
+ * Uses SERVER_BASE_URL if present, otherwise falls back to ROOT_URL
  * @returns {string} Base URL without trailing slash
  */
 const getBaseUrl = () => {
-  return (process.env.ROOT_URL || '').replace(/\/+$/, '');
+  const baseUrl = process.env.SERVER_BASE_URL || process.env.ROOT_URL || '';
+  return baseUrl.replace(/\/+$/, '');
 };
 
 /**
@@ -24,16 +26,16 @@ const getBaseUrl = () => {
  * @returns {string} Full absolute URL
  *
  * @example
- * // With ROOT_URL='https://sherbrt.com'
- * makeAppUrl('/ship/123') // => 'https://sherbrt.com/ship/123'
- * makeAppUrl('ship/123')  // => 'https://sherbrt.com/ship/123'
- * makeAppUrl()            // => 'https://sherbrt.com/'
+ * // With SERVER_BASE_URL='http://localhost:3500' or ROOT_URL='https://sherbrt.com'
+ * makeAppUrl('/ship/123') // => 'http://localhost:3500/ship/123' or 'https://sherbrt.com/ship/123'
+ * makeAppUrl('ship/123')  // => 'http://localhost:3500/ship/123' or 'https://sherbrt.com/ship/123'
+ * makeAppUrl()            // => 'http://localhost:3500/' or 'https://sherbrt.com/'
  */
 const makeAppUrl = (path = '/') => {
   const base = getBaseUrl();
 
   if (!base) {
-    console.warn('[URL] ROOT_URL not set, falling back to relative path');
+    console.warn('[URL] SERVER_BASE_URL and ROOT_URL not set, falling back to relative path');
     return path.startsWith('/') ? path : `/${path}`;
   }
 

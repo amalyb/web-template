@@ -66,10 +66,12 @@ app.get('/robots.txt', robotsTxtRoute);
 // Handle different sitemap-* resources. E.g. /sitemap-index.xml
 app.get('/sitemap-:resource', sitemapResourceRoute);
 
-// Health check endpoint
+// Health check endpoints
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
+app.get('/healthz', (_req, res) => res.status(204).send());
+app.head('/healthz', (_req, res) => res.status(204).send());
 
 const port = process.env.REACT_APP_DEV_API_SERVER_PORT || 3500;
 app.listen(port, () => console.log('[server] listening on', port));
