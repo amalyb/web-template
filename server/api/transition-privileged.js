@@ -629,7 +629,7 @@ async function createShippingLabels({
       rate: selectedRate.object_id,
       async: false,
       label_file_type: 'PNG',
-      metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+      metadata: JSON.stringify({ transactionId: txId }) // Include transaction ID for webhook lookup
     };
     
     // Only request QR code for USPS (UPS doesn't support it)
@@ -640,7 +640,7 @@ async function createShippingLabels({
       console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
     }
     
-    console.log('📦 [SHIPPO] Added metadata.txId to transaction payload for webhook lookup');
+    console.log('📦 [SHIPPO] Added metadata.transactionId to transaction payload for webhook lookup');
     
     // DEBUG: Confirm addresses still have street2 before purchase
     if (process.env.DEBUG_SHIPPO === '1') {
@@ -981,7 +981,7 @@ async function createShippingLabels({
             rate: returnSelectedRate.object_id,
             async: false,
             label_file_type: 'PNG',
-            metadata: JSON.stringify({ txId }) // Include transaction ID for webhook lookup
+            metadata: JSON.stringify({ transactionId: txId }) // Include transaction ID for webhook lookup
           };
           
           if (returnSelectedRate.provider.toUpperCase() === 'USPS') {
@@ -991,7 +991,7 @@ async function createShippingLabels({
             console.log('📦 [SHIPPO] Skipping QR code request for ' + returnSelectedRate.provider + ' return label');
           }
           
-          console.log('📦 [SHIPPO] Added metadata.txId to return transaction payload for webhook lookup');
+          console.log('📦 [SHIPPO] Added metadata.transactionId to return transaction payload for webhook lookup');
           
           // DEBUG: Confirm addresses still have street2 before return purchase
           if (process.env.DEBUG_SHIPPO === '1') {
