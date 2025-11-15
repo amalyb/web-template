@@ -164,63 +164,66 @@ async function sendReturnReminders() {
       const returnData = pd.return || {};
       
       if (deliveryEnd === tMinus1) {
-        // T-1 day: Send QR/label (create if missing)
+        // T-1 day: Send QR/label (use stored return label URL)
+        // Check multiple fields for backward compatibility
         let returnLabelUrl = returnData.label?.url || 
                             pd.returnLabelUrl || 
+                            pd.returnQrUrl ||  // Also check QR URL (preferred for USPS)
                             pd.returnLabel || 
                             pd.shippingLabelUrl || 
                             pd.returnShippingLabel;
         
-        // If no return label exists, we need to create one
+        // If no return label exists, log warning and skip SMS (don't use placeholder)
         if (!returnLabelUrl && !returnData.tMinus1SentAt) {
-          console.log(`🔧 Creating return label for tx ${tx?.id?.uuid || '(no id)'}`);
-          // TODO: Call return label creation function here
-          // For now, we'll use a placeholder URL
-          returnLabelUrl = `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
-          
-          // Update protectedData with return label info
-          try {
-            await readSdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...pd,
-                  return: {
-                    ...returnData,
-                    label: {
-                      url: returnLabelUrl,
-                      createdAt: new Date().toISOString()
-                    }
-                  }
-                }
-              }
-            });
-            console.log(`💾 Created return label for tx ${tx?.id?.uuid || '(no id)'}`);
-          } catch (updateError) {
-            console.error(`❌ Failed to create return label:`, updateError.message);
-          }
+          console.warn(`⚠️ [RETURN-REMINDER] No return label found for tx ${tx?.id?.uuid || '(no id)'} - skipping T-1 reminder`);
+          console.warn(`   Expected return label to be created during transition/accept.`);
+          console.warn(`   Check protectedData.returnLabelUrl or protectedData.returnQrUrl`);
+          continue; // Skip this transaction
         }
         
+        // If return label URL is missing but we've already sent, skip
+        if (!returnLabelUrl) {
+          console.log(`⏭️ [RETURN-REMINDER] No return label URL for tx ${tx?.id?.uuid || '(no id)'}, but T-1 already sent - skipping`);
+          continue;
+        }
+        
+        // Create short link for SMS
         const shortUrl = await shortLink(returnLabelUrl);
-        console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+        console.log('[SMS] shortlink', { 
+          type: 'return', 
+          short: shortUrl, 
+          original: returnLabelUrl,
+          transactionId: tx?.id?.uuid || tx?.id
+        });
         message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${shortUrl} Thanks for sharing style 💌`;
         tag = 'return_tminus1_to_borrower';
         
       } else if (deliveryEnd === today) {
         // Today: Ship back
+        // Check multiple fields for backward compatibility (same as T-1)
         const returnLabelUrl = returnData.label?.url ||
                               pd.returnLabelUrl || 
+                              pd.returnQrUrl ||  // Also check QR URL (preferred for USPS)
                               pd.returnLabel || 
                               pd.shippingLabelUrl || 
                               pd.returnShippingLabel;
 
         if (returnLabelUrl) {
           const shortUrl = await shortLink(returnLabelUrl);
-          console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-          message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}`;
+          console.log('[SMS] shortlink', { 
+            type: 'return', 
+            short: shortUrl, 
+            original: returnLabelUrl,
+            transactionId: tx?.id?.uuid || tx?.id
+          });
+          message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}
+Don't forget to post your pics and tag @shoponsherbrt on Instagram! 📸✨`;
           tag = 'return_reminder_today';
         } else {
-          message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
+          // No return label available - send message without link
+          console.warn(`⚠️ [RETURN-REMINDER] No return label found for tx ${tx?.id?.uuid || '(no id)'} on return day`);
+          message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.
+Don't forget to post your pics and tag @shoponsherbrt on Instagram! 📸✨`;
           tag = 'return_reminder_today_no_label';
         }
         

@@ -1052,6 +1052,94 @@ async function createShippingLabels({
             } catch (e) {
               console.error('❌ [PERSIST] Exception saving return label:', e.message);
             }
+            
+            // ──────────────────────────────────────────────────────────────────────────────
+            // FLOW 1: Send SMS to borrower when return label is created
+            // ──────────────────────────────────────────────────────────────────────────────
+            try {
+              // Get borrower phone from protectedData or transaction
+              const borrowerPhone = protectedData.customerPhone || 
+                                   transaction?.relationships?.customer?.attributes?.profile?.protectedData?.phone ||
+                                   null;
+              
+              // Prefer QR URL if available (USPS), otherwise use label URL
+              const returnLabelLink = returnQrUrl || returnTransactionRes.data.label_url || null;
+              
+              if (borrowerPhone && returnLabelLink) {
+                // Check if we've already sent return label SMS (idempotency)
+                const returnNotificationSent = protectedData.returnNotification?.labelCreated?.sent === true;
+                
+                if (returnNotificationSent) {
+                  console.log(`📱 Return label SMS already sent to borrower (${maskPhone(borrowerPhone)}) - skipping`);
+                } else {
+                  // Create short link for SMS
+                  let shortReturnUrl;
+                  try {
+                    shortReturnUrl = await shortLink(returnLabelLink);
+                  } catch (shortLinkError) {
+                    console.warn('[SMS] shortLink failed for return label, using original URL:', shortLinkError.message);
+                    shortReturnUrl = returnLabelLink;
+                  }
+                  
+                  // Build return label SMS message with clear "return" language
+                  const returnMessage = `📦 Your return label is ready! Use this to ship back: ${shortReturnUrl}`;
+                  
+                  // Send SMS to borrower
+                  await sendSMS(
+                    borrowerPhone,
+                    returnMessage,
+                    {
+                      role: 'borrower',
+                      transactionId: txId,
+                      transition: 'transition/accept',
+                      tag: 'return_label_ready_to_borrower',
+                      meta: { listingId: listing?.id?.uuid || listing?.id }
+                    }
+                  );
+                  
+                  console.log(`✅ [RETURN-SMS] Sent return label SMS to borrower`, {
+                    transactionId: txId,
+                    phone: maskPhone(borrowerPhone),
+                    hasQr: !!returnQrUrl,
+                    hasLabel: !!returnTransactionRes.data.label_url,
+                    linkType: returnQrUrl ? 'qr' : 'label',
+                    shortUrl: maskUrl(shortReturnUrl)
+                  });
+                  
+                  // Mark as sent in protectedData for idempotency
+                  try {
+                    const notificationResult = await upsertProtectedData(txId, {
+                      returnNotification: {
+                        labelCreated: { 
+                          sent: true, 
+                          sentAt: timestamp() // ← respects FORCE_NOW
+                        }
+                      }
+                    }, { source: 'shippo' });
+                    
+                    if (notificationResult && notificationResult.success === false) {
+                      console.warn('⚠️ [PERSIST] Failed to save return notification state:', notificationResult.error);
+                    } else {
+                      console.log(`✅ [PERSIST] Updated returnNotification.labelCreated`);
+                    }
+                  } catch (updateError) {
+                    console.warn(`❌ [PERSIST] Exception saving return notification state:`, updateError.message);
+                  }
+                }
+              } else if (borrowerPhone && !returnLabelLink) {
+                console.warn(`⚠️ [RETURN-SMS] Borrower phone found but no return label URL available - skipping SMS`);
+              } else if (!borrowerPhone) {
+                console.log(`📱 [RETURN-SMS] Borrower phone number not found - skipping return label SMS`);
+              }
+            } catch (returnSmsError) {
+              // Don't fail the return label creation if SMS fails
+              console.error('❌ [RETURN-SMS] Failed to send return label SMS to borrower:', {
+                transactionId: txId,
+                error: returnSmsError.message,
+                stack: returnSmsError.stack?.split('\n')[0]
+              });
+            }
+            
           } else {
             console.warn('⚠️ [SHIPPO] Return label purchase failed:', returnTransactionRes.data.messages);
           }
