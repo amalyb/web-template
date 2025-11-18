@@ -11,6 +11,12 @@ const { maskPhone } = require('../api-util/phone');
 const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
 const { normalizePhoneE164 } = require('../util/phone');
+const { calculateTotalForProvider } = require('../api-util/lineItemHelpers');
+const { getAmountAsDecimalJS, convertDecimalJSToNumber } = require('../api-util/currency');
+const { unitDivisor } = require('../api-util/currency');
+const { shortLink } = require('../api-util/shortlink');
+const { orderUrl } = require('../util/url');
+const Decimal = require('decimal.js');
 
 // Helper to normalize listingId to string
 const toUuidString = id =>
@@ -28,12 +34,67 @@ try {
 
 console.log('🚦 initiate-privileged endpoint is wired up');
 
-// Helper function to build carrier-friendly lender SMS message
-function buildLenderMsg(tx, listingTitle) {
-  // Carrier-friendly: short, one link, no emojis
-  const lenderInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/sales';
-  const lenderMsg = `Sherbrt 🍧: New booking request for "${listingTitle}". Check your inbox: ${lenderInboxUrl}`;
-  return lenderMsg;
+/**
+ * Format Money object to currency string (server-side)
+ * @param {Money} money - Money object from SDK
+ * @returns {string} Formatted currency string (e.g., "$21.24")
+ */
+function formatMoneyServerSide(money) {
+  if (!money || !money.amount || !money.currency) {
+    return null;
+  }
+  
+  try {
+    const amountDecimal = getAmountAsDecimalJS(money);
+    const divisor = unitDivisor(money.currency);
+    const divisorDecimal = new Decimal(divisor);
+    const majorUnitsDecimal = amountDecimal.dividedBy(divisorDecimal);
+    const majorUnits = convertDecimalJSToNumber(majorUnitsDecimal);
+    
+    // Format based on currency
+    const currencySymbols = {
+      USD: '$',
+      EUR: '€',
+      GBP: '£',
+      CAD: 'C$',
+      AUD: 'A$',
+    };
+    
+    const symbol = currencySymbols[money.currency] || money.currency + ' ';
+    const formatted = majorUnits.toFixed(2);
+    
+    return `${symbol}${formatted}`;
+  } catch (e) {
+    console.warn('[formatMoneyServerSide] Error formatting money:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Helper function to build lender SMS message with dynamic values
+ * @param {Object} tx - Transaction object
+ * @param {string} listingTitle - Listing title
+ * @param {string} borrowerFirstName - Borrower's first name (optional)
+ * @param {Money} payoutTotal - Lender's payout amount (Money object)
+ * @param {string} shortUrl - Short URL for the transaction
+ * @returns {string} SMS message
+ */
+async function buildLenderMsg(tx, listingTitle, borrowerFirstName, payoutTotal, shortUrl) {
+  // Fallback values for graceful handling
+  const firstName = borrowerFirstName || 'Someone';
+  const title = listingTitle || 'your listing';
+  const formattedPayout = payoutTotal ? formatMoneyServerSide(payoutTotal) : null;
+  
+  // Build message with dynamic values
+  let message = `Sherbrt 🍧: ${firstName} wants to borrow your "${title}"`;
+  
+  if (formattedPayout) {
+    message += `. You'll earn ${formattedPayout} 💸🤑`;
+  }
+  
+  message += `. Tap to review & accept: ${shortUrl}`;
+  
+  return message;
 }
 
 module.exports = (req, res) => {
@@ -249,7 +310,44 @@ module.exports = (req, res) => {
             if (borrowerId && (borrowerId?.uuid ?? borrowerId) === (providerId?.uuid ?? providerId)) {
               console.warn('[SMS][booking-request] Provider equals customer; aborting lender SMS');
             } else if (provPhone) {
-              // Your sendSMS util should normalize to E.164 and log the final +1… number
+              // Fetch borrower profile to get first name
+              let borrowerFirstName = null;
+              if (borrowerId) {
+                try {
+                  const customer = await sdk.users.show({ 
+                    id: borrowerId,
+                    include: ['profile']
+                  });
+                  const customerProf = customer?.data?.data?.attributes?.profile;
+                  borrowerFirstName = customerProf?.firstName || 
+                                     customerProf?.protectedData?.firstName ||
+                                     null;
+                } catch (customerErr) {
+                  console.warn('[SMS][booking-request] Could not fetch borrower profile for first name:', customerErr.message);
+                }
+              }
+              
+              // Calculate lender payout from line items
+              let payoutTotal = null;
+              try {
+                if (lineItems && lineItems.length > 0) {
+                  payoutTotal = calculateTotalForProvider(lineItems);
+                  console.log('[SMS][booking-request] Calculated payout total:', payoutTotal);
+                }
+              } catch (payoutErr) {
+                console.warn('[SMS][booking-request] Could not calculate payout:', payoutErr.message);
+              }
+              
+              // Generate short URL for the transaction
+              const txId = tx?.id?.uuid || tx?.id;
+              const fullOrderUrl = txId ? orderUrl(txId) : (process.env.ROOT_URL || 'https://sherbrt.com/inbox/sales');
+              let shortUrl = fullOrderUrl;
+              try {
+                shortUrl = await shortLink(fullOrderUrl);
+              } catch (shortLinkErr) {
+                console.warn('[SMS][booking-request] Could not generate short link, using full URL:', shortLinkErr.message);
+              }
+              
               const listingTitle = listing?.attributes?.title || 'your listing';
               
               const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:lender`;
@@ -257,7 +355,8 @@ module.exports = (req, res) => {
                 console.log('[SMS] duplicate suppressed (lender):', key);
               } else {
                 try {
-                  await sendSMS(provPhone, buildLenderMsg(tx, listingTitle), { 
+                  const lenderMsg = await buildLenderMsg(tx, listingTitle, borrowerFirstName, payoutTotal, shortUrl);
+                  await sendSMS(provPhone, lenderMsg, { 
                     role: 'lender',
                     tag: 'booking_request_to_lender_alt',
                     meta: { listingId: listing?.id?.uuid || listing?.id }
