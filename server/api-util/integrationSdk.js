@@ -70,6 +70,7 @@ const ALLOWED_PROTECTED_DATA_KEYS = [
   'outboundTrackingUrl',
   'returnQrCodeUrl',
   'returnTrackingUrl',
+  'lenderOutboundLabelEmailSent',
 ];
 
 /**
