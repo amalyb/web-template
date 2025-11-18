@@ -337,6 +337,20 @@ module.exports = (req, res) => {
                 }
               }
               
+              // Fallback: Extract first name from protectedData.customerName if profile lookup didn't find it
+              if (!borrowerFirstName) {
+                const rawName =
+                  finalProtectedData?.customerName ||
+                  protectedData?.customerName ||
+                  orderData?.customerName ||
+                  null;
+                
+                if (typeof rawName === 'string' && rawName.trim()) {
+                  borrowerFirstName = rawName.trim().split(/\s+/)[0];
+                  console.log('[SMS][booking-request] Extracted first name from customerName:', borrowerFirstName);
+                }
+              }
+              
               // Calculate lender payout from line items
               let payoutTotal = null;
               try {
