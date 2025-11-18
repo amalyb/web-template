@@ -119,7 +119,7 @@ function borrowerReturnLabelEmail({
                         ? `<p style="font-size:16px;line-height:1.4;margin:16px 0;color:#484848">You can always <a target="_blank" style="color:#007DF2;text-decoration:none" href="${orderUrl}">view your order details on Sherbrt</a>.</p>`
                         : ''
                     }
-                    <p style="font-size:16px;line-height:1.4;margin:16px 0;color:#484848">Love,<br/>Sherbrt 💕</p>
+                    <p style="font-size:16px;line-height:1.4;margin:16px 0;color:#484848">Love,<br/>Sherbrt 🍧💕</p>
                     <div>
                       <hr style="width:100%;border:none;border-top:1px solid #eaeaea;border-color:#E1E1E1;margin:20px 0" />
                       <p style="font-size:12px;line-height:15px;margin:0 auto;color:#b7b7b7;text-align:left;margin-bottom:50px">You're a member of Sherbrt. If you no longer want to receive these emails, please contact the Sherbrt team.</p>
