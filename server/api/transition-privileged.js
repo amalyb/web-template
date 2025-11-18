@@ -20,6 +20,9 @@ const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 const { extractArtifacts } = require('../lib/shipping/extractArtifacts');
 const { buildLenderShipByMessage } = require('../lib/sms/buildLenderShipByMessage');
 const { buildShippoAddress } = require('../shippo/buildAddress');
+const { sendTransactionalEmail } = require('../email/emailClient');
+const borrowerReturnLabelEmail = require('../email/borrower/borrowerReturnLabel');
+const lenderOutboundLabelEmail = require('../email/lender/lenderOutboundLabel');
 
 // ---- helpers (add once, top-level) ----
 const safePick = (obj, keys = []) =>
@@ -225,6 +228,25 @@ const getLenderPhone = (params, tx) => {
 };
 
 // --- Shippo label creation logic extracted to a function ---
+//
+// RETURN LABEL FLOW DOCUMENTATION:
+// - Return label is created here: Lines ~848-1148 (inside createShippingLabels function)
+//   Specifically, return label purchase happens at lines ~1007-1019 (returnTransactionRes)
+// - Return label URL/short link is stored as: 
+//   - protectedData.returnQrUrl (preferred for USPS, QR code URL)
+//   - protectedData.returnLabelUrl (fallback, PDF label URL)
+//   - Both persisted via upsertProtectedData() at lines ~1035-1054
+// - Day-of-return SMS pulls label link from: 
+//   - sendReturnReminders.js line ~204-209 checks: returnData.label?.url || pd.returnLabelUrl || pd.returnQrUrl
+//   - Uses shortLink() helper to create short URL for SMS
+// - Lender outbound label email: Sent immediately after outbound label SMS (line ~813+)
+//   - Uses same outboundLabelUrl/outboundQrUrl as SMS
+//   - Idempotency via protectedData.lenderOutboundLabelEmailSent flag
+//   - Provider email retrieved from transaction/listing relationships
+// - Return label email: Sent immediately after return label creation (line ~1142+)
+//   - Uses same returnQrUrl/returnLabelUrl as SMS
+//   - Idempotency via protectedData.borrowerReturnLabelEmailSent flag
+//
 async function createShippingLabels({ 
   txId, 
   listing, 
@@ -795,6 +817,117 @@ async function createShippingLabels({
       // Do not rethrow - SMS failure should not block persistence
     }
     
+    // ──────────────────────────────────────────────────────────────────────────────
+    // STEP-3.5: Send EMAIL to lender when outbound label is created
+    // Runs right after outbound label SMS (if SMS succeeded or was skipped)
+    // ──────────────────────────────────────────────────────────────────────────────
+    try {
+      // Get provider email from protectedData (checkout-entered) or transaction profile
+      const providerEmail = protectedData.providerEmail || 
+                           transaction?.relationships?.provider?.data?.attributes?.profile?.protectedData?.email ||
+                           transaction?.relationships?.provider?.data?.attributes?.email ||
+                           transaction?.attributes?.provider?.attributes?.email ||
+                           null;
+      
+      // Get provider first name for personalization
+      const providerFirstName = transaction?.relationships?.provider?.data?.attributes?.profile?.firstName ||
+                               transaction?.relationships?.provider?.data?.attributes?.profile?.protectedData?.firstName ||
+                               transaction?.attributes?.provider?.attributes?.profile?.firstName ||
+                               null;
+      
+      // Get listing title
+      const listingTitle = listing?.attributes?.title || 
+                          transaction?.relationships?.listing?.data?.attributes?.title ||
+                          'your item';
+      
+      // Get booking dates
+      const booking = transaction?.attributes?.booking || transaction?.booking;
+      const startDate = booking?.attributes?.start || booking?.start || null;
+      const endDate = booking?.attributes?.end || booking?.end || null;
+      
+      // Prefer QR URL if available (UPS), otherwise use label URL (same as SMS)
+      const outboundLabelLink = qrUrl || labelUrl || null;
+      
+      // Build order URL
+      const fullOrderUrl = orderUrl(txId);
+      
+      if (providerEmail && outboundLabelLink) {
+        // Check if we've already sent outbound label email (idempotency)
+        const emailSent = protectedData.lenderOutboundLabelEmailSent === true;
+        
+        if (emailSent) {
+          console.log(`[LENDER-OUTBOUND-EMAIL] Skipped (already sent) to ${providerEmail}`);
+        } else {
+          // Create short link for email (same as SMS)
+          let shortOutboundUrl;
+          try {
+            shortOutboundUrl = await shortLink(outboundLabelLink);
+          } catch (shortLinkError) {
+            console.warn('[LENDER-OUTBOUND-EMAIL] shortLink failed for outbound label, using original URL:', shortLinkError.message);
+            shortOutboundUrl = outboundLabelLink;
+          }
+          
+          // If QR URL exists, use the same shortened link for QR image
+          // (QR URL is typically the same as outboundLabelLink when QR is selected)
+          const shortQrUrl = qrUrl ? shortOutboundUrl : null;
+          
+          // Generate email content
+          const { subject, text, html } = lenderOutboundLabelEmail({
+            firstName: providerFirstName,
+            listingTitle,
+            startDate,
+            endDate,
+            outboundLabelUrl: shortOutboundUrl,
+            orderUrl: fullOrderUrl,
+            qrUrl: shortQrUrl,
+          });
+          
+          // Send email
+          await sendTransactionalEmail({
+            to: providerEmail,
+            subject,
+            text,
+            html,
+          });
+          
+          console.log(`[LENDER-OUTBOUND-EMAIL] Sending email to: ${providerEmail}`, {
+            transactionId: txId,
+            email: providerEmail,
+            hasQr: !!qrUrl,
+            hasLabel: !!labelUrl,
+            linkType: qrUrl ? 'qr' : 'label',
+            shortUrl: maskUrl(shortOutboundUrl)
+          });
+          
+          // Mark as sent in protectedData for idempotency
+          try {
+            const emailResult = await upsertProtectedData(txId, {
+              lenderOutboundLabelEmailSent: true,
+            }, { source: 'shippo' });
+            
+            if (emailResult && emailResult.success === false) {
+              console.warn('⚠️ [PERSIST] Failed to save outbound label email state:', emailResult.error);
+            } else {
+              console.log(`✅ [PERSIST] Updated lenderOutboundLabelEmailSent`);
+            }
+          } catch (updateError) {
+            console.warn(`❌ [PERSIST] Exception saving outbound label email state:`, updateError.message);
+          }
+        }
+      } else if (providerEmail && !outboundLabelLink) {
+        console.warn(`⚠️ [LENDER-OUTBOUND-EMAIL] Provider email found but no outbound label URL available - skipping email`);
+      } else if (!providerEmail) {
+        console.log(`📧 [LENDER-OUTBOUND-EMAIL] Provider email not found - skipping outbound label email`);
+      }
+    } catch (outboundEmailError) {
+      // Don't fail the outbound label creation if email fails
+      console.error('[LENDER-OUTBOUND-EMAIL] Error:', {
+        transactionId: txId,
+        error: outboundEmailError.message,
+        stack: outboundEmailError.stack?.split('\n')[0]
+      });
+    }
+    
     // ========== STEP 2: PERSIST TO FLEX (INDEPENDENT OF SMS) ==========
     // Persistence happens after SMS, and failures here don't affect SMS delivery
     console.log('[SHIPPO] Attempting to persist label data to Flex protectedData...');
@@ -1137,6 +1270,113 @@ async function createShippingLabels({
                 transactionId: txId,
                 error: returnSmsError.message,
                 stack: returnSmsError.stack?.split('\n')[0]
+              });
+            }
+            
+            // ──────────────────────────────────────────────────────────────────────────────
+            // FLOW 2: Send EMAIL to borrower when return label is created
+            // ──────────────────────────────────────────────────────────────────────────────
+            try {
+              // Get borrower email from protectedData (checkout-entered) or transaction profile
+              const borrowerEmail = protectedData.customerEmail || 
+                                   transaction?.relationships?.customer?.data?.attributes?.profile?.protectedData?.email ||
+                                   transaction?.relationships?.customer?.data?.attributes?.email ||
+                                   null;
+              
+              // Get borrower first name for personalization
+              const borrowerFirstName = transaction?.relationships?.customer?.data?.attributes?.profile?.firstName ||
+                                       transaction?.relationships?.customer?.data?.attributes?.profile?.protectedData?.firstName ||
+                                       null;
+              
+              // Get listing title
+              const listingTitle = listing?.attributes?.title || 
+                                 transaction?.relationships?.listing?.data?.attributes?.title ||
+                                 'your item';
+              
+              // Get booking dates
+              const booking = transaction?.attributes?.booking || transaction?.booking;
+              const startDate = booking?.attributes?.start || booking?.start || null;
+              const endDate = booking?.attributes?.end || booking?.end || null;
+              
+              // Return-by date: use endDate (booking end date) as default
+              const returnByDate = endDate;
+              
+              // Prefer QR URL if available (USPS), otherwise use label URL (same as SMS)
+              const returnLabelLink = returnQrUrl || returnTransactionRes.data.label_url || null;
+              
+              // Build order URL
+              const fullOrderUrl = orderUrl(txId);
+              
+              if (borrowerEmail && returnLabelLink) {
+                // Check if we've already sent return label email (idempotency)
+                const emailSent = protectedData.borrowerReturnLabelEmailSent === true;
+                
+                if (emailSent) {
+                  console.log(`📧 Return label email already sent to borrower (${borrowerEmail}) - skipping`);
+                } else {
+                  // Create short link for email (same as SMS)
+                  let shortReturnUrl;
+                  try {
+                    shortReturnUrl = await shortLink(returnLabelLink);
+                  } catch (shortLinkError) {
+                    console.warn('[EMAIL] shortLink failed for return label, using original URL:', shortLinkError.message);
+                    shortReturnUrl = returnLabelLink;
+                  }
+                  
+                  // Generate email content
+                  const { subject, text, html } = borrowerReturnLabelEmail({
+                    firstName: borrowerFirstName,
+                    listingTitle,
+                    startDate,
+                    endDate,
+                    returnByDate,
+                    returnLabelUrl: shortReturnUrl,
+                    orderUrl: fullOrderUrl,
+                  });
+                  
+                  // Send email
+                  await sendTransactionalEmail({
+                    to: borrowerEmail,
+                    subject,
+                    text,
+                    html,
+                  });
+                  
+                  console.log(`✅ [RETURN-EMAIL] Sent return label email to borrower`, {
+                    transactionId: txId,
+                    email: borrowerEmail,
+                    hasQr: !!returnQrUrl,
+                    hasLabel: !!returnTransactionRes.data.label_url,
+                    linkType: returnQrUrl ? 'qr' : 'label',
+                    shortUrl: maskUrl(shortReturnUrl)
+                  });
+                  
+                  // Mark as sent in protectedData for idempotency
+                  try {
+                    const emailResult = await upsertProtectedData(txId, {
+                      borrowerReturnLabelEmailSent: true,
+                    }, { source: 'shippo' });
+                    
+                    if (emailResult && emailResult.success === false) {
+                      console.warn('⚠️ [PERSIST] Failed to save return label email state:', emailResult.error);
+                    } else {
+                      console.log(`✅ [PERSIST] Updated borrowerReturnLabelEmailSent`);
+                    }
+                  } catch (updateError) {
+                    console.warn(`❌ [PERSIST] Exception saving return label email state:`, updateError.message);
+                  }
+                }
+              } else if (borrowerEmail && !returnLabelLink) {
+                console.warn(`⚠️ [RETURN-EMAIL] Borrower email found but no return label URL available - skipping email`);
+              } else if (!borrowerEmail) {
+                console.log(`📧 [RETURN-EMAIL] Borrower email not found - skipping return label email`);
+              }
+            } catch (returnEmailError) {
+              // Don't fail the return label creation if email fails
+              console.error('❌ [RETURN-EMAIL] Failed to send return label email to borrower:', {
+                transactionId: txId,
+                error: returnEmailError.message,
+                stack: returnEmailError.stack?.split('\n')[0]
               });
             }
             
