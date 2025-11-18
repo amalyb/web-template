@@ -3,7 +3,7 @@ const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace S
 const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
-const { applyCharges } = require('../lib/lateFees');
+const { applyCharges, getReplacementValue } = require('../lib/lateFees');
 
 // Parse command line arguments
 const argv = process.argv.slice(2);
@@ -19,6 +19,9 @@ const VERBOSE = has('--verbose') || process.env.VERBOSE === '1';
 const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
 const FORCE_NOW = process.env.FORCE_NOW ? new Date(process.env.FORCE_NOW) : null;
+
+// Feature flag: Gate late fee charging
+const LATE_FEES_ENABLED = process.env.LATE_FEES_ENABLED !== 'false' && process.env.LATE_FEES_ENABLED !== '0';
 
 if (FORCE_NOW) {
   console.log(`⏰ FORCE_NOW active: ${FORCE_NOW.toISOString()}`);
@@ -71,13 +74,18 @@ async function evaluateReplacementCharge(tx) {
 }
 
 async function sendOverdueReminders() {
-  console.log('🚀 Starting overdue reminder SMS script...');
+  console.log('[overdue-reminders] 🚀 Starting overdue reminder SMS script...');
+  
+  // Feature flag check
+  if (!LATE_FEES_ENABLED) {
+    console.log('[overdue-reminders] LATE_FEES_ENABLED is false – skipping late fee evaluation');
+  }
   
   try {
     // Initialize both SDKs: Marketplace for reads, Integration for privileged operations
     const integSdk = getFlexSdk();           // for transitions/charges
     const readSdk  = getMarketplaceSdk();    // for queries/search
-    console.log('✅ SDKs initialized (read + integ)');
+    console.log('[overdue-reminders] ✅ SDKs initialized (read + integ)');
     
     // Diagnostic startup logging
     if (process.env.DIAG === '1') {
@@ -94,7 +102,7 @@ async function sendOverdueReminders() {
     const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
     const todayDate = new Date(today);
     
-    console.log(`📅 Processing overdue reminders for: ${today}`);
+    console.log(`[overdue-reminders] 📅 Processing overdue reminders for: ${today}`);
 
     // Load delivered transactions where return date has passed and no first scan
     const query = {
@@ -160,13 +168,15 @@ async function sendOverdueReminders() {
       throw queryError;
     }
 
-    console.log(`📊 Found ${transactions.length} delivered transactions`);
+    console.log(`[overdue-reminders] 📊 Found ${transactions.length} delivered transactions`);
 
     let sent = 0, failed = 0, processed = 0;
     let charged = 0, chargesFailed = 0;
+    let evaluated = 0;
 
     for (const tx of transactions) {
       processed++;
+      evaluated++;
       
       const deliveryEnd = tx?.attributes?.deliveryEnd;
       if (!deliveryEnd) continue;
@@ -257,9 +267,17 @@ async function sendOverdueReminders() {
             message = `⚠️ 4 days late. Ship immediately to prevent replacement charges: ${shortUrl}`;
             tag = 'overdue_day4_to_borrower';
           } else {
-            // Day 5+
-            const replacementAmount = 5000; // $50.00 in cents
-            message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${shortUrl}`;
+            // Day 5+: Use dynamic replacement amount from listing
+            let replacementAmount = 5000; // Default fallback $50.00 in cents
+            try {
+              if (listing) {
+                replacementAmount = getReplacementValue(listing);
+              }
+            } catch (replacementError) {
+              console.warn(`[overdue-reminders] Could not get replacement value for listing ${listing?.id?.uuid || listing?.id || 'unknown'}, using default $50:`, replacementError.message);
+            }
+            const replacementDollars = (replacementAmount / 100).toFixed(0);
+            message = `🚫 5 days late. You may be charged full replacement ($${replacementDollars}). Avoid this by shipping today: ${shortUrl}`;
             tag = 'overdue_day5_to_borrower';
           }
           
@@ -328,15 +346,15 @@ async function sendOverdueReminders() {
           });
           
           if (chargeResult.charged) {
-            console.log(`💳 Charged ${chargeResult.items.join(' + ')} for tx ${tx?.id?.uuid || '(no id)'}`);
+            console.log(`[overdue-reminders] 💳 Charged ${chargeResult.items.join(' + ')} for tx ${tx?.id?.uuid || '(no id)'} (daysLate=${chargeResult.lateDays || daysLate})`);
             if (chargeResult.amounts) {
               chargeResult.amounts.forEach(a => {
-                console.log(`   💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
+                console.log(`[overdue-reminders]    💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
               });
             }
             charged++;
           } else {
-            console.log(`ℹ️ No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'})`);
+            console.log(`[overdue-reminders] ℹ️ No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'}, daysLate=${daysLate})`);
           }
         }
       } catch (chargeError) {
@@ -396,16 +414,20 @@ async function sendOverdueReminders() {
     // Final summary
     console.log('');
     console.log('═══════════════════════════════════════════════════════════');
-    console.log('📊 OVERDUE REMINDERS RUN SUMMARY');
+    console.log('[overdue-reminders] 📊 OVERDUE REMINDERS RUN SUMMARY');
     console.log('═══════════════════════════════════════════════════════════');
-    console.log(`   Candidates processed: ${processed}`);
-    console.log(`   SMS sent:             ${sent}`);
-    console.log(`   SMS failed:           ${failed}`);
-    console.log(`   Charges applied:      ${charged}`);
-    console.log(`   Charges failed:       ${chargesFailed}`);
+    console.log(`[overdue-reminders]    Transactions evaluated: ${evaluated}`);
+    console.log(`[overdue-reminders]    Candidates processed:    ${processed}`);
+    console.log(`[overdue-reminders]    SMS sent:                ${sent}`);
+    console.log(`[overdue-reminders]    SMS failed:              ${failed}`);
+    console.log(`[overdue-reminders]    Charges applied:        ${charged}`);
+    console.log(`[overdue-reminders]    Charges failed:          ${chargesFailed}`);
     console.log('═══════════════════════════════════════════════════════════');
     if (DRY_RUN) {
-      console.log('   Mode: DRY_RUN (no actual SMS or charges)');
+      console.log('[overdue-reminders]    Mode: DRY_RUN (no actual SMS or charges)');
+    }
+    if (!LATE_FEES_ENABLED) {
+      console.log('[overdue-reminders]    ⚠️  LATE_FEES_ENABLED is false');
     }
     console.log('');
     

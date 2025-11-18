@@ -138,42 +138,29 @@ async function sendReturnReminders() {
       const returnData = pd.return || {};
       
       if (deliveryEnd === tMinus1) {
-        // T-1 day: Send QR/label (create if missing)
-        let returnLabelUrl = returnData.label?.url || 
-                            pd.returnLabelUrl || 
+        // T-1 day: Send QR/label (use real label if available)
+        // Check for return label in priority order: QR URL (preferred), then label URL
+        let returnLabelUrl = pd.returnQrUrl ||  // Preferred: USPS QR code URL
+                            pd.returnLabelUrl || // Fallback: PDF label URL
+                            returnData.label?.url || 
                             pd.returnLabel || 
                             pd.shippingLabelUrl || 
                             pd.returnShippingLabel;
         
-        // If no return label exists, we need to create one
+        // If no return label exists, log warning (label should have been created during accept transition)
         if (!returnLabelUrl && !returnData.tMinus1SentAt) {
-          console.log(`🔧 Creating return label for tx ${tx?.id?.uuid || '(no id)'}`);
-          // TODO: Call return label creation function here
-          // For now, we'll use a placeholder URL
-          returnLabelUrl = `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
-          
-          // Update protectedData with return label info
-          try {
-            await sdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...pd,
-                  return: {
-                    ...returnData,
-                    label: {
-                      url: returnLabelUrl,
-                      createdAt: new Date().toISOString()
-                    }
-                  }
-                }
-              }
-            });
-            console.log(`💾 Created return label for tx ${tx?.id?.uuid || '(no id)'}`);
-          } catch (updateError) {
-            console.error(`❌ Failed to create return label:`, updateError.message);
-          }
+          console.warn(`[return-reminders] ⚠️ No return label found for tx ${tx?.id?.uuid || '(no id)'} - label should have been created during accept transition`);
+          // Note: Creating a real Shippo label here would require addresses, parcel info, etc.
+          // For now, skip sending T-1 reminder if no label exists (better than sending placeholder)
+          continue;
         }
+        
+        // Log whether we're using QR or label URL
+        const labelType = pd.returnQrUrl ? 'QR' : 'label';
+        const labelSource = pd.returnQrUrl ? 'returnQrUrl' : 
+                           pd.returnLabelUrl ? 'returnLabelUrl' : 
+                           returnData.label?.url ? 'returnData.label.url' : 'other';
+        console.log(`[return-reminders] Using ${labelType} URL from ${labelSource} for tx ${tx?.id?.uuid || '(no id)'}`);
         
         const shortUrl = await shortLink(returnLabelUrl);
         console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
@@ -182,6 +169,16 @@ async function sendReturnReminders() {
         
       } else if (deliveryEnd === today) {
         // Today: Ship back
+        // Check if package already scanned - skip reminder if so
+        if (
+          returnData.firstScanAt ||
+          returnData.status === 'accepted' ||
+          returnData.status === 'in_transit'
+        ) {
+          console.log(`[return-reminders] 🚚 Package already scanned for tx ${tx?.id?.uuid || '(no id)'} - skipping day-of reminder`);
+          continue;
+        }
+        
         const returnLabelUrl = returnData.label?.url ||
                               pd.returnLabelUrl || 
                               pd.returnLabel || 

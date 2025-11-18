@@ -18,6 +18,9 @@ dayjs.extend(timezone);
 const TZ = 'America/Los_Angeles';
 const LATE_FEE_CENTS = 1500; // $15/day
 
+// Feature flag: Gate late fee charging
+const LATE_FEES_ENABLED = process.env.LATE_FEES_ENABLED !== 'false' && process.env.LATE_FEES_ENABLED !== '0';
+
 /**
  * Format date as YYYY-MM-DD in Pacific timezone
  * @param {string|Date|dayjs.Dayjs} d - Date to format
@@ -49,13 +52,13 @@ function computeLateDays(now, returnAt) {
 /**
  * Check if return shipment has been scanned/accepted by carrier
  * 
- * Policy: Package is considered "in carrier's hands" once scanned as accepted or in-transit.
- * This prevents replacement charges but does NOT stop late fees.
+ * Policy: Package is considered "scanned" once accepted or in-transit.
+ * Once scanned, late fees stop (softer policy matching test branch).
  * 
  * @param {Object} returnData - transaction.protectedData.return
  * @returns {boolean} True if package has been scanned/accepted by carrier
  */
-function hasCarrierScan(returnData) {
+function isScanned(returnData) {
   if (!returnData) return false;
   
   // Method 1: Check for firstScanAt timestamp (set by webhook)
@@ -74,9 +77,6 @@ function hasCarrierScan(returnData) {
 
 /**
  * Check if return shipment has been fully delivered
- * 
- * Policy: Late fees continue until the package is delivered back to the lender.
- * Only terminal "delivered" status stops late fees.
  * 
  * @param {Object} returnData - transaction.protectedData.return
  * @returns {boolean} True if package has been delivered
@@ -165,7 +165,13 @@ function getReplacementValue(listing) {
  */
 async function applyCharges({ sdkInstance, txId, now }) {
   try {
-    console.log(`[lateFees] Processing transaction ${txId}...`);
+    // Feature flag check
+    if (!LATE_FEES_ENABLED) {
+      console.log(`[late-fees] LATE_FEES_ENABLED is false – skipping late fee evaluation for tx ${txId}`);
+      return { charged: false, reason: 'feature-disabled' };
+    }
+    
+    console.log(`[late-fees] Processing transaction ${txId}...`);
     
     // Load transaction with listing data
     const response = await sdkInstance.transactions.show({
@@ -202,16 +208,16 @@ async function applyCharges({ sdkInstance, txId, now }) {
       );
     }
     
-    console.log(`[lateFees] Return due: ${ymd(returnDueAt)}, Now: ${ymd(now)}`);
+    console.log(`[late-fees] Return due: ${ymd(returnDueAt)}, Now: ${ymd(now)}`);
     
-    // Check delivery status
+    // Check if package has been scanned (stops late fees)
+    const scanned = isScanned(returnData);
     const delivered = isDelivered(returnData);
-    const carrierHasPackage = hasCarrierScan(returnData);
     
-    console.log(`[lateFees] Package status: delivered=${delivered}, carrierHasPackage=${carrierHasPackage}`);
+    console.log(`[late-fees] Package status: scanned=${scanned}, delivered=${delivered}`);
     
     if (delivered) {
-      console.log(`[lateFees] Package already delivered - no charges apply`);
+      console.log(`[late-fees] Package already delivered - no charges apply`);
       return { 
         charged: false, 
         reason: 'already-delivered',
@@ -219,12 +225,22 @@ async function applyCharges({ sdkInstance, txId, now }) {
       };
     }
     
+    // Policy: Stop late fees once scanned (softer policy matching test branch)
+    if (scanned) {
+      console.log(`[late-fees] Package already scanned - no charges apply`);
+      return { 
+        charged: false, 
+        reason: 'already-scanned',
+        scannedAt: returnData.firstScanAt || 'status-based'
+      };
+    }
+    
     // Calculate days late
     const lateDays = computeLateDays(now, returnDueAt);
-    console.log(`[lateFees] Days late: ${lateDays}`);
+    console.log(`[late-fees] Days late: ${lateDays}`);
     
     if (lateDays < 1) {
-      console.log(`[lateFees] Not yet overdue - no charges apply`);
+      console.log(`[late-fees] Not yet overdue - no charges apply`);
       return { charged: false, reason: 'not-overdue', lateDays };
     }
     
@@ -232,14 +248,14 @@ async function applyCharges({ sdkInstance, txId, now }) {
     const lastLateFeeDayCharged = returnData.lastLateFeeDayCharged;
     const replacementCharged = returnData.replacementCharged === true;
     
-    console.log(`[lateFees] Idempotency: lastFeeDay=${lastLateFeeDayCharged}, replacementCharged=${replacementCharged}`);
+    console.log(`[late-fees] Idempotency: lastFeeDay=${lastLateFeeDayCharged}, replacementCharged=${replacementCharged}`);
     
     // Build line items for new charges
     const newLineItems = [];
     const todayYmd = ymd(now);
     
     // Late fee: Charge if we haven't charged today yet
-    // Policy: Continue charging late fees even when "in transit" - only stop when delivered
+    // Policy: Stop fees once scanned (checked above)
     if (lateDays >= 1 && lastLateFeeDayCharged !== todayYmd) {
       newLineItems.push({
         code: 'late-fee',
@@ -248,14 +264,14 @@ async function applyCharges({ sdkInstance, txId, now }) {
         percentage: 0,
         includeFor: ['customer']
       });
-      console.log(`[lateFees] Adding late fee: $${LATE_FEE_CENTS / 100} for day ${lateDays}`);
+      console.log(`[late-fees] Adding late fee: $${LATE_FEE_CENTS / 100} for day ${lateDays}`);
     } else if (lastLateFeeDayCharged === todayYmd) {
-      console.log(`[lateFees] Late fee already charged today (${todayYmd})`);
+      console.log(`[late-fees] Late fee already charged today (${todayYmd})`);
     }
     
-    // Replacement: Charge if Day 5+, carrier hasn't scanned it, and not already charged
-    // Policy: No replacement if carrier has accepted/is transporting the package
-    if (lateDays >= 5 && !carrierHasPackage && !replacementCharged) {
+    // Replacement: Charge if Day 5+, not scanned, and not already charged
+    // Policy: No replacement if carrier has scanned the package
+    if (lateDays >= 5 && !scanned && !replacementCharged) {
       const replacementCents = getReplacementValue(listing);
       newLineItems.push({
         code: 'replacement',
@@ -264,14 +280,14 @@ async function applyCharges({ sdkInstance, txId, now }) {
         percentage: 0,
         includeFor: ['customer']
       });
-      console.log(`[lateFees] Adding replacement charge: $${replacementCents / 100}`);
+      console.log(`[late-fees] Adding replacement charge: $${replacementCents / 100} (listing: ${listing?.id?.uuid || listing?.id || 'unknown'})`);
     } else if (replacementCharged) {
-      console.log(`[lateFees] Replacement already charged`);
+      console.log(`[late-fees] Replacement already charged`);
     }
     
     // No-op path: Nothing to charge
     if (newLineItems.length === 0) {
-      console.log(`[lateFees] No new charges to apply`);
+      console.log(`[late-fees] No new charges to apply`);
       return { 
         charged: false, 
         reason: 'no-op',
@@ -281,7 +297,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
       };
     }
     
-    console.log(`[lateFees] Calling transition with ${newLineItems.length} line items...`);
+    console.log(`[late-fees] Calling transition with ${newLineItems.length} line items...`);
     
     // Call privileged transition to apply charges
     // Provide both 'ctx/new-line-items' and 'lineItems' for compatibility
@@ -314,7 +330,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
       }
     });
     
-    console.log(`[lateFees] ✅ Charges applied successfully`);
+    console.log(`[late-fees] ✅ Charges applied successfully: ${newLineItems.map(i => `${i.code}=$${(i.unitPrice.amount / 100).toFixed(2)}`).join(', ')}`);
     
     // Return success
     return {
@@ -333,13 +349,13 @@ async function applyCharges({ sdkInstance, txId, now }) {
     enhancedError.txId = txId;
     enhancedError.timestamp = dayjs(now).toISOString();
     
-    console.error(`[lateFees] ❌ Error:`, enhancedError.message);
-    console.error(`[lateFees] Stack:`, error.stack);
+    console.error(`[late-fees] ❌ Error:`, enhancedError.message);
+    console.error(`[late-fees] Stack:`, error.stack);
     
     throw enhancedError;
   }
 }
 
-// Export only applyCharges
-module.exports = { applyCharges };
+// Export functions for use in other modules
+module.exports = { applyCharges, getReplacementValue };
 
