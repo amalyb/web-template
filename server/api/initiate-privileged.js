@@ -364,6 +364,7 @@ module.exports = (req, res) => {
               
               // Generate short URL for the transaction (lender sees /sale/:id, not /order/:id)
               const txId = tx?.id?.uuid || tx?.id;
+              const targetPath = `/sale/${txId}`;
               const fullSaleUrl = txId ? saleUrl(txId) : (process.env.WEB_APP_URL || process.env.ROOT_URL || 'https://www.sherbrt.com');
               let shortUrl = fullSaleUrl;
               try {
@@ -371,6 +372,8 @@ module.exports = (req, res) => {
               } catch (shortLinkErr) {
                 console.warn('[SMS][booking-request] Could not generate short link, using full URL:', shortLinkErr.message);
               }
+              
+              console.log('[SMS][booking-request][DEBUG] Lender link target:', targetPath, 'shortUrl:', shortUrl);
               
               const listingTitle = listing?.attributes?.title || 'your listing';
               
