@@ -745,6 +745,15 @@ async function createShippingLabels({
       // Build order URL
       const fullOrderUrl = orderUrl(txId);
       
+      // Log check state before sending
+      console.log('[LENDER-OUTBOUND-EMAIL] check', {
+        txId: txId,
+        providerEmail,
+        hasOutboundLink: !!outboundLabelLink,
+        hasQrUrl: !!qrUrl,
+        alreadySent: !!protectedData.lenderOutboundLabelEmailSent,
+      });
+      
       if (providerEmail && outboundLabelLink) {
         // Check if we've already sent outbound label email (idempotency)
         const emailSent = protectedData.lenderOutboundLabelEmailSent === true;
@@ -752,6 +761,9 @@ async function createShippingLabels({
         if (emailSent) {
           console.log(`[LENDER-OUTBOUND-EMAIL] Skipped (already sent) to ${providerEmail}`);
         } else {
+          // Log before sending
+          console.log('[LENDER-OUTBOUND-EMAIL] sending', { to: providerEmail, txId: txId });
+          
           // Create short link for email (same as SMS)
           let shortOutboundUrl;
           try {
@@ -784,7 +796,7 @@ async function createShippingLabels({
             html,
           });
           
-          console.log(`[LENDER-OUTBOUND-EMAIL] Sending email to: ${providerEmail}`, {
+          console.log(`✅ [LENDER-OUTBOUND-EMAIL] Sent outbound label email to lender`, {
             transactionId: txId,
             email: providerEmail,
             hasQr: !!qrUrl,
@@ -802,7 +814,7 @@ async function createShippingLabels({
             if (emailResult && emailResult.success === false) {
               console.warn('⚠️ [PERSIST] Failed to save outbound label email state:', emailResult.error);
             } else {
-              console.log(`✅ [PERSIST] Updated lenderOutboundLabelEmailSent`);
+              console.log('[LENDER-OUTBOUND-EMAIL] marked as sent in protectedData', { txId: txId });
             }
           } catch (updateError) {
             console.warn(`❌ [PERSIST] Exception saving outbound label email state:`, updateError.message);
@@ -815,7 +827,7 @@ async function createShippingLabels({
       }
     } catch (outboundEmailError) {
       // Don't fail the outbound label creation if email fails
-      console.error('[LENDER-OUTBOUND-EMAIL] Error:', {
+      console.error('[LENDER-OUTBOUND-EMAIL] error sending email', {
         transactionId: txId,
         error: outboundEmailError.message,
         stack: outboundEmailError.stack?.split('\n')[0]

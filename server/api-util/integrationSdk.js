@@ -70,7 +70,8 @@ const ALLOWED_PROTECTED_DATA_KEYS = [
   'outboundTrackingUrl',
   'returnQrCodeUrl',
   'returnTrackingUrl',
-  'lenderOutboundLabelEmailSent',
+  'borrowerReturnLabelEmailSent', // Email idempotency flag for borrower return label emails
+  'lenderOutboundLabelEmailSent', // Email idempotency flag for lender outbound label emails
 ];
 
 /**
