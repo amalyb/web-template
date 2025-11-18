@@ -13,7 +13,7 @@ const { maskPhone } = require('../api-util/phone');
 const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, getSandboxCarrierAccounts, formatPhoneE164 } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
-const { buildShipLabelLink, orderUrl } = require('../util/url');
+const { buildShipLabelLink, orderUrl, saleUrl } = require('../util/url');
 const { shortLink } = require('../api-util/shortlink');
 const { timestamp } = require('../util/time');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
@@ -848,8 +848,8 @@ async function createShippingLabels({
       // Prefer QR URL if available (UPS), otherwise use label URL (same as SMS)
       const outboundLabelLink = qrUrl || labelUrl || null;
       
-      // Build order URL
-      const fullOrderUrl = orderUrl(txId);
+      // Build sale URL for lender (they see /sale/:id, not /order/:id)
+      const fullSaleUrl = saleUrl(txId);
       
       // Log check state before sending
       console.log('[LENDER-OUTBOUND-EMAIL] check', {
@@ -890,7 +890,7 @@ async function createShippingLabels({
             startDate,
             endDate,
             outboundLabelUrl: shortOutboundUrl,
-            orderUrl: fullOrderUrl,
+            orderUrl: fullSaleUrl, // Note: parameter name is 'orderUrl' but value is sale URL for lenders
             qrUrl: shortQrUrl,
           });
           
