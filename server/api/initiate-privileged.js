@@ -314,14 +314,24 @@ module.exports = (req, res) => {
               let borrowerFirstName = null;
               if (borrowerId) {
                 try {
-                  const customer = await sdk.users.show({ 
-                    id: borrowerId,
-                    include: ['profile']
-                  });
-                  const customerProf = customer?.data?.data?.attributes?.profile;
-                  borrowerFirstName = customerProf?.firstName || 
-                                     customerProf?.protectedData?.firstName ||
+                  // First, try to get firstName from transaction if customer data is already included
+                  borrowerFirstName = tx?.relationships?.customer?.data?.attributes?.profile?.firstName ||
+                                     tx?.relationships?.customer?.data?.attributes?.profile?.publicData?.firstName ||
+                                     tx?.relationships?.customer?.data?.attributes?.profile?.protectedData?.firstName ||
                                      null;
+                  
+                  // If not found in transaction, fetch customer profile
+                  if (!borrowerFirstName) {
+                    const customer = await sdk.users.show({ 
+                      id: borrowerId,
+                      include: ['profile']
+                    });
+                    const customerProf = customer?.data?.data?.attributes?.profile;
+                    borrowerFirstName = customerProf?.firstName || 
+                                       customerProf?.publicData?.firstName ||
+                                       customerProf?.protectedData?.firstName ||
+                                       null;
+                  }
                 } catch (customerErr) {
                   console.warn('[SMS][booking-request] Could not fetch borrower profile for first name:', customerErr.message);
                 }
@@ -349,6 +359,15 @@ module.exports = (req, res) => {
               }
               
               const listingTitle = listing?.attributes?.title || 'your listing';
+              
+              // TODO: Remove this debug log after verifying borrowerFirstName works correctly
+              const formattedPayout = payoutTotal ? formatMoneyServerSide(payoutTotal) : null;
+              console.log('[SMS][booking-request][DEBUG] SMS values:', {
+                borrowerFirstName: borrowerFirstName || 'Someone (fallback)',
+                listingTitle,
+                formattedPayout: formattedPayout || 'N/A',
+                shortUrl
+              });
               
               const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:lender`;
               if (alreadySent(key)) {
