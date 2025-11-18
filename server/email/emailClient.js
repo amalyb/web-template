@@ -9,11 +9,18 @@ const sgMail = require('@sendgrid/mail');
 
 const { SENDGRID_API_KEY, EMAIL_FROM_ADDRESS } = process.env;
 
+// Initialize SendGrid API key
 if (SENDGRID_API_KEY) {
   sgMail.setApiKey(SENDGRID_API_KEY);
 } else {
   console.warn('[email] SENDGRID_API_KEY is not set – emails will be logged but not sent.');
 }
+
+// Log initialization state
+console.log('[emailClient] init', {
+  hasKey: !!SENDGRID_API_KEY,
+  from: EMAIL_FROM_ADDRESS,
+});
 
 /**
  * Send a transactional email
@@ -25,6 +32,8 @@ if (SENDGRID_API_KEY) {
  * @param {string} params.html - HTML version of email (optional, falls back to text)
  */
 async function sendTransactionalEmail({ to, subject, text, html }) {
+  console.log('[emailClient] sendTransactionalEmail', { to, subject });
+  
   if (!SENDGRID_API_KEY || !EMAIL_FROM_ADDRESS) {
     console.warn('[email] Missing config, skipping send', { 
       to, 
