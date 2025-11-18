@@ -15,7 +15,7 @@ const { calculateTotalForProvider } = require('../api-util/lineItemHelpers');
 const { getAmountAsDecimalJS, convertDecimalJSToNumber } = require('../api-util/currency');
 const { unitDivisor } = require('../api-util/currency');
 const { shortLink } = require('../api-util/shortlink');
-const { orderUrl } = require('../util/url');
+const { orderUrl, saleUrl } = require('../util/url');
 const Decimal = require('decimal.js');
 
 // Helper to normalize listingId to string
@@ -362,12 +362,12 @@ module.exports = (req, res) => {
                 console.warn('[SMS][booking-request] Could not calculate payout:', payoutErr.message);
               }
               
-              // Generate short URL for the transaction
+              // Generate short URL for the transaction (lender sees /sale/:id, not /order/:id)
               const txId = tx?.id?.uuid || tx?.id;
-              const fullOrderUrl = txId ? orderUrl(txId) : (process.env.ROOT_URL || 'https://sherbrt.com/inbox/sales');
-              let shortUrl = fullOrderUrl;
+              const fullSaleUrl = txId ? saleUrl(txId) : (process.env.WEB_APP_URL || process.env.ROOT_URL || 'https://www.sherbrt.com');
+              let shortUrl = fullSaleUrl;
               try {
-                shortUrl = await shortLink(fullOrderUrl);
+                shortUrl = await shortLink(fullSaleUrl);
               } catch (shortLinkErr) {
                 console.warn('[SMS][booking-request] Could not generate short link, using full URL:', shortLinkErr.message);
               }
@@ -431,9 +431,16 @@ module.exports = (req, res) => {
               console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
               
                               const listingTitle = listing?.attributes?.title || 'your listing';
-                // Carrier-friendly borrower message
-                const borrowerInboxUrl = process.env.ROOT_URL || 'https://sherbrt.com/inbox/orders';
-                const borrowerMsg = `Sherbrt: your booking request for "${listingTitle}" was sent. Track in your inbox: ${borrowerInboxUrl}`;
+                // Carrier-friendly borrower message - use order URL for borrower
+                const txIdForBorrower = tx?.id?.uuid || tx?.id;
+                const fullOrderUrl = txIdForBorrower ? orderUrl(txIdForBorrower) : (process.env.WEB_APP_URL || process.env.ROOT_URL || 'https://www.sherbrt.com');
+                let borrowerLink = fullOrderUrl;
+                try {
+                  borrowerLink = await shortLink(fullOrderUrl);
+                } catch (shortLinkErr) {
+                  console.warn('[SMS][customer-confirmation] Could not generate short link, using full URL:', shortLinkErr.message);
+                }
+                const borrowerMsg = `Sherbrt: your booking request for "${listingTitle}" was sent. Track: ${borrowerLink}`;
               
               const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:borrower`;
               if (alreadySent(key)) {

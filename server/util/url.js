@@ -1,22 +1,33 @@
 /**
  * URL Helper Functions
  *
- * Centralized URL building using SERVER_BASE_URL or ROOT_URL environment variable.
+ * Centralized URL building using WEB_APP_URL, SERVER_BASE_URL, or ROOT_URL environment variable.
  * This ensures all application URLs (used in SMS, emails, etc.) use the correct domain
  * for the current environment (production, staging, development).
  *
- * Environment Variables:
- * - SERVER_BASE_URL: Base URL for server-generated absolute URLs (preferred, e.g., http://localhost:3500)
+ * Environment Variables (in order of preference):
+ * - WEB_APP_URL: Base URL for web app (preferred, e.g., https://www.sherbrt.com)
+ * - SERVER_BASE_URL: Base URL for server-generated absolute URLs (e.g., http://localhost:3500)
  * - ROOT_URL: Fallback base URL for the application (e.g., https://sherbrt.com, https://test.sherbrt.com)
+ *
+ * NOTE: SendGrid may wrap links in a branded tracking domain (e.g. url723.sherbrt.com).
+ * If users see TLS errors like NET::ERR_CERT_COMMON_NAME_INVALID on that domain,
+ * the fix is in SendGrid click-tracking SSL configuration, not in this codebase.
  */
 /**
  * Get the base URL from environment, removing trailing slashes
- * Uses SERVER_BASE_URL if present, otherwise falls back to ROOT_URL
+ * Uses WEB_APP_URL if present, otherwise falls back to SERVER_BASE_URL or ROOT_URL
  * @returns {string} Base URL without trailing slash
  */
 const getBaseUrl = () => {
-  const baseUrl = process.env.SERVER_BASE_URL || process.env.ROOT_URL || '';
-  return baseUrl.replace(/\/+$/, '');
+  const baseUrl = process.env.WEB_APP_URL || process.env.SERVER_BASE_URL || process.env.ROOT_URL || 'https://www.sherbrt.com';
+  const cleaned = baseUrl.replace(/\/+$/, '');
+  // Ensure it's a valid URL (has protocol)
+  if (cleaned && !cleaned.match(/^https?:\/\//)) {
+    console.warn('[URL] Base URL missing protocol, prepending https://');
+    return `https://${cleaned}`;
+  }
+  return cleaned || 'https://www.sherbrt.com';
 };
 
 /**
@@ -122,14 +133,14 @@ const buildReturnLabelLink = (transactionId, shippoData = {}) => {
 };
 
 /**
- * Build an order page URL for a transaction
+ * Build an order page URL for a borrower transaction
  *
  * @param {string|object} transactionId - Transaction ID (UUID string or object with .uuid)
- * @returns {string} Full order page URL (e.g., https://sherbrt.com/order/690bcaf8-...)
+ * @returns {string} Full order page URL (e.g., https://www.sherbrt.com/order/690bcaf8-...)
  *
  * @example
  * orderUrl('690bcaf8-daa7-4052-ac6d-cf22b0a49cd9')
- * // => 'https://sherbrt.com/order/690bcaf8-daa7-4052-ac6d-cf22b0a49cd9'
+ * // => 'https://www.sherbrt.com/order/690bcaf8-daa7-4052-ac6d-cf22b0a49cd9'
  */
 const orderUrl = (transactionId) => {
   // Extract UUID if transactionId is an object
@@ -140,7 +151,69 @@ const orderUrl = (transactionId) => {
     return makeAppUrl('/'); // Fallback to site root
   }
   
-  return makeAppUrl(`/order/${txId}`);
+  const url = makeAppUrl(`/order/${txId}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[URL] orderUrl for borrower:', url);
+  }
+  return url;
+};
+
+/**
+ * Build a sale page URL for a lender transaction
+ *
+ * @param {string|object} transactionId - Transaction ID (UUID string or object with .uuid)
+ * @returns {string} Full sale page URL (e.g., https://www.sherbrt.com/sale/690bcaf8-...)
+ *
+ * @example
+ * saleUrl('690bcaf8-daa7-4052-ac6d-cf22b0a49cd9')
+ * // => 'https://www.sherbrt.com/sale/690bcaf8-daa7-4052-ac6d-cf22b0a49cd9'
+ */
+const saleUrl = (transactionId) => {
+  // Extract UUID if transactionId is an object
+  const txId = transactionId?.uuid || transactionId;
+  
+  if (!txId) {
+    console.warn('[URL] saleUrl called with invalid transactionId:', transactionId);
+    return makeAppUrl('/'); // Fallback to site root
+  }
+  
+  const url = makeAppUrl(`/sale/${txId}`);
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[URL] saleUrl for lender:', url);
+  }
+  return url;
+};
+
+/**
+ * Build a shortlink URL for shipping labels
+ * Uses SHORTLINK_BASE from env.js, which derives from PUBLIC_BASE_URL or SITE_URL
+ *
+ * @param {string} shortId - Short token ID (e.g., 'ABC123xyz4')
+ * @returns {string} Full shortlink URL (e.g., https://www.sherbrt.com/r/ABC123xyz4)
+ *
+ * @example
+ * labelShortUrl('ABC123xyz4')
+ * // => 'https://www.sherbrt.com/r/ABC123xyz4'
+ */
+const labelShortUrl = (shortId) => {
+  if (!shortId) {
+    console.warn('[URL] labelShortUrl called with invalid shortId:', shortId);
+    return '';
+  }
+  
+  // Get base URL for shortlinks (includes /r already)
+  const { SHORTLINK_BASE } = require('../lib/env');
+  const base = SHORTLINK_BASE || 'https://www.sherbrt.com/r';
+  
+  // Ensure base doesn't have trailing slash and shortId doesn't have leading slash
+  const cleanBase = base.replace(/\/+$/, '');
+  const cleanShortId = shortId.replace(/^\/+/, '');
+  
+  const url = `${cleanBase}/${cleanShortId}`;
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[URL] labelShortUrl:', url);
+  }
+  return url;
 };
 
 module.exports = {
@@ -150,4 +223,6 @@ module.exports = {
   buildShipLabelLink,
   buildReturnLabelLink,
   orderUrl,
+  saleUrl,
+  labelShortUrl,
 };
