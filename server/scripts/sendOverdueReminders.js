@@ -4,6 +4,10 @@ const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
 const { applyCharges } = require('../lib/lateFees');
+const {
+  ymd,
+  computeChargeableLateDays,
+} = require('../lib/businessDays');
 
 // Parse command line arguments
 const argv = process.argv.slice(2);
@@ -40,15 +44,10 @@ if (DRY_RUN) {
   sendSMS = sendSMSOriginal;
 }
 
+// Helper function for backward compatibility (used in a few places)
 function yyyymmdd(d) {
-  // Always use UTC for consistent date handling
-  return new Date(d).toISOString().split('T')[0];
-}
-
-function diffDays(date1, date2) {
-  const d1 = new Date(date1 + 'T00:00:00.000Z'); // Force UTC
-  const d2 = new Date(date2 + 'T00:00:00.000Z'); // Force UTC
-  return Math.ceil((d1 - d2) / (1000 * 60 * 60 * 24));
+  // Use shared ymd helper which uses Pacific time
+  return ymd(d);
 }
 
 function isInTransit(trackingStatus) {
@@ -91,8 +90,8 @@ async function sendOverdueReminders() {
       console.log('[DIAG] Base URL:', baseUrl);
     }
 
-    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
-    const todayDate = new Date(today);
+    const today = process.env.FORCE_TODAY || ymd(new Date());
+    const todayDate = new Date();
     
     console.log(`📅 Processing overdue reminders for: ${today}`);
 
@@ -123,6 +122,50 @@ async function sendOverdueReminders() {
     //   - Create transaction with return due date = today - 6 days
     //   - Do NOT trigger return scan
     //   - Verify: Replacement charge applied (no payout, stays in accepted state)
+    //
+    // ============================================================================
+    // EDGE CASES: Business Days (Sundays + USPS Holidays Excluded)
+    // ============================================================================
+    // Test 6: Due Friday, scanned Monday (Sunday in between)
+    //   - Create transaction with return due date = Friday (e.g., 2025-01-10)
+    //   - Trigger return scan on Monday (e.g., 2025-01-13)
+    //   - Verify: 2 chargeable late days (Sat + Mon; Sunday Jan 12 skipped)
+    //   - Verify: 2 × $15 late fees applied (not 3)
+    //
+    // Test 7: Due Wednesday, non-return, Day 5 threshold across Sunday
+    //   - Create transaction with return due date = Wednesday (e.g., 2025-01-08)
+    //   - Do NOT trigger return scan
+    //   - Wait until Monday (e.g., 2025-01-13) - 4 chargeable days later
+    //     (Thu, Fri, Sat, Mon; Sunday Jan 12 skipped)
+    //   - Verify: Replacement charge applied on Day 5 (next chargeable day after Day 4)
+    //   - Verify: Day 5 effectively falls on the next chargeable day because Sunday is excluded
+    //
+    // Test 8: Due right before USPS holiday (e.g., Wed before Thanksgiving)
+    //   - Create transaction with return due date = Wednesday (e.g., 2025-11-26)
+    //   - Trigger return scan on Friday (e.g., 2025-11-28)
+    //   - Verify: 1 chargeable late day (Fri only; Thu 11/27 is Thanksgiving)
+    //   - Verify: 1 × $15 late fee applied (not 2)
+    //
+    // Test 9: Day 5 falls on a Sunday or holiday
+    //   - Create transaction with return due date such that Day 5 would be Sunday/holiday
+    //   - Verify: Day 5 effectively becomes the next chargeable day (e.g., Monday)
+    //   - Verify: Replacement charge applies on the first chargeable day after Day 4
+    //
+    // ============================================================================
+    // DIAGNOSTIC EXAMPLES (for verification)
+    // ============================================================================
+    // Case A (returned late, Sunday in middle):
+    //   Due Friday, scanned Monday with Sunday in between → daysLate = 2
+    //   computeChargeableLateDays('2025-01-13', '2025-01-10') // => 2 (Sat + Mon)
+    //
+    // Case B (non-return, multiple business days):
+    //   Due Wednesday, today Monday → daysLate = 4 (Thu, Fri, Sat, Mon)
+    //   computeChargeableLateDays('2025-01-13', '2025-01-08') // => 4 (Thu, Fri, Sat, Mon)
+    //
+    // Day-5 threshold:
+    //   For computeChargeableLateDays(...) >= 5, applyCharges should attempt replacement,
+    //   and subsequent runs should neither re-charge replacement nor send further SMS
+    //   because replacementCharged === true.
     // ============================================================================
 
     // Query both states: delivered (Scenario A) and accepted (Scenario B)
@@ -222,6 +265,17 @@ async function sendOverdueReminders() {
       // Get return due date
       const protectedData = tx?.attributes?.protectedData || {};
       const returnData = protectedData.return || {};
+      
+      // Stop SMS once replacement has been charged
+      if (returnData.replacementCharged) {
+        if (VERBOSE) {
+          console.log(
+            `⏭️ Skipping tx ${tx?.id?.uuid || '(no id)'} - replacement already charged`
+          );
+        }
+        continue;
+      }
+      
       const deliveryEnd = tx?.attributes?.deliveryEnd || tx?.attributes?.booking?.end;
       const returnDueAt = returnData.dueAt || deliveryEnd;
       
@@ -239,26 +293,26 @@ async function sendOverdueReminders() {
       
       if (currentState === 'delivered' && hasScan) {
         // SCENARIO A: Returned late (has scan, in delivered state)
-        // Check if scan date is after return due date
+        // Check if scan date is after return due date (using chargeable late days)
         const scanDate = new Date(returnData.firstScanAt);
-        const daysLate = diffDays(yyyymmdd(scanDate), yyyymmdd(returnDate));
+        const daysLate = computeChargeableLateDays(scanDate, returnDate);
         
         if (daysLate >= 1) {
           scenario = 'delivered-late';
           shouldProcess = true;
-          console.log(`[LATE FEES] SCENARIO A: Returned late - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} days late (scan: ${yyyymmdd(scanDate)}, due: ${yyyymmdd(returnDate)})`);
+          console.log(`[LATE FEES] SCENARIO A: Returned late - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} chargeable days late (scan: ${ymd(scanDate)}, due: ${ymd(returnDate)})`);
         } else {
           if (VERBOSE) console.log(`✅ Returned on time for tx ${tx?.id?.uuid || '(no id)'} - no late fees`);
         }
       } else if (currentState === 'accepted' && !hasScan) {
         // SCENARIO B: Never returned (no scan, still in accepted state)
-        // Check if today is past return due date
-        const daysLate = diffDays(today, yyyymmdd(returnDate));
+        // Check if today is past return due date (using chargeable late days)
+        const daysLate = computeChargeableLateDays(todayDate, returnDate);
         
         if (daysLate >= 1) {
           scenario = 'non-return';
           shouldProcess = true;
-          console.log(`[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} days late (due: ${yyyymmdd(returnDate)}, today: ${today})`);
+          console.log(`[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} chargeable days late (due: ${ymd(returnDate)}, today: ${today})`);
         } else {
           if (VERBOSE) console.log(`⏭️ Not yet overdue for tx ${tx?.id?.uuid || '(no id)'}`);
         }
@@ -274,18 +328,20 @@ async function sendOverdueReminders() {
         continue;
       }
       
-      // Calculate days late for this transaction
+      // Calculate days late for this transaction (chargeable late days)
       // NOTE: This calculation matches the logic in lib/lateFees.js:
       // - When firstScanAt exists: use scan date (locks lateness to when item was shipped)
       // - When firstScanAt does not exist: use today (tracks ongoing lateness)
+      // - Both use chargeable late days (Sundays and USPS holidays excluded)
+      // - All dates normalized to Pacific time (America/Los_Angeles)
       let daysLate;
       if (scenario === 'delivered-late') {
         // Scenario A: Based on scan date (when borrower actually shipped)
         const scanDate = new Date(returnData.firstScanAt);
-        daysLate = diffDays(yyyymmdd(scanDate), yyyymmdd(returnDate));
+        daysLate = computeChargeableLateDays(scanDate, returnDate);
       } else {
         // Scenario B: Based on today (ongoing lateness for non-return)
-        daysLate = diffDays(today, yyyymmdd(returnDate));
+        daysLate = computeChargeableLateDays(todayDate, returnDate);
       }
       
       // SMS reminders: Only send for Scenario B (never returned)
@@ -358,13 +414,16 @@ async function sendOverdueReminders() {
                 tag = 'overdue_day4_to_borrower';
               } else {
                 // Day 5+
-                const replacementAmount = 5000; // $50.00 in cents
-                message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${shortUrl}`;
+                message = [
+                  `🚫 5+ chargeable days late.`,
+                  `Per Sherbrt policy, you may be charged the full replacement value set by the lender if the item is not returned.`,
+                  `Please ship back your item as soon as possible: ${shortUrl}`
+                ].join(' ');
                 tag = 'overdue_day5_to_borrower';
               }
               
               if (VERBOSE) {
-                console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}, ${daysLate} days late) → ${message}`);
+                console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}, ${daysLate} chargeable days late) → ${message}`);
               }
               
               try {

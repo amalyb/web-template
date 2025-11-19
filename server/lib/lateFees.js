@@ -6,13 +6,20 @@
  * 
  * Called by: server/scripts/sendOverdueReminders.js
  * 
+ * IMPORTANT: Late days are calculated as "chargeable late days" that exclude
+ * Sundays and USPS federal holidays. This ensures:
+ * - Daily $15 late fees are never charged "for" a Sunday or holiday
+ * - The Day 5+ replacement threshold uses chargeable days (e.g., if Day 5
+ *   would fall on a Sunday, Day 5 effectively becomes Monday instead)
+ * 
  * ============================================================================
  * SCENARIO A: Returned Late (transaction in :state/delivered with scan)
  * ============================================================================
  * - Transaction reached :state/delivered via transition/complete on return scan
  * - Has protectedData.return.firstScanAt set (scan happened)
  * - Scan date is after return due date (returned late)
- * - Late days = (scanDate - returnDueDate) in days
+ * - Late days = chargeable days between returnDueDate and scanDate
+ *   (Sundays and USPS holidays excluded)
  * - Days 1-4: Charge $15/day late fees
  * - Day 5+: Charge full replacement value instead
  * - Payout already happened on scan (via transition/complete)
@@ -23,7 +30,8 @@
  * - Transaction remains in :state/accepted (no return scan, no transition/complete)
  * - No protectedData.return.firstScanAt (never scanned)
  * - Past return due date
- * - Late days = (today - returnDueDate) in days
+ * - Late days = chargeable days between returnDueDate and today
+ *   (Sundays and USPS holidays excluded)
  * - Days 1-4: Charge $15/day late fees
  * - Day 5+: Charge full replacement value instead
  * - No payout (item never returned)
@@ -47,43 +55,15 @@
  */
 
 const dayjs = require('dayjs');
-const utc = require('dayjs/plugin/utc');
-const timezone = require('dayjs/plugin/timezone');
-
-dayjs.extend(utc);
-dayjs.extend(timezone);
+const {
+  TZ,
+  ymd,
+  isNonChargeableDate,
+  computeChargeableLateDays,
+} = require('./businessDays');
 
 // Configuration
-const TZ = 'America/Los_Angeles';
 const LATE_FEE_CENTS = 1500; // $15/day
-
-/**
- * Format date as YYYY-MM-DD in Pacific timezone
- * @param {string|Date|dayjs.Dayjs} d - Date to format
- * @returns {string} Date in YYYY-MM-DD format
- */
-function ymd(d) {
-  return dayjs(d).tz(TZ).format('YYYY-MM-DD');
-}
-
-/**
- * Calculate number of days late (how many days past return due date)
- * Uses Pacific timezone and truncates to start of day for consistent calculations
- * 
- * @param {string|Date|dayjs.Dayjs} now - Current time
- * @param {string|Date|dayjs.Dayjs} returnAt - Return due date
- * @returns {number} Number of days late (0 or positive)
- * 
- * @example
- * computeLateDays('2025-11-10', '2025-11-08') // => 2 (2 days late)
- * computeLateDays('2025-11-08', '2025-11-08') // => 0 (due today, not late)
- * computeLateDays('2025-11-07', '2025-11-08') // => 0 (not yet due)
- */
-function computeLateDays(now, returnAt) {
-  const n = dayjs(now).tz(TZ).startOf('day');
-  const r = dayjs(returnAt).tz(TZ).startOf('day');
-  return Math.max(0, n.diff(r, 'day'));
-}
 
 /**
  * Check if return shipment has been scanned by carrier
@@ -242,19 +222,23 @@ async function applyCharges({ sdkInstance, txId, now }) {
     let scenario, lateDays, transitionName, effectiveDate;
     
     // ============================================================================
-    // LATE DAYS CALCULATION LOGIC
+    // LATE DAYS CALCULATION LOGIC (Chargeable Business Days)
     // ============================================================================
     // Case A: firstScanAt exists (returned, possibly late)
-    //   → lateDays = scanDate - returnDueDate (in whole days)
+    //   → lateDays = chargeable days between returnDueDate and scanDate
     //   → This locks in lateness based on when borrower actually shipped
-    //   → Example: dueDate = Jan 10, firstScanAt = Jan 13 → lateDays = 3
-    //   → Even if today = Jan 20, we STILL use 3 (not 10) - no stacking after scan
+    //   → Example: dueDate = Jan 10 (Fri), firstScanAt = Jan 13 (Mon)
+    //     → lateDays = 2 (Sat + Mon; Sunday Jan 12 skipped)
+    //   → Even if today = Jan 20, we STILL use 2 (not 10) - no stacking after scan
     //
     // Case B: firstScanAt does not exist (no scan/non-return)
-    //   → lateDays = today - returnDueDate (in whole days)
+    //   → lateDays = chargeable days between returnDueDate and today
     //   → This tracks ongoing lateness for items never returned
-    //   → Example: dueDate = Jan 10, today = Jan 13 → lateDays = 3
+    //   → Example: dueDate = Jan 10 (Fri), today = Jan 13 (Mon)
+    //     → lateDays = 2 (Sat + Mon; Sunday Jan 12 skipped)
     //   → This updates daily until item is returned or replacement charged
+    //   → Sundays and USPS holidays are excluded from the count
+    //   → All dates normalized to Pacific time (America/Los_Angeles)
     // ============================================================================
     
     if (currentState === 'delivered' && hasScan) {
@@ -265,7 +249,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
       // When a return scan exists, lateDays is calculated using scan date vs due date.
       // This ensures lateness is locked to when borrower actually shipped, not current date.
       // Calculate late days based on scan date (when item was actually returned)
-      lateDays = computeLateDays(scanDate, returnDueAt);
+      lateDays = computeChargeableLateDays(scanDate, returnDueAt);
       
       transitionName = 'transition/privileged-apply-late-fees';
       
@@ -281,7 +265,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
       // When no scan exists, lateDays is calculated using today vs due date.
       // This tracks ongoing lateness for items that haven't been returned yet.
       // Calculate late days based on today (how many days past due)
-      lateDays = computeLateDays(now, returnDueAt);
+      lateDays = computeChargeableLateDays(now, returnDueAt);
       
       transitionName = 'transition/privileged-apply-late-fees-non-return';
       
