@@ -41,6 +41,29 @@
   }
 }
 
+.discountBanner {
+  /* Background */
+  background-color: #ffd6e8; /* Light pink/sherbet color */
+  border-radius: 4px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+
+  /* Font */
+  composes: marketplaceTinyFontStyles from global;
+  font-weight: var(--fontWeightSemiBold);
+  text-align: center;
+  color: var(--colorGrey900);
+
+  @media (--viewportMedium) {
+    padding: 12px 16px;
+    margin-bottom: 20px;
+  }
+}
+
+.emphasis {
+  font-style: italic;
+}
+
 .error {
   color: var(--colorFail);
   margin: 0 24px;

@@ -217,6 +217,9 @@ export const BookingFixedDurationForm = props => {
 
             {showEstimatedBreakdown ? (
               <div className={css.priceBreakdownContainer}>
+                <div className={css.discountBanner}>
+                  ✨ <span className={css.emphasis}>Book more, save more</span> — discounts on borrows 4+ days. ✨
+                </div>
                 <H6 as="h3" className={css.bookingBreakdownTitle}>
                   <FormattedMessage id="BookingFixedDurationForm.priceBreakdownTitle" />
                 </H6>
