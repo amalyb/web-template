@@ -414,7 +414,7 @@ async function sendShippingReminders() {
         
         try {
           const shortUrl = await shortLink(labelUrl);
-          const message = `Sherbrt 🍧: Your item hasn't been scanned yet. Please ship ASAP to receive your payment. Need help? Reply anytime. Shipping label: ${shortUrl}`;
+          const message = `Sherbrt 🍧: Your item hasn't been scanned yet. Please ship ASAP to receive your payment. Shipping label: ${shortUrl}`;
           
           await sendSMS(providerPhone, message, {
             role: 'lender',
