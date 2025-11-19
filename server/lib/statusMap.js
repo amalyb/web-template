@@ -14,6 +14,7 @@ const SHIPPED_STATUSES = new Set([
   'IN_TRANSIT',    // UPS/FedEx: Package is in transit
   'TRANSIT',       // Alternative: Package is in transit
   'PICKUP',        // Alternative: Package picked up
+  'PRE_TRANSIT',   // UPS: Processing at facility (when status_details indicates facility scan)
 ]);
 
 // Statuses that indicate delivery completed (Step 6: SMS to borrower)
