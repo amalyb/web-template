@@ -264,6 +264,8 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       const trackingNumber = data.tracking_number;
       const carrier = data.carrier;
       const trackingStatus = data.tracking_status?.status;
+      const statusDetails = data.tracking_status?.status_details || data.tracking_status?.substatus || '';
+      const substatus = statusDetails; // For backward compatibility with existing code
       
       // Parse metadata if it's a JSON string (Shippo may send it as string)
       let parsedMetadata = data.metadata || {};
@@ -288,6 +290,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       console.log(`📦 Tracking Number: ${trackingNumber}`);
       console.log(`🚚 Carrier: ${carrier}`);
       console.log(`📊 Status: ${trackingStatus}`);
+      console.log(`📋 Status Details: ${statusDetails || 'none'}`);
       console.log(`🏷️ Metadata:`, metadata);
       
       // Gate by Shippo mode - ignore events whose event.mode doesn't match our SHIPPO_MODE
@@ -299,14 +302,36 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       
       console.log(`✅ Shippo mode check passed: event.mode=${event?.mode || 'none'}, expected=${expectedMode || 'any'}`);
       
-      // Check if status is DELIVERED or first-scan statuses (TRANSIT, IN_TRANSIT, ACCEPTED, ACCEPTANCE)
+      // Check if status is DELIVERED or first-scan statuses (TRANSIT, IN_TRANSIT, ACCEPTED, ACCEPTANCE, PRE_TRANSIT with facility scan)
       const upperStatus = trackingStatus?.toUpperCase();
+      const upperStatusDetails = (statusDetails || '').toUpperCase();
+      
+      // Facility scan indicators in status_details (UPS "Processing at UPS Facility", "Origin Scan", etc.)
+      const facilityScanIndicators = [
+        'PROCESSING AT',
+        'ORIGIN SCAN',
+        'FACILITY',
+        'PICKED UP',
+        'ACCEPTED AT',
+        'RECEIVED AT'
+      ];
+      const hasFacilityScan = facilityScanIndicators.some(indicator => 
+        upperStatusDetails.includes(indicator)
+      );
+      
+      // Base first-scan statuses
       const firstScanStatuses = ['TRANSIT', 'IN_TRANSIT', 'ACCEPTED', 'ACCEPTANCE'];
+      // PRE_TRANSIT counts as first scan if it has a facility scan indicator
+      const isPreTransitWithScan = upperStatus === 'PRE_TRANSIT' && hasFacilityScan;
+      
       const isDelivery = upperStatus === 'DELIVERED';
-      const isFirstScan = firstScanStatuses.includes(upperStatus);
+      const isFirstScan = firstScanStatuses.includes(upperStatus) || isPreTransitWithScan;
       
       if (!upperStatus || (!isDelivery && !isFirstScan)) {
-        console.log(`ℹ️ Status '${trackingStatus}' is not DELIVERED or first-scan status - ignoring webhook`);
+        console.log(`ℹ️ Status '${trackingStatus}' (details: '${statusDetails || 'none'}') is not DELIVERED or first-scan status - ignoring webhook`);
+        if (upperStatus === 'PRE_TRANSIT' && !hasFacilityScan) {
+          console.log(`ℹ️ PRE_TRANSIT status detected but no facility scan indicator found in status_details`);
+        }
         return res.status(200).json({ message: `Status ${trackingStatus} ignored` });
       }
       
@@ -720,7 +745,7 @@ if (process.env.TEST_ENDPOINTS) {
     try {
       console.log('[WEBHOOK:TEST] start path=/api/webhooks/__test/shippo/track body=', req.body);
       
-      const { txId, status = 'TRANSIT', metadata = {} } = req.body;
+      const { txId, status = 'TRANSIT', status_details = '', metadata = {} } = req.body;
       
       if (!txId) {
         return res.status(400).json({ 
@@ -759,7 +784,13 @@ if (process.env.TEST_ENDPOINTS) {
       }
       
       // Determine SMS type based on status
-      const isShipped = ['ACCEPTED', 'IN_TRANSIT', 'TRANSIT'].includes(upperStatus);
+      // Include PRE_TRANSIT if status_details indicates facility scan
+      const upperStatusDetails = (status_details || '').toUpperCase();
+      const facilityScanIndicators = ['PROCESSING AT', 'ORIGIN SCAN', 'FACILITY', 'PICKED UP', 'ACCEPTED AT', 'RECEIVED AT'];
+      const hasFacilityScan = facilityScanIndicators.some(ind => upperStatusDetails.includes(ind));
+      const isPreTransitWithScan = upperStatus === 'PRE_TRANSIT' && hasFacilityScan;
+      
+      const isShipped = ['ACCEPTED', 'IN_TRANSIT', 'TRANSIT'].includes(upperStatus) || isPreTransitWithScan;
       const isDelivered = upperStatus === 'DELIVERED';
       
       if (!isShipped && !isDelivered) {
