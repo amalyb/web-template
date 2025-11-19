@@ -537,19 +537,29 @@ export class TransactionPanelComponent extends Component {
               isConversation={isInquiryProcess}
             />
             {showSendMessageForm ? (
-              <SendMessageForm
-                formId={this.sendMessageFormName}
-                rootClassName={css.sendMessageForm}
-                messagePlaceholder={intl.formatMessage(
-                  { id: 'TransactionPanel.sendMessagePlaceholder' },
-                  { name: otherUserDisplayNameString }
-                )}
-                inProgress={sendMessageInProgress}
-                sendMessageError={sendMessageError}
-                onFocus={this.onSendMessageFormFocus}
-                onBlur={this.onSendMessageFormBlur}
-                onSubmit={this.onMessageSubmit}
-              />
+              <>
+                <SendMessageForm
+                  formId={this.sendMessageFormName}
+                  rootClassName={css.sendMessageForm}
+                  messagePlaceholder={intl.formatMessage(
+                    { id: 'TransactionPanel.sendMessagePlaceholder' },
+                    { name: otherUserDisplayNameString }
+                  )}
+                  inProgress={sendMessageInProgress}
+                  sendMessageError={sendMessageError}
+                  onFocus={this.onSendMessageFormFocus}
+                  onBlur={this.onSendMessageFormBlur}
+                  onSubmit={this.onMessageSubmit}
+                />
+                <div className={css.supportBox}>
+                  <span className={css.supportText}>
+                    Need help? We've got you, bestie.{' '}
+                    <a href="mailto:bestie@sherbrt.com" className={css.supportLink}>
+                      Contact us. 🍧💌
+                    </a>
+                  </span>
+                </div>
+              </>
             ) : (
               <div className={css.sendingMessageNotAllowed}>
                 <FormattedMessage id="TransactionPanel.sendingMessageNotAllowed" />

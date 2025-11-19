@@ -478,6 +478,34 @@
   }
 }
 
+.supportBox {
+  margin-top: 24px;
+  text-align: center;
+  margin-left: 24px;
+  margin-right: 24px;
+
+  @media (--viewportLarge) {
+    margin-left: 0;
+    margin-right: 0;
+  }
+}
+
+.supportText {
+  font-size: 16px;
+  font-weight: 400;
+  color: #4a4a4a;
+}
+
+.supportLink {
+  color: #FFAD86;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.supportLink:hover {
+  text-decoration: underline;
+}
+
 /* SaleActionButtonsMaybe subcomponent */
 .actionButtons {
   /* Position action button row above the footer */
