@@ -130,7 +130,8 @@
     "render-build": "npm run build",
     "postinstall": "patch-package",
     "translate": "node scripts/translations.js",
-    "jobs:reminders": "node server/scripts/sendShipByReminders.js"
+    "jobs:reminders": "node server/scripts/sendShipByReminders.js",
+    "test:shipping-reminders": "node server/scripts/sendShippingReminders.js --dry-run --verbose"
   },
   "browserslist": {
     "production": [
