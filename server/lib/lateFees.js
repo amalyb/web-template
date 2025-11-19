@@ -5,6 +5,45 @@
  * for overdue transactions via Flex privileged transitions.
  * 
  * Called by: server/scripts/sendOverdueReminders.js
+ * 
+ * ============================================================================
+ * SCENARIO A: Returned Late (transaction in :state/delivered with scan)
+ * ============================================================================
+ * - Transaction reached :state/delivered via transition/complete on return scan
+ * - Has protectedData.return.firstScanAt set (scan happened)
+ * - Scan date is after return due date (returned late)
+ * - Late days = (scanDate - returnDueDate) in days
+ * - Days 1-4: Charge $15/day late fees
+ * - Day 5+: Charge full replacement value instead
+ * - Payout already happened on scan (via transition/complete)
+ * 
+ * ============================================================================
+ * SCENARIO B: Never Returned (transaction in :state/accepted, no scan)
+ * ============================================================================
+ * - Transaction remains in :state/accepted (no return scan, no transition/complete)
+ * - No protectedData.return.firstScanAt (never scanned)
+ * - Past return due date
+ * - Late days = (today - returnDueDate) in days
+ * - Days 1-4: Charge $15/day late fees
+ * - Day 5+: Charge full replacement value instead
+ * - No payout (item never returned)
+ * 
+ * ============================================================================
+ * IDEMPOTENCY FLAGS (in protectedData.return)
+ * ============================================================================
+ * - lastLateFeeDayCharged: YYYY-MM-DD date of last day for which late fee was charged
+ *   Used to prevent charging the same day multiple times
+ * - replacementCharged: boolean, true if replacement charge has been applied
+ *   Once replacement is charged, no further daily fees are added
+ * - chargeHistory: array of charge records with date, items, timestamp
+ *   For audit trail and debugging
+ * 
+ * ============================================================================
+ * EDGE CASE: Late Return After Replacement Charge
+ * ============================================================================
+ * If borrower gets replacement charge (Day 5+ non-return) and then returns
+ * the item very late, the replacement charge remains. This is acceptable
+ * for now. Future UX/policy decision: manual refunds, partial refunds, etc.
  */
 
 const dayjs = require('dayjs');
@@ -112,17 +151,23 @@ function getReplacementValue(listing) {
 /**
  * Apply late fees and/or replacement charges to a transaction
  * 
- * This function:
+ * This function handles two scenarios:
+ * - SCENARIO A: Returned late (state: 'delivered', has firstScanAt)
+ * - SCENARIO B: Never returned (state: 'accepted', no firstScanAt)
+ * 
+ * Process:
  * 1. Loads transaction with listing data
- * 2. Calculates days late
- * 3. Checks idempotency flags (what's already been charged)
- * 4. Builds line items for new charges
- * 5. Calls privileged transition to charge customer
- * 6. Updates protectedData to prevent duplicate charges
+ * 2. Detects scenario (A or B) based on state and firstScanAt
+ * 3. Calculates days late (scanDate-based for A, today-based for B)
+ * 4. Checks idempotency flags (what's already been charged)
+ * 5. Builds line items for new charges
+ * 6. Calls appropriate privileged transition to charge customer
+ * 7. Updates protectedData to prevent duplicate charges
  * 
  * Idempotency:
  * - Late fees: Max one charge per day (tracked by lastLateFeeDayCharged)
  * - Replacement: Max one charge ever (tracked by replacementCharged boolean)
+ * - Once replacement is charged, no further daily fees are added
  * 
  * @param {Object} options - Configuration object
  * @param {Object} options.sdkInstance - Flex SDK instance (Integration or trusted)
@@ -132,7 +177,8 @@ function getReplacementValue(listing) {
  * @returns {Promise<Object>} Result object with charged status and items
  * @returns {boolean} returns.charged - True if charges were applied
  * @returns {string[]} [returns.items] - Array of charged item codes (e.g., ['late-fee', 'replacement'])
- * @returns {string} [returns.reason] - Reason if no charges applied (e.g., 'no-op', 'already-scanned')
+ * @returns {string} [returns.reason] - Reason if no charges applied (e.g., 'no-op', 'not-overdue')
+ * @returns {string} [returns.scenario] - 'delivered-late' or 'non-return'
  * 
  * @throws {Error} If transaction not found, missing return date, or API errors
  * 
@@ -144,7 +190,7 @@ function getReplacementValue(listing) {
  * });
  * 
  * if (result.charged) {
- *   console.log(`Charged: ${result.items.join(', ')}`);
+ *   console.log(`Charged: ${result.items.join(', ')} (scenario: ${result.scenario})`);
  * } else {
  *   console.log(`No charges: ${result.reason}`);
  * }
@@ -161,6 +207,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
     
     const tx = response.data.data;
     const included = response.data.included || [];
+    const currentState = tx.attributes?.state;
     
     // Extract listing
     const listingRef = tx.relationships?.listing?.data;
@@ -188,26 +235,88 @@ async function applyCharges({ sdkInstance, txId, now }) {
       );
     }
     
-    console.log(`[lateFees] Return due: ${ymd(returnDueAt)}, Now: ${ymd(now)}`);
+    // Detect scenario based on state and firstScanAt
+    const hasScan = isScanned(returnData);
+    const scanDate = returnData.firstScanAt ? dayjs(returnData.firstScanAt) : null;
     
-    // Check if already scanned
-    const scanned = isScanned(returnData);
-    if (scanned) {
-      console.log(`[lateFees] Package already scanned - no charges apply`);
-      return { 
-        charged: false, 
-        reason: 'already-scanned',
-        scannedAt: returnData.firstScanAt || 'status-based'
+    let scenario, lateDays, transitionName, effectiveDate;
+    
+    // ============================================================================
+    // LATE DAYS CALCULATION LOGIC
+    // ============================================================================
+    // Case A: firstScanAt exists (returned, possibly late)
+    //   → lateDays = scanDate - returnDueDate (in whole days)
+    //   → This locks in lateness based on when borrower actually shipped
+    //   → Example: dueDate = Jan 10, firstScanAt = Jan 13 → lateDays = 3
+    //   → Even if today = Jan 20, we STILL use 3 (not 10) - no stacking after scan
+    //
+    // Case B: firstScanAt does not exist (no scan/non-return)
+    //   → lateDays = today - returnDueDate (in whole days)
+    //   → This tracks ongoing lateness for items never returned
+    //   → Example: dueDate = Jan 10, today = Jan 13 → lateDays = 3
+    //   → This updates daily until item is returned or replacement charged
+    // ============================================================================
+    
+    if (currentState === 'delivered' && hasScan) {
+      // SCENARIO A: Returned late (has scan, in delivered state)
+      scenario = 'delivered-late';
+      effectiveDate = scanDate;
+      
+      // When a return scan exists, lateDays is calculated using scan date vs due date.
+      // This ensures lateness is locked to when borrower actually shipped, not current date.
+      // Calculate late days based on scan date (when item was actually returned)
+      lateDays = computeLateDays(scanDate, returnDueAt);
+      
+      transitionName = 'transition/privileged-apply-late-fees';
+      
+      console.log(`[lateFees] SCENARIO A: Returned late`);
+      console.log(`[lateFees] State: ${currentState}, Scan date: ${ymd(scanDate)}, Return due: ${ymd(returnDueAt)}`);
+      console.log(`[lateFees] Days late (based on scan): ${lateDays}`);
+      
+    } else if (currentState === 'accepted' && !hasScan) {
+      // SCENARIO B: Never returned (no scan, still in accepted state)
+      scenario = 'non-return';
+      effectiveDate = dayjs(now);
+      
+      // When no scan exists, lateDays is calculated using today vs due date.
+      // This tracks ongoing lateness for items that haven't been returned yet.
+      // Calculate late days based on today (how many days past due)
+      lateDays = computeLateDays(now, returnDueAt);
+      
+      transitionName = 'transition/privileged-apply-late-fees-non-return';
+      
+      console.log(`[lateFees] SCENARIO B: Never returned`);
+      console.log(`[lateFees] State: ${currentState}, No scan, Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}`);
+      console.log(`[lateFees] Days late (based on today): ${lateDays}`);
+      
+    } else {
+      // Unexpected state/scenario combination
+      const reason = currentState === 'delivered' && !hasScan
+        ? 'delivered-without-scan (unexpected)'
+        : currentState === 'accepted' && hasScan
+        ? 'accepted-with-scan (should be delivered)'
+        : `state-${currentState}-unhandled`;
+      
+      console.log(`[lateFees] ⚠️ Unexpected scenario: state=${currentState}, hasScan=${hasScan}`);
+      console.log(`[lateFees] Skipping transaction (reason: ${reason})`);
+      
+      return {
+        charged: false,
+        reason: reason,
+        scenario: 'unexpected',
+        state: currentState,
+        hasScan
       };
     }
     
-    // Calculate days late
-    const lateDays = computeLateDays(now, returnDueAt);
-    console.log(`[lateFees] Days late: ${lateDays}`);
-    
     if (lateDays < 1) {
       console.log(`[lateFees] Not yet overdue - no charges apply`);
-      return { charged: false, reason: 'not-overdue', lateDays };
+      return { 
+        charged: false, 
+        reason: 'not-overdue', 
+        lateDays,
+        scenario
+      };
     }
     
     // Get idempotency flags
@@ -218,35 +327,47 @@ async function applyCharges({ sdkInstance, txId, now }) {
     
     // Build line items for new charges
     const newLineItems = [];
-    const todayYmd = ymd(now);
+    const effectiveYmd = ymd(effectiveDate);
     
-    // Late fee: Charge if we haven't charged today yet
-    if (lateDays >= 1 && lastLateFeeDayCharged !== todayYmd) {
-      newLineItems.push({
-        code: 'late-fee',
-        unitPrice: { amount: LATE_FEE_CENTS, currency: 'USD' },
-        quantity: 1,
-        percentage: 0,
-        includeFor: ['customer']
-      });
-      console.log(`[lateFees] Adding late fee: $${LATE_FEE_CENTS / 100} for day ${lateDays}`);
-    } else if (lastLateFeeDayCharged === todayYmd) {
-      console.log(`[lateFees] Late fee already charged today (${todayYmd})`);
-    }
+    // Late fee logic:
+    // - Days 1-4: Charge $15/day (one charge per day, idempotent)
+    // - Day 5+: Skip daily fees, charge replacement instead
+    // - If replacement already charged, skip everything
     
-    // Replacement: Charge if Day 5+, not scanned, and not already charged
-    if (lateDays >= 5 && !scanned && !replacementCharged) {
-      const replacementCents = getReplacementValue(listing);
-      newLineItems.push({
-        code: 'replacement',
-        unitPrice: { amount: replacementCents, currency: 'USD' },
-        quantity: 1,
-        percentage: 0,
-        includeFor: ['customer']
-      });
-      console.log(`[lateFees] Adding replacement charge: $${replacementCents / 100}`);
-    } else if (replacementCharged) {
-      console.log(`[lateFees] Replacement already charged`);
+    if (replacementCharged) {
+      console.log(`[lateFees] Replacement already charged - no further charges apply`);
+    } else if (lateDays >= 5) {
+      // Day 5+: Charge replacement (not daily fees)
+      if (!replacementCharged) {
+        const replacementCents = getReplacementValue(listing);
+        newLineItems.push({
+          code: 'replacement',
+          unitPrice: { amount: replacementCents, currency: 'USD' },
+          quantity: 1,
+          percentage: 0,
+          includeFor: ['customer']
+        });
+        console.log(`[lateFees] Adding replacement charge: $${replacementCents / 100} (Day ${lateDays}+)`);
+      }
+    } else if (lateDays >= 1 && lateDays <= 4) {
+      // Days 1-4: Charge daily late fee (if not already charged for this day)
+      // For Scenario A, we charge based on the scan date
+      // For Scenario B, we charge based on today's date
+      // We need to ensure we don't double-charge the same day
+      
+      // Check if we've already charged for this effective date
+      if (lastLateFeeDayCharged !== effectiveYmd) {
+        newLineItems.push({
+          code: 'late-fee',
+          unitPrice: { amount: LATE_FEE_CENTS, currency: 'USD' },
+          quantity: 1,
+          percentage: 0,
+          includeFor: ['customer']
+        });
+        console.log(`[lateFees] Adding late fee: $${LATE_FEE_CENTS / 100} for day ${lateDays} (effective date: ${effectiveYmd})`);
+      } else {
+        console.log(`[lateFees] Late fee already charged for effective date ${effectiveYmd}`);
+      }
     }
     
     // No-op path: Nothing to charge
@@ -256,18 +377,19 @@ async function applyCharges({ sdkInstance, txId, now }) {
         charged: false, 
         reason: 'no-op',
         lateDays,
+        scenario,
         lastLateFeeDayCharged,
         replacementCharged
       };
     }
     
-    console.log(`[lateFees] Calling transition with ${newLineItems.length} line items...`);
+    console.log(`[lateFees] Calling ${transitionName} with ${newLineItems.length} line items...`);
     
     // Call privileged transition to apply charges
     // Provide both 'ctx/new-line-items' and 'lineItems' for compatibility
     await sdkInstance.transactions.transition({
       id: txId,
-      transition: 'transition/privileged-apply-late-fees',
+      transition: transitionName,
       params: {
         'ctx/new-line-items': newLineItems,
         lineItems: newLineItems,
@@ -277,16 +399,18 @@ async function applyCharges({ sdkInstance, txId, now }) {
             ...returnData,
             // Update idempotency flags
             lastLateFeeDayCharged: newLineItems.find(i => i.code === 'late-fee') 
-              ? todayYmd 
+              ? effectiveYmd 
               : lastLateFeeDayCharged,
             replacementCharged: replacementCharged || newLineItems.some(i => i.code === 'replacement'),
             // Track charge history
             chargeHistory: [
               ...(returnData.chargeHistory || []),
               {
-                date: todayYmd,
+                date: effectiveYmd,
+                scenario: scenario,
                 items: newLineItems.map(i => ({ code: i.code, amount: i.unitPrice.amount })),
-                timestamp: dayjs(now).toISOString()
+                timestamp: dayjs(now).toISOString(),
+                lateDays: lateDays
               }
             ]
           }
@@ -294,14 +418,15 @@ async function applyCharges({ sdkInstance, txId, now }) {
       }
     });
     
-    console.log(`[lateFees] ✅ Charges applied successfully`);
+    console.log(`[lateFees] ✅ Charges applied successfully (scenario: ${scenario})`);
     
     // Return success
     return {
       charged: true,
       items: newLineItems.map(i => i.code),
       amounts: newLineItems.map(i => ({ code: i.code, cents: i.unitPrice.amount })),
-      lateDays
+      lateDays,
+      scenario
     };
     
   } catch (error) {

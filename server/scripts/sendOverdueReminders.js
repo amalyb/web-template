@@ -96,221 +96,337 @@ async function sendOverdueReminders() {
     
     console.log(`📅 Processing overdue reminders for: ${today}`);
 
-    // Load delivered transactions where return date has passed and no first scan
-    const query = {
-      state: 'delivered',
-      include: ['customer', 'listing'],
-      per_page: 100  // snake_case for Marketplace SDK
-    };
+    // ============================================================================
+    // TEST PLAN - Manual Test Steps
+    // ============================================================================
+    // Test 1: Returned on time
+    //   - Create transaction with return due date = today - 1 day
+    //   - Trigger return scan before due date
+    //   - Verify: No late fees, normal payout on scan
+    //
+    // Test 2: Returned 3 days late
+    //   - Create transaction with return due date = today - 3 days
+    //   - Trigger return scan today (3 days late)
+    //   - Verify: 3 × $15 late fees applied, payout on scan
+    //
+    // Test 3: Returned 6 days late
+    //   - Create transaction with return due date = today - 6 days
+    //   - Trigger return scan today (6 days late)
+    //   - Verify: Replacement charge applied (not daily fees), payout on scan
+    //
+    // Test 4: Never returned, 3 days late
+    //   - Create transaction with return due date = today - 3 days
+    //   - Do NOT trigger return scan
+    //   - Verify: 3 × $15 late fees applied (no payout, stays in accepted state)
+    //
+    // Test 5: Never returned, 6 days late
+    //   - Create transaction with return due date = today - 6 days
+    //   - Do NOT trigger return scan
+    //   - Verify: Replacement charge applied (no payout, stays in accepted state)
+    // ============================================================================
 
-    let response, transactions, included;
-    try {
-      response = await readSdk.transactions.query(query);
-      transactions = response.data.data;
-      included = response.data.included;
-    } catch (queryError) {
-      // Debug logging for errors
-      const status = queryError.response?.status;
-      const data = queryError.response?.data;
-      const headers = queryError.response?.headers;
-      
-      if (process.env.DIAG === '1') {
-        console.error('[DIAG] Query error details:', {
-          endpoint: 'transactions.query',
-          status,
-          data,
-          query,
-          errorMessage: queryError.message,
-          errorCode: queryError.code
+    // Query both states: delivered (Scenario A) and accepted (Scenario B)
+    const allTransactions = [];
+    const statesToQuery = ['delivered', 'accepted'];
+    
+    for (const state of statesToQuery) {
+      const query = {
+        state: state,
+        include: ['customer', 'listing'],
+        per_page: 100  // snake_case for Marketplace SDK
+      };
+
+      let response, transactions;
+      try {
+        response = await readSdk.transactions.query(query);
+        transactions = response.data.data;
+        const rawIncluded = response.data.included || [];
+        
+        // Convert included array → Map keyed by "type/uuid"
+        const includedMap = new Map(
+          rawIncluded.map(i => [`${i.type}/${i.id.uuid || i.id}`, i])
+        );
+        
+        // Store transactions with their included data
+        transactions.forEach(tx => {
+          tx._included = includedMap;
+          tx._state = state;
         });
-      } else {
-        console.error('❌ Query failed', { 
-          status, 
-          query,
-          errorMessage: queryError.message
-        });
-      }
-      
-      // Helpful hint for 403 errors
-      if (status === 403) {
-        console.error('');
-        console.error('⚠️  403 FORBIDDEN - Possible causes:');
-        console.error('   1. Test environment credentials may be expired or invalid');
-        console.error('   2. Marketplace SDK may not have access to delivered state transactions');
-        console.error('   3. Try with INTEGRATION_CLIENT_ID/SECRET for broader access');
-        console.error('');
-      }
-      
-      // Helpful hint for 400 errors
-      if (status === 400) {
-        console.error('');
-        console.error('⚠️  400 BAD REQUEST - Possible causes:');
-        console.error('   1. Invalid query parameters (check per_page vs perPage)');
-        console.error('   2. Invalid state value or filter');
-        console.error('   3. Malformed include parameter');
-        console.error('');
-        if (data?.errors) {
-          console.error('   API Errors:');
-          data.errors.forEach((err, i) => {
-            console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
+        
+        allTransactions.push(...transactions);
+        console.log(`📊 Found ${transactions.length} ${state} transactions`);
+      } catch (queryError) {
+        // Debug logging for errors
+        const status = queryError.response?.status;
+        const data = queryError.response?.data;
+        
+        if (process.env.DIAG === '1') {
+          console.error('[DIAG] Query error details:', {
+            endpoint: 'transactions.query',
+            status,
+            data,
+            query,
+            errorMessage: queryError.message,
+            errorCode: queryError.code
+          });
+        } else {
+          console.error(`❌ Query failed for state ${state}`, { 
+            status, 
+            query,
+            errorMessage: queryError.message
           });
         }
+        
+        // Helpful hint for 403 errors
+        if (status === 403) {
+          console.error('');
+          console.error('⚠️  403 FORBIDDEN - Possible causes:');
+          console.error('   1. Test environment credentials may be expired or invalid');
+          console.error(`   2. Marketplace SDK may not have access to ${state} state transactions`);
+          console.error('   3. Try with INTEGRATION_CLIENT_ID/SECRET for broader access');
+          console.error('');
+        }
+        
+        // Helpful hint for 400 errors
+        if (status === 400) {
+          console.error('');
+          console.error('⚠️  400 BAD REQUEST - Possible causes:');
+          console.error('   1. Invalid query parameters (check per_page vs perPage)');
+          console.error('   2. Invalid state value or filter');
+          console.error('   3. Malformed include parameter');
+          console.error('');
+          if (data?.errors) {
+            console.error('   API Errors:');
+            data.errors.forEach((err, i) => {
+              console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
+            });
+          }
+        }
+        
+        // Continue with other states even if one fails
+        console.warn(`⚠️ Skipping ${state} state due to query error`);
       }
-      
-      throw queryError;
     }
 
-    console.log(`📊 Found ${transactions.length} delivered transactions`);
+    console.log(`📊 Total transactions to process: ${allTransactions.length}`);
 
     let sent = 0, failed = 0, processed = 0;
     let charged = 0, chargesFailed = 0;
 
-    for (const tx of transactions) {
+    for (const tx of allTransactions) {
       processed++;
       
-      const deliveryEnd = tx?.attributes?.deliveryEnd;
-      if (!deliveryEnd) continue;
+      const currentState = tx._state || tx?.attributes?.state;
+      const included = tx._included || new Map();
       
-      const returnDate = new Date(deliveryEnd);
-      const daysLate = diffDays(todayDate, returnDate);
-      
-      // Skip if not overdue
-      if (daysLate < 1) continue;
-      
+      // Get return due date
       const protectedData = tx?.attributes?.protectedData || {};
       const returnData = protectedData.return || {};
+      const deliveryEnd = tx?.attributes?.deliveryEnd || tx?.attributes?.booking?.end;
+      const returnDueAt = returnData.dueAt || deliveryEnd;
       
-      // Skip if already scanned (in transit)
-      if (returnData.firstScanAt) {
-        console.log(`✅ Return already in transit for tx ${tx?.id?.uuid || '(no id)'}`);
+      if (!returnDueAt) {
+        if (VERBOSE) console.log(`⏭️ Skipping tx ${tx?.id?.uuid || '(no id)'} - no return due date`);
         continue;
       }
       
-      // Get borrower phone
-      const customerRef = tx?.relationships?.customer?.data;
-      const customerKey = customerRef ? `${customerRef.type}/${customerRef.id?.uuid || customerRef.id}` : null;
-      const customer = customerKey ? included.get(customerKey) : null;
+      const returnDate = new Date(returnDueAt);
+      const hasScan = !!returnData.firstScanAt;
       
-      const borrowerPhone = customer?.attributes?.profile?.protectedData?.phone ||
-                           customer?.attributes?.profile?.protectedData?.phoneNumber ||
-                           null;
+      // Determine scenario and check if transaction qualifies
+      let scenario;
+      let shouldProcess = false;
       
-      if (!borrowerPhone) {
-        console.warn(`⚠️ No borrower phone for tx ${tx?.id?.uuid || '(no id)'}`);
-        continue;
-      }
-      
-      if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
-        if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
-        continue;
-      }
-      
-      // Get listing info
-      const listingRef = tx?.relationships?.listing?.data;
-      const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
-      const listing = listingKey ? included.get(listingKey) : null;
-      
-      // Get return label URL
-      const returnLabelUrl = returnData.label?.url ||
-                            protectedData.returnLabelUrl ||
-                            protectedData.returnLabel ||
-                            protectedData.shippingLabelUrl ||
-                            protectedData.returnShippingLabel ||
-                            `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
-      
-      const shortUrl = await shortLink(returnLabelUrl);
-      console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
-      
-      // Check if we've already notified for this day
-      const overdue = returnData.overdue || {};
-      const lastNotifiedDay = overdue.lastNotifiedDay;
-      
-      if (lastNotifiedDay === daysLate) {
-        console.log(`📅 Already notified for day ${daysLate} for tx ${tx?.id?.uuid || '(no id)'}`);
-        continue;
-      }
-      
-      // Calculate fees
-      const fees = returnData.fees || {};
-      const perDayCents = fees.perDayCents || 1500; // $15/day default
-      const feesStartedAt = fees.startedAt || new Date(returnDate.getTime() + 24 * 60 * 60 * 1000).toISOString();
-      const totalCents = perDayCents * daysLate;
-      
-      // Determine message based on days late
-      let message;
-      let tag;
-      
-      if (daysLate === 1) {
-        message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${shortUrl}`;
-        tag = 'overdue_day1_to_borrower';
-      } else if (daysLate === 2) {
-        message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${shortUrl}`;
-        tag = 'overdue_day2_to_borrower';
-      } else if (daysLate === 3) {
-        message = `⏰ 3 days late. Fees continue. Ship today to avoid full replacement.`;
-        tag = 'overdue_day3_to_borrower';
-      } else if (daysLate === 4) {
-        message = `⚠️ 4 days late. Ship immediately to prevent replacement charges.`;
-        tag = 'overdue_day4_to_borrower';
-      } else {
-        // Day 5+
-        const replacementAmount = 5000; // $50.00 in cents
-        message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${shortUrl}`;
-        tag = 'overdue_day5_to_borrower';
-      }
-      
-      if (VERBOSE) {
-        console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}, ${daysLate} days late) → ${message}`);
-      }
-      
-      try {
-        await sendSMS(borrowerPhone, message, {
-          role: 'borrower',
-          tag: tag,
-          meta: { 
-            txId: tx?.id?.uuid || tx?.id,
-            listingId: listing?.id?.uuid || listing?.id,
-            daysLate: daysLate,
-            totalFeesCents: totalCents
-          }
-        });
+      if (currentState === 'delivered' && hasScan) {
+        // SCENARIO A: Returned late (has scan, in delivered state)
+        // Check if scan date is after return due date
+        const scanDate = new Date(returnData.firstScanAt);
+        const daysLate = diffDays(yyyymmdd(scanDate), yyyymmdd(returnDate));
         
-        // Update transaction with SMS notification tracking only
-        // (Charges are now handled by applyCharges() below)
-        const updatedReturnData = {
-          ...returnData,
-          overdue: {
-            ...overdue,
-            daysLate: daysLate,
-            lastNotifiedDay: daysLate
-          }
-        };
-        
-        try {
-          await readSdk.transactions.update({
-            id: tx.id,
-            attributes: {
-              protectedData: {
-                ...protectedData,
-                return: updatedReturnData
-              }
-            }
-          });
-          console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
-        } catch (updateError) {
-          console.error(`❌ Failed to update transaction:`, updateError.message);
+        if (daysLate >= 1) {
+          scenario = 'delivered-late';
+          shouldProcess = true;
+          console.log(`[LATE FEES] SCENARIO A: Returned late - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} days late (scan: ${yyyymmdd(scanDate)}, due: ${yyyymmdd(returnDate)})`);
+        } else {
+          if (VERBOSE) console.log(`✅ Returned on time for tx ${tx?.id?.uuid || '(no id)'} - no late fees`);
         }
+      } else if (currentState === 'accepted' && !hasScan) {
+        // SCENARIO B: Never returned (no scan, still in accepted state)
+        // Check if today is past return due date
+        const daysLate = diffDays(today, yyyymmdd(returnDate));
         
-        sent++;
-      } catch (e) {
-        console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
-        failed++;
+        if (daysLate >= 1) {
+          scenario = 'non-return';
+          shouldProcess = true;
+          console.log(`[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} days late (due: ${yyyymmdd(returnDate)}, today: ${today})`);
+        } else {
+          if (VERBOSE) console.log(`⏭️ Not yet overdue for tx ${tx?.id?.uuid || '(no id)'}`);
+        }
+      } else {
+        // Skip unexpected combinations
+        if (VERBOSE) {
+          console.log(`⏭️ Skipping tx ${tx?.id?.uuid || '(no id)'} - state=${currentState}, hasScan=${hasScan} (unexpected combination)`);
+        }
+        continue;
+      }
+      
+      if (!shouldProcess) {
+        continue;
+      }
+      
+      // Calculate days late for this transaction
+      // NOTE: This calculation matches the logic in lib/lateFees.js:
+      // - When firstScanAt exists: use scan date (locks lateness to when item was shipped)
+      // - When firstScanAt does not exist: use today (tracks ongoing lateness)
+      let daysLate;
+      if (scenario === 'delivered-late') {
+        // Scenario A: Based on scan date (when borrower actually shipped)
+        const scanDate = new Date(returnData.firstScanAt);
+        daysLate = diffDays(yyyymmdd(scanDate), yyyymmdd(returnDate));
+      } else {
+        // Scenario B: Based on today (ongoing lateness for non-return)
+        daysLate = diffDays(today, yyyymmdd(returnDate));
+      }
+      
+      // SMS reminders: Only send for Scenario B (never returned)
+      // Scenario A (returned late) doesn't need reminders - item already returned
+      if (scenario === 'non-return') {
+        // Get borrower phone
+        // First try transaction protectedData (checkout-entered phone - preferred)
+        // Then fall back to customer profile protectedData
+        const customerRef = tx?.relationships?.customer?.data;
+        const customerKey = customerRef ? `${customerRef.type}/${customerRef.id?.uuid || customerRef.id}` : null;
+        const customer = customerKey ? included.get(customerKey) : null;
+        
+        // Check transaction protectedData first (checkout-entered, E.164 normalized)
+        const txPhone = protectedData?.customerPhone || 
+                       protectedData?.phone || 
+                       protectedData?.customer_phone;
+        
+        // Fall back to customer profile protectedData
+        const profilePhone = customer?.attributes?.profile?.protectedData?.phone ||
+                           customer?.attributes?.profile?.protectedData?.phoneNumber;
+        
+        const borrowerPhone = (txPhone && String(txPhone).trim()) || 
+                             (profilePhone && String(profilePhone).trim()) || 
+                             null;
+        
+        if (borrowerPhone) {
+          if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
+            if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
+          } else {
+            // Get listing info
+            const listingRef = tx?.relationships?.listing?.data;
+            const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
+            const listing = listingKey ? included.get(listingKey) : null;
+            
+            // Get return label URL
+            const returnLabelUrl = returnData.label?.url ||
+                                  protectedData.returnLabelUrl ||
+                                  protectedData.returnLabel ||
+                                  protectedData.shippingLabelUrl ||
+                                  protectedData.returnShippingLabel ||
+                                  `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
+            
+            const shortUrl = await shortLink(returnLabelUrl);
+            console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
+            
+            // Check if we've already notified for this day
+            // SMS gating logic for Scenario B: SMS sends ONLY when:
+            // 1. scenario === 'non-return' (already checked above)
+            // 2. borrowerPhone exists (already checked above)
+            // 3. lastNotifiedDay !== daysLate (check below)
+            const overdue = returnData.overdue || {};
+            const lastNotifiedDay = overdue.lastNotifiedDay;
+            
+            if (lastNotifiedDay !== daysLate) {
+              // Determine message based on days late
+              let message;
+              let tag;
+              
+              if (daysLate === 1) {
+                message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${shortUrl}`;
+                tag = 'overdue_day1_to_borrower';
+              } else if (daysLate === 2) {
+                message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${shortUrl}`;
+                tag = 'overdue_day2_to_borrower';
+              } else if (daysLate === 3) {
+                message = `⏰ 3 days late. Fees continue. Ship today to avoid full replacement.`;
+                tag = 'overdue_day3_to_borrower';
+              } else if (daysLate === 4) {
+                message = `⚠️ 4 days late. Ship immediately to prevent replacement charges.`;
+                tag = 'overdue_day4_to_borrower';
+              } else {
+                // Day 5+
+                const replacementAmount = 5000; // $50.00 in cents
+                message = `🚫 5 days late. You may be charged full replacement ($${replacementAmount/100}). Avoid this by shipping today: ${shortUrl}`;
+                tag = 'overdue_day5_to_borrower';
+              }
+              
+              if (VERBOSE) {
+                console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}, ${daysLate} days late) → ${message}`);
+              }
+              
+              try {
+                await sendSMS(borrowerPhone, message, {
+                  role: 'borrower',
+                  tag: tag,
+                  meta: { 
+                    txId: tx?.id?.uuid || tx?.id,
+                    listingId: listing?.id?.uuid || listing?.id,
+                    daysLate: daysLate,
+                    scenario: scenario
+                  }
+                });
+                
+                // Update transaction with SMS notification tracking only
+                // (Charges are now handled by applyCharges() below)
+                const updatedReturnData = {
+                  ...returnData,
+                  overdue: {
+                    ...overdue,
+                    daysLate: daysLate,
+                    lastNotifiedDay: daysLate
+                  }
+                };
+                
+                try {
+                  await readSdk.transactions.update({
+                    id: tx.id,
+                    attributes: {
+                      protectedData: {
+                        ...protectedData,
+                        return: updatedReturnData
+                      }
+                    }
+                  });
+                  console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
+                } catch (updateError) {
+                  console.error(`❌ Failed to update transaction:`, updateError.message);
+                }
+                
+                sent++;
+              } catch (e) {
+                console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
+                failed++;
+              }
+            } else {
+              console.log(`📅 Already notified for day ${daysLate} for tx ${tx?.id?.uuid || '(no id)'}`);
+            }
+          }
+        } else {
+          console.warn(`⚠️ No borrower phone for tx ${tx?.id?.uuid || '(no id)'} - skipping SMS`);
+        }
+      } else {
+        // Scenario A: Item already returned, no SMS needed
+        console.log(`ℹ️ [SCENARIO A] Item already returned - skipping SMS reminder`);
       }
       
       // Apply charges (separate try/catch so charge failures don't block SMS)
+      // applyCharges() handles both Scenario A and Scenario B internally
       try {
         if (DRY_RUN) {
-          console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${tx?.id?.uuid || '(no id)'}`);
+          console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${tx?.id?.uuid || '(no id)'} (scenario: ${scenario})`);
         } else {
           const chargeResult = await applyCharges({
             sdkInstance: integSdk,  // Use Integration SDK for privileged transition
@@ -319,7 +435,7 @@ async function sendOverdueReminders() {
           });
           
           if (chargeResult.charged) {
-            console.log(`💳 Charged ${chargeResult.items.join(' + ')} for tx ${tx?.id?.uuid || '(no id)'}`);
+            console.log(`💳 [${scenario}] Charged ${chargeResult.items.join(' + ')} for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.lateDays || '?'} days late)`);
             if (chargeResult.amounts) {
               chargeResult.amounts.forEach(a => {
                 console.log(`   💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
@@ -327,7 +443,7 @@ async function sendOverdueReminders() {
             }
             charged++;
           } else {
-            console.log(`ℹ️ No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'})`);
+            console.log(`ℹ️ [${scenario}] No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'})`);
           }
         }
       } catch (chargeError) {
@@ -337,11 +453,12 @@ async function sendOverdueReminders() {
             status: chargeError.response?.status || chargeError.status,
             data: chargeError.response?.data,
             txId: tx?.id?.uuid || tx?.id,
+            scenario: scenario,
             errorMessage: chargeError.message,
           });
         }
         
-        console.error(`❌ Charge failed for tx ${tx?.id?.uuid || '(no id)'}: ${chargeError.message}`);
+        console.error(`❌ [${scenario}] Charge failed for tx ${tx?.id?.uuid || '(no id)'}: ${chargeError.message}`);
         
         // Check for permission errors and provide helpful guidance
         const status = chargeError.response?.status || chargeError.status;
@@ -352,11 +469,12 @@ async function sendOverdueReminders() {
             chargeError.message?.includes('permission') || chargeError.message?.includes('forbidden')) {
           console.error('');
           console.error('⚠️  PERMISSION ERROR DETECTED:');
-          console.error('   The transition/privileged-apply-late-fees requires proper permissions.');
+          console.error('   The late-fee transitions require proper permissions.');
           console.error('   Possible fixes:');
-          console.error('   1. In process.edn, change :actor.role/operator to :actor.role/admin');
+          console.error('   1. In process.edn, ensure :actor.role/operator has access');
           console.error('   2. Ensure your Integration app has operator-level privileges in Flex Console');
-          console.error('   3. Verify REACT_APP_SHARETRIBE_SDK_CLIENT_ID and SHARETRIBE_SDK_CLIENT_SECRET');
+          console.error('   3. Verify INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET');
+          console.error(`   4. Check that transition exists for scenario: ${scenario}`);
           console.error('');
         }
         
@@ -364,8 +482,9 @@ async function sendOverdueReminders() {
           console.error('');
           console.error('⚠️  400 BAD REQUEST - Possible causes:');
           console.error('   1. Invalid transition parameters');
-          console.error('   2. Transaction state doesn\'t allow this transition');
+          console.error(`   2. Transaction state doesn't allow this transition (scenario: ${scenario})`);
           console.error('   3. Transition name mismatch with process.edn');
+          console.error(`   4. Expected transition: ${scenario === 'delivered-late' ? 'transition/privileged-apply-late-fees' : 'transition/privileged-apply-late-fees-non-return'}`);
           console.error('');
           if (data?.errors) {
             console.error('   API Errors:');

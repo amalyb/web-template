@@ -353,20 +353,49 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     const protectedData = transaction.attributes.protectedData || {};
     const returnData = protectedData.return || {};
     
-    // Determine direction: check metadata.direction first, then fall back to tracking number matching
+    // DIRECTION FILTER: Determine if this is a return scan (borrower → lender) or outbound scan (lender → borrower)
+    // We treat events with metadata.direction === 'return' as return scans.
+    // Also check if tracking number matches known return tracking number as fallback.
+    // IMPORTANT: Payout only triggers on return scans, never on outbound scans.
     const isReturnTracking = (metadata.direction === 'return') ||
                             (trackingNumber === protectedData.returnTrackingNumber) ||
                             (trackingNumber === returnData.label?.trackingNumber);
     
-    console.log(`🔍 Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'} (metadata.direction=${metadata.direction || 'none'})`);
+    console.log(`🔍 [PAYOUT] Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'} (metadata.direction=${metadata.direction || 'none'})`);
+    if (isReturnTracking) {
+      console.log(`🔍 [PAYOUT] Return scan detected - payout will be triggered if state is 'accepted'`);
+    } else {
+      console.log(`🔍 [PAYOUT] Outbound scan detected - payout will NOT be triggered`);
+    }
     
-    // Handle return tracking - send SMS to lender
+    // Handle return tracking - send SMS to lender and trigger payout
+    // 
+    // PAYOUT TRIGGER LOGIC:
+    // - Only triggers on RETURN direction scans (borrower → lender)
+    // - Only triggers on first scan statuses (TRANSIT, IN_TRANSIT, ACCEPTED, ACCEPTANCE)
+    // - Only triggers when transaction is in state 'accepted' (not already delivered/complete)
+    // - Idempotent: duplicate webhooks won't create multiple payouts
+    //
+    // TEST PLAN for return scan → payout flow:
+    // 1. Create a booking that reaches state/accepted (provider has accepted, item shipped out)
+    // 2. Ensure the transaction has a return tracking number in protectedData.returnTrackingNumber
+    // 3. Trigger a Shippo webhook with:
+    //    - metadata.direction === 'return' OR tracking number matches returnTrackingNumber
+    //    - tracking_status.status === 'TRANSIT' or 'IN_TRANSIT' or 'ACCEPTED' (first scan statuses)
+    //    - metadata.transactionId set to the transaction UUID
+    // 4. Verify logs show:
+    //    - return.firstScanAt is set in protectedData
+    //    - [PAYOUT] transition/complete is called
+    //    - Transaction moves from state 'accepted' to state 'delivered'
+    //    - Stripe payout is created (check Stripe dashboard or logs)
+    // 5. Verify idempotency: sending the same webhook again should skip payout (already delivered)
+    //
     if (isReturnTracking && isFirstScan) {
-      console.log('📬 Processing return first scan - sending SMS to lender');
+      console.log('📬 [PAYOUT] Processing return first scan - sending SMS to lender and triggering payout');
       
       // Check if return first scan SMS already sent
       if (returnData.firstScanAt) {
-        console.log('ℹ️ Return first scan SMS already sent - skipping (idempotent)');
+        console.log('ℹ️ [PAYOUT] Return first scan SMS already sent - skipping (idempotent)');
         return res.status(200).json({ message: 'Return first scan SMS already sent - idempotent' });
       }
       
@@ -419,6 +448,88 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           }
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
+        }
+        
+        // Trigger transition/complete to move transaction to delivered state and create payout
+        // This replaces the automatic time-based payout (booking-end + 2 days)
+        try {
+          const txId = transaction.id.uuid || transaction.id;
+          const currentState = transaction.attributes?.state;
+          const lastTransition = transaction.attributes?.lastTransition;
+          
+          console.log(`🔄 [PAYOUT] Checking if transition/complete should be triggered for tx ${txId}`);
+          console.log(`🔄 [PAYOUT] Current state: ${currentState}`);
+          console.log(`🔄 [PAYOUT] Last transition: ${lastTransition || 'none'}`);
+          
+          // STATE GUARD 1: Check if transaction is already delivered/complete
+          // Prevent payout if already in delivered state or already completed
+          if (currentState === 'delivered') {
+            console.log(`ℹ️ [PAYOUT] Transaction is already in 'delivered' state - skipping payout (already completed)`);
+            // Skip payout trigger but continue to send response
+          }
+          // STATE GUARD 2: Check if transition/complete or transition/operator-complete already happened
+          // This provides additional idempotency protection
+          else if (lastTransition === 'transition/complete' || lastTransition === 'transition/operator-complete') {
+            console.log(`ℹ️ [PAYOUT] Transaction already completed via '${lastTransition}' - skipping payout (idempotent)`);
+            // Skip payout trigger but continue to send response
+          }
+          // STATE GUARD 3: Only trigger if transaction is in :state/accepted
+          // Reject if in earlier states (pending-payment, preauthorized) or other unexpected states
+          else if (currentState !== 'accepted') {
+            console.log(`ℹ️ [PAYOUT] Transaction is in state '${currentState}' (not 'accepted') - skipping transition/complete`);
+            console.log(`ℹ️ [PAYOUT] Payout can only be triggered from 'accepted' state`);
+            // Skip payout trigger but continue to send response
+          }
+          // All guards passed - proceed with payout trigger
+          else {
+            console.log(`✅ [PAYOUT] All state guards passed - triggering transition/complete for tx ${txId}`);
+            
+            const integrationSdk = getIntegrationSdk();
+            
+            try {
+              // Call transition/complete with correct Flex transaction ID and transition name
+              const transitionResponse = await integrationSdk.transactions.transition({
+                id: txId, // Flex transaction ID (not Shippo shipment ID)
+                transition: 'transition/complete', // Exact match with process.edn
+                params: {}
+              });
+              
+              console.log(`✅ [PAYOUT] transition/complete succeeded for tx ${txId}`);
+              console.log(`✅ [PAYOUT] Transaction moved to state: ${transitionResponse?.data?.data?.attributes?.state || 'unknown'}`);
+              
+            } catch (transitionError) {
+              // IDEMPOTENCY & ERROR HANDLING:
+              // Handle 409/400 as non-fatal (already transitioned, wrong state, etc.)
+              // Log other errors clearly but don't crash the webhook handler
+              const errorStatus = transitionError?.response?.status || transitionError?.status;
+              const errorData = transitionError?.response?.data || transitionError?.data;
+              const errorCode = errorData?.errors?.[0]?.code;
+              const errorTitle = errorData?.errors?.[0]?.title || errorData?.message || transitionError.message;
+              
+              if (errorStatus === 409 || errorStatus === 400) {
+                // 409 = Conflict (already in target state or invalid transition)
+                // 400 = Bad Request (invalid transition, wrong state, etc.)
+                // These are idempotent cases - treat as success
+                console.log(`ℹ️ [PAYOUT] transition/complete already applied or invalid (status: ${errorStatus}, code: ${errorCode || 'none'})`);
+                console.log(`ℹ️ [PAYOUT] This is expected for duplicate webhooks - treating as idempotent success`);
+                console.log(`ℹ️ [PAYOUT] Error details: ${errorTitle}`);
+              } else {
+                // Real errors (auth, network, 5xx) - log with detail but don't fail webhook
+                console.error(`❌ [PAYOUT] Failed to trigger transition/complete for tx ${txId}`);
+                console.error(`❌ [PAYOUT] Error status: ${errorStatus || 'unknown'}`);
+                console.error(`❌ [PAYOUT] Error code: ${errorCode || 'none'}`);
+                console.error(`❌ [PAYOUT] Error message: ${transitionError.message}`);
+                console.error(`❌ [PAYOUT] Error data:`, JSON.stringify(errorData, null, 2));
+                // Don't throw - webhook should still return 200 (SMS was sent successfully)
+              }
+            }
+          }
+        } catch (payoutError) {
+          // Catch-all for unexpected errors during payout trigger
+          // Log but don't fail the webhook - SMS was already sent successfully
+          console.error(`❌ [PAYOUT] Unexpected error during payout trigger:`, payoutError.message);
+          console.error(`❌ [PAYOUT] Stack:`, payoutError.stack);
+          // Don't throw - webhook should still return 200
         }
         
         console.log(`✅ Return first scan SMS sent to lender ${lenderPhone}`);
