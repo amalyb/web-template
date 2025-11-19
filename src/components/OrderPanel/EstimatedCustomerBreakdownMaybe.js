@@ -536,13 +536,18 @@ const EstimatedCustomerBreakdownMaybe = props => {
     const payinTotal = estimatedTotalPrice(customerLineItems, currency);
     const payoutTotal = estimatedProviderTotalPrice(adjustedLineItems, currency);
 
-    // Build transaction object with adjusted line items (including shipping)
+    // Get process to set lastTransition for LineItemTotalPrice
+    const process = processName ? getProcess(processName) : null;
+    const transitions = process?.transitions || {};
+
     const tx = {
       id: 'estimated-tx',
       attributes: {
         lineItems: adjustedLineItems,
         payinTotal,
         payoutTotal,
+        processName,
+        lastTransition: transitions.REQUEST_PAYMENT || 'transition/request-payment',
       },
       booking: startDate && endDate ? estimatedBooking(startDate, endDate, lineItemUnitType, timeZone) : null,
     };
