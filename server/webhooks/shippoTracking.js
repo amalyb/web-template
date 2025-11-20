@@ -287,6 +287,17 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.warn('[ShippoWebhook] Legacy txId metadata detected; using txId as transactionId');
       }
       
+      // [SHIPPO DELIVERY DEBUG] Structured logging for webhook payload
+      console.log(`[SHIPPO DELIVERY DEBUG] 📦 Webhook received:`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   tracking_number: ${trackingNumber || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   carrier: ${carrier || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   tracking_status.status: ${trackingStatus || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   tracking_status.status_details: ${statusDetails || 'none'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   event.type: ${event?.type || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   event.mode: ${event?.mode || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   metadata.transactionId: ${txId || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   metadata.direction: ${metadata.direction || 'none'}`);
+      
       console.log(`📦 Tracking Number: ${trackingNumber}`);
       console.log(`🚚 Carrier: ${carrier}`);
       console.log(`📊 Status: ${trackingStatus}`);
@@ -324,17 +335,38 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       // PRE_TRANSIT counts as first scan if it has a facility scan indicator
       const isPreTransitWithScan = upperStatus === 'PRE_TRANSIT' && hasFacilityScan;
       
-      const isDelivery = upperStatus === 'DELIVERED';
+      // Use isDeliveredStatus() helper to handle variations like DELIVERED_TO_ACCESS_POINT
+      const isDelivery = isDeliveredStatus(trackingStatus);
       const isFirstScan = firstScanStatuses.includes(upperStatus) || isPreTransitWithScan;
       
+      // [SHIPPO DELIVERY DEBUG] Log delivery detection logic
+      console.log(`[SHIPPO DELIVERY DEBUG] 🔍 Delivery detection:`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   upperStatus: ${upperStatus || 'MISSING'}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   isDelivery: ${isDelivery}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   isFirstScan: ${isFirstScan}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   hasFacilityScan: ${hasFacilityScan}`);
+      
       if (!upperStatus || (!isDelivery && !isFirstScan)) {
+        console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ NOT treating as delivered/first-scan:`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Status received: '${trackingStatus}'`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Status details: '${statusDetails || 'none'}'`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Normalized upperStatus: '${upperStatus}'`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   isDelivery check result: ${isDelivery}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   isFirstScan check result: ${isFirstScan}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Reason: Status does not match DELIVERED* pattern or first-scan statuses`);
         console.log(`ℹ️ Status '${trackingStatus}' (details: '${statusDetails || 'none'}') is not DELIVERED or first-scan status - ignoring webhook`);
         if (upperStatus === 'PRE_TRANSIT' && !hasFacilityScan) {
+          console.log(`[SHIPPO DELIVERY DEBUG]   PRE_TRANSIT without facility scan indicator - ignoring`);
           console.log(`ℹ️ PRE_TRANSIT status detected but no facility scan indicator found in status_details`);
+        }
+        // Log if status looks like it might be a delivery variation we're not catching
+        if (upperStatus && upperStatus.includes('DELIVER') && !isDelivery) {
+          console.warn(`⚠️ [SHIPPO DELIVERY DEBUG] Status contains 'DELIVER' but didn't match delivery detection - please review: '${trackingStatus}'`);
         }
         return res.status(200).json({ message: `Status ${trackingStatus} ignored` });
       }
       
+      console.log(`[SHIPPO DELIVERY DEBUG] ✅ Entering ${isDelivery ? 'DELIVERED' : 'FIRST_SCAN'} branch`);
       console.log(`✅ Status is ${upperStatus} - processing ${isDelivery ? 'delivery' : 'first scan'} webhook`);
     
     // Find transaction
@@ -368,11 +400,29 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     }
     
     if (!transaction) {
+      console.error(`[SHIPPO DELIVERY DEBUG] ❌ Could not find transaction for this tracking update`);
+      console.error(`[SHIPPO DELIVERY DEBUG]   tracking_number: ${trackingNumber || 'MISSING'}`);
+      console.error(`[SHIPPO DELIVERY DEBUG]   metadata.transactionId: ${txId || 'MISSING'}`);
+      console.error(`[SHIPPO DELIVERY DEBUG]   matchStrategy attempted: ${matchStrategy}`);
+      if (txId) {
+        console.error(`[SHIPPO DELIVERY DEBUG]   Transaction lookup by ID failed - check if transaction exists: ${txId}`);
+      }
+      if (trackingNumber) {
+        console.error(`[SHIPPO DELIVERY DEBUG]   Tracking number search failed - only searches last 100 transactions`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   If transaction is older, ensure metadata.transactionId is included in webhook`);
+      }
       console.error('❌ Could not find transaction for this tracking update');
       return res.status(404).json({ error: 'Transaction not found' });
     }
     
     console.log(`✅ Transaction found via ${matchStrategy}: ${transaction.id}`);
+    
+    // [SHIPPO DELIVERY DEBUG] Log transaction match details
+    const txIdFromTransaction = transaction.id?.uuid || transaction.id;
+    console.log(`[SHIPPO DELIVERY DEBUG] 📋 Transaction matched:`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txIdFromTransaction}`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   matchStrategy: ${matchStrategy}`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   transaction.state: ${transaction.attributes?.state || 'MISSING'}`);
     
     // Check if this is a return tracking number
     const protectedData = transaction.attributes.protectedData || {};
@@ -386,6 +436,10 @@ async function handleTrackingWebhook(req, res, opts = {}) {
                             (trackingNumber === protectedData.returnTrackingNumber) ||
                             (trackingNumber === returnData.label?.trackingNumber);
     
+    console.log(`[SHIPPO DELIVERY DEBUG] 🔍 Direction check:`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   isReturnTracking: ${isReturnTracking}`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   metadata.direction: ${metadata.direction || 'none'}`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   matches returnTrackingNumber: ${trackingNumber === protectedData.returnTrackingNumber}`);
     console.log(`🔍 [PAYOUT] Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'} (metadata.direction=${metadata.direction || 'none'})`);
     if (isReturnTracking) {
       console.log(`🔍 [PAYOUT] Return scan detected - payout will be triggered if state is 'accepted'`);
@@ -445,7 +499,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       const message = `📬 Return in transit: "${listingTitle}". Track: ${shortTrackingUrl}`;
       
       try {
-        await sendSMS(lenderPhone, message, {
+        const smsResult = await sendSMS(lenderPhone, message, {
           role: 'lender',
           transactionId: transaction.id,
           transition: 'webhook/shippo-return-first-scan',
@@ -456,7 +510,18 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           }
         });
         
-        // Update transaction with return first scan timestamp
+        // Check if SMS was actually sent (not skipped by guards)
+        if (smsResult && smsResult.skipped) {
+          console.log(`⚠️ [PAYOUT] Return first scan SMS was skipped: ${smsResult.reason} - NOT setting firstScanAt timestamp`);
+          return res.status(200).json({ 
+            success: false, 
+            message: `Return first scan SMS skipped: ${smsResult.reason}`,
+            skipped: true,
+            reason: smsResult.reason
+          });
+        }
+        
+        // Update transaction with return first scan timestamp (only if SMS was actually sent)
         try {
           const txId = transaction.id.uuid || transaction.id;
           const result = await upsertProtectedData(txId, {
@@ -573,9 +638,21 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     
     // Check if SMS already sent (idempotency) based on event type for outbound
     if (!isReturnTracking) {
-      if (isDelivery && protectedData.shippingNotification?.delivered?.sent === true) {
-        console.log('ℹ️ Delivery SMS already sent - skipping (idempotent)');
-        return res.status(200).json({ message: 'Delivery SMS already sent - idempotent' });
+      // [SHIPPO DELIVERY DEBUG] Log idempotency check for delivered
+      if (isDelivery) {
+        const deliveredSent = protectedData.shippingNotification?.delivered?.sent === true;
+        const deliveredSentAt = protectedData.shippingNotification?.delivered?.sentAt;
+        console.log(`[SHIPPO DELIVERY DEBUG] 🔒 Idempotency check (DELIVERED):`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   shippingNotification.delivered.sent: ${deliveredSent}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   shippingNotification.delivered.sentAt: ${deliveredSentAt || 'NOT SET'}`);
+        
+        if (deliveredSent) {
+          console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ SKIPPING - Delivery SMS already sent (idempotent)`);
+          console.log('ℹ️ Delivery SMS already sent - skipping (idempotent)');
+          return res.status(200).json({ message: 'Delivery SMS already sent - idempotent' });
+        } else {
+          console.log(`[SHIPPO DELIVERY DEBUG] ✅ Proceeding - Delivery SMS not yet sent`);
+        }
       }
       
       // Check first-scan idempotency: protectedData first, then in-memory cache
@@ -597,7 +674,20 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       
       // Get borrower phone number
       const borrowerPhone = getBorrowerPhone(transaction);
+      
+      // [SHIPPO DELIVERY DEBUG] Log borrower phone lookup
+      if (isDelivery) {
+        console.log(`[SHIPPO DELIVERY DEBUG] 📱 Borrower phone lookup:`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   borrowerPhone: ${borrowerPhone || 'NOT FOUND'}`);
+      }
+      
       if (!borrowerPhone) {
+        console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ SKIPPING - No borrower phone number found`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txIdFromTransaction}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Checked locations:`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     1. customer.profile.protectedData.phone: ${transaction.relationships?.customer?.data?.attributes?.profile?.protectedData?.phone || 'NOT FOUND'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     2. protectedData.customerPhone: ${transaction.attributes?.protectedData?.customerPhone || 'NOT FOUND'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     3. metadata.customerPhone: ${transaction.attributes?.metadata?.customerPhone || 'NOT FOUND'}`);
         console.warn('⚠️ No borrower phone number found - cannot send SMS');
         return res.status(400).json({ error: 'No borrower phone number found' });
       }
@@ -607,6 +697,13 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       let message, smsType, protectedDataUpdate;
       
       if (isDelivery) {
+        // [SHIPPO DELIVERY DEBUG] Log entering delivery SMS branch
+        console.log(`[SHIPPO DELIVERY DEBUG] 📤 Preparing delivery SMS:`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txIdFromTransaction}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   trackingNumber: ${trackingNumber}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   carrier: ${carrier}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   direction: OUTBOUND`);
+        
         // Send delivery SMS
         message = "🎁 Your Sherbrt borrow was delivered! 🍧 Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
         smsType = 'delivery';
@@ -666,8 +763,34 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       
       console.log(`📤 Sending ${smsType} SMS to ${borrowerPhone}: ${message}`);
       
+      // [SHIPPO DELIVERY DEBUG] Check SMS configuration before sending
+      if (isDelivery) {
+        const smsDryRun = process.env.SMS_DRY_RUN === '1' || process.env.SMS_DRY_RUN === 'true';
+        const onlyPhone = process.env.ONLY_PHONE;
+        const hasTwilioCreds = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
+        
+        console.log(`[SHIPPO DELIVERY DEBUG] 📤 SMS configuration check:`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   SMS_DRY_RUN: ${smsDryRun ? 'ENABLED (SMS will be logged but NOT sent)' : 'DISABLED'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   ONLY_PHONE: ${onlyPhone || 'NOT SET'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Twilio credentials: ${hasTwilioCreds ? 'PRESENT' : 'MISSING (SMS will be skipped)'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   to: ${borrowerPhone}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   tag: ${SMS_TAGS.DELIVERY_TO_BORROWER}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   message: ${message.substring(0, 50)}...`);
+        
+        if (smsDryRun) {
+          console.warn(`[SHIPPO DELIVERY DEBUG] ⚠️ SMS_DRY_RUN is enabled - SMS will be logged but NOT actually sent`);
+        }
+        if (onlyPhone && borrowerPhone !== onlyPhone) {
+          console.warn(`[SHIPPO DELIVERY DEBUG] ⚠️ ONLY_PHONE is set to ${onlyPhone} but borrower phone is ${borrowerPhone} - SMS will be skipped`);
+        }
+        if (!hasTwilioCreds) {
+          console.warn(`[SHIPPO DELIVERY DEBUG] ⚠️ Twilio credentials missing - SMS will be skipped`);
+        }
+      }
+      
       try {
-        await sendSMS(borrowerPhone, message, { 
+        
+        const smsResult = await sendSMS(borrowerPhone, message, { 
           role: 'customer',
           transactionId: transaction.id,
           transition: `webhook/shippo-${smsType.replace(' ', '-')}`,
@@ -675,13 +798,48 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           meta: { listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id }
         });
         
+        // [SHIPPO_SMS_DEBUG] Log the full result for delivery SMS debugging
+        if (isDelivery) {
+          console.log(`[SHIPPO_SMS_DEBUG] delivered SMS result:`, JSON.stringify({
+            skipped: smsResult?.skipped || false,
+            reason: smsResult?.reason || null,
+            sent: smsResult?.sent || false,
+            sid: smsResult?.sid || null,
+            suppressed: smsResult?.suppressed || false,
+            to: borrowerPhone,
+            transactionId: transaction.id,
+            tag: SMS_TAGS.DELIVERY_TO_BORROWER
+          }, null, 2));
+        }
+        
+        // Check if SMS was actually sent (not skipped by guards)
+        if (smsResult && smsResult.skipped) {
+          console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ SMS was skipped: ${smsResult.reason} - NOT setting idempotency flag`);
+          if (isDelivery) {
+            console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ Delivery SMS skipped - flag will NOT be set, allowing retry`);
+          }
+          if (isFirstScan) {
+            console.log(`⚠️ [STEP-4] First scan SMS skipped - flag will NOT be set, allowing retry`);
+          }
+          return res.status(200).json({ 
+            success: false, 
+            message: `${smsType} SMS skipped: ${smsResult.reason}`,
+            skipped: true,
+            reason: smsResult.reason
+          });
+        }
+        
+        if (isDelivery) {
+          console.log(`[SHIPPO DELIVERY DEBUG] ✅ Delivery SMS sent successfully`);
+        }
+        
         if (isFirstScan) {
           console.log(`✅ [STEP-4] Borrower SMS sent for tracking ${trackingNumber}, txId=${transaction.id}`);
         } else {
           console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
         }
         
-        // Mark SMS as sent in transaction protectedData
+        // Mark SMS as sent in transaction protectedData (only if SMS was actually sent)
         try {
           const sdk = await getTrustedSdk();
           
@@ -709,6 +867,11 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         }
         
       } catch (smsError) {
+        if (isDelivery) {
+          console.log(`[SHIPPO DELIVERY DEBUG] ❌ FAILED to send delivery SMS:`);
+          console.log(`[SHIPPO DELIVERY DEBUG]   error: ${smsError.message}`);
+          console.log(`[SHIPPO DELIVERY DEBUG]   stack: ${smsError.stack || 'N/A'}`);
+        }
         console.error(`❌ Failed to send ${smsType} SMS to ${borrowerPhone}:`, smsError.message);
         return res.status(500).json({ error: `Failed to send ${smsType} SMS` });
       }

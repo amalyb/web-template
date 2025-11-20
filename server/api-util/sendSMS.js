@@ -86,7 +86,7 @@ async function sendSMS(to, message, opts = {}) {
 
   if (!to || !message) {
     console.warn('📭 Missing phone number or message');
-    return Promise.resolve();
+    return Promise.resolve({ skipped: true, reason: 'missing_phone_or_message' });
   }
 
   // Normalize the phone number to E.164 first
@@ -97,19 +97,22 @@ async function sendSMS(to, message, opts = {}) {
     const onlyE164 = normalizePhoneNumber(ONLY_PHONE);
     if (onlyE164 && toE164 !== onlyE164) {
       console.log('[sms] ONLY_PHONE set, skipping', { to: maskPhone(toE164), ONLY_PHONE: maskPhone(onlyE164), template: tag });
-      return Promise.resolve();
+      console.log(`[SHIPPO_SMS_DEBUG] SMS skipped due to ONLY_PHONE filter: to=${maskPhone(toE164 || to)}, ONLY_PHONE=${maskPhone(onlyE164)}, tag=${tag || 'none'}, reason=only_phone_filter`);
+      return Promise.resolve({ skipped: true, reason: 'only_phone_filter' });
     }
   }
 
   // DRY_RUN guard - log what would be sent
   if (DRY_RUN) {
     console.log('[sms][DRY_RUN] would send:', { to, template: tag, body: message });
-    return Promise.resolve();
+    console.log(`[SHIPPO_SMS_DEBUG] SMS skipped due to DRY_RUN: to=${maskPhone(toE164 || to)}, tag=${tag || 'none'}, reason=dry_run`);
+    return Promise.resolve({ skipped: true, reason: 'dry_run' });
   }
 
   if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN) {
     console.warn('⚠️ Twilio env vars missing — skipping SMS');
-    return Promise.resolve();
+    console.log(`[SHIPPO_SMS_DEBUG] SMS skipped due to missing credentials: to=${maskPhone(toE164 || to)}, tag=${tag || 'none'}, reason=missing_twilio_credentials`);
+    return Promise.resolve({ skipped: true, reason: 'missing_twilio_credentials' });
   }
 
   // Duplicate prevention check
@@ -123,15 +126,17 @@ async function sendSMS(to, message, opts = {}) {
   // toE164 already computed above for ONLY_PHONE check
   if (!toE164) {
     console.warn(`📱 Invalid phone number format: ${to}`);
+    console.log(`[SHIPPO_SMS_DEBUG] SMS skipped due to invalid phone format: to=${to}, tag=${tag || 'none'}, reason=invalid_phone_format`);
     if (role) failed(role, 'invalid_format');
-    return Promise.resolve();
+    return Promise.resolve({ skipped: true, reason: 'invalid_phone_format' });
   }
 
   // E.164 validation
   if (!isE164(toE164)) {
     console.warn('[SMS] invalid phone, aborting:', to ? maskPhone(to) : 'null');
+    console.log(`[SHIPPO_SMS_DEBUG] SMS skipped due to invalid E.164 format: to=${maskPhone(toE164)}, tag=${tag || 'none'}, reason=invalid_e164_format`);
     if (role) failed(role, 'invalid_e164');
-    return Promise.resolve();
+    return Promise.resolve({ skipped: true, reason: 'invalid_e164_format' });
   }
 
   // Check STOP list
@@ -194,10 +199,10 @@ async function sendSMS(to, message, opts = {}) {
   return client.messages
     .create(payload)
     .then(msg => {
-      // Success
+      // Success - SMS was actually sent
       if (role) sent(role);
       console.log(`[SMS:OUT] tag=${tag || 'none'} to=${maskPhone(toE164)} meta=${metaJson} body=${bodyJson} sid=${msg.sid}`);
-      return msg;
+      return { sent: true, message: msg, sid: msg.sid };
     })
     .catch(err => {
       // Optional: map Twilio error codes as before (21610 etc.)
