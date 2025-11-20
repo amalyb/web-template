@@ -374,32 +374,36 @@ async function sendShippingReminders() {
           const shortUrl = await shortLink(labelUrl);
           const message = `Sherbrt 🍧 Reminder: Please ship your item by tomorrow (${shipByStr}). Shipping label: ${shortUrl}`;
           
-          await sendSMS(providerPhone, message, {
+          const smsResult = await sendSMS(providerPhone, message, {
             role: 'lender',
             tag: 'shipping_reminder_24h',
             meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
           });
           
-          // Mark as sent
-          try {
-            await readSdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...protectedData,
-                  shippingReminders: {
-                    ...flags,
-                    shippingReminderSent24h: true
+          // Only mark as sent if SMS was actually sent
+          if (!smsResult?.skipped) {
+            try {
+              await readSdk.transactions.update({
+                id: tx.id,
+                attributes: {
+                  protectedData: {
+                    ...protectedData,
+                    shippingReminders: {
+                      ...flags,
+                      shippingReminderSent24h: true
+                    }
                   }
                 }
-              }
-            });
-            console.log(`[shipping-reminder] Marked 24h reminder as sent for tx ${txId}`);
-          } catch (updateError) {
-            console.error(`[shipping-reminder] Failed to mark 24h reminder as sent:`, updateError.message);
+              });
+              console.log(`[shipping-reminder] Marked 24h reminder as sent for tx ${txId}`);
+            } catch (updateError) {
+              console.error(`[shipping-reminder] Failed to mark 24h reminder as sent:`, updateError.message);
+            }
+            
+            sent24h++;
+          } else {
+            console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking 24h reminder as sent for tx ${txId}`);
           }
-          
-          sent24h++;
         } catch (e) {
           console.error(`[shipping-reminder] SMS failed for 24h reminder:`, e?.message || e);
           failed++;
@@ -416,32 +420,36 @@ async function sendShippingReminders() {
           const shortUrl = await shortLink(labelUrl);
           const message = `Sherbrt 🍧: Your item hasn't been scanned yet. Please ship ASAP to receive your payment. Shipping label: ${shortUrl}`;
           
-          await sendSMS(providerPhone, message, {
+          const smsResult = await sendSMS(providerPhone, message, {
             role: 'lender',
             tag: 'shipping_reminder_end_of_day',
             meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
           });
           
-          // Mark as sent
-          try {
-            await readSdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...protectedData,
-                  shippingReminders: {
-                    ...flags,
-                    shippingReminderSentEndOfDay: true
+          // Only mark as sent if SMS was actually sent
+          if (!smsResult?.skipped) {
+            try {
+              await readSdk.transactions.update({
+                id: tx.id,
+                attributes: {
+                  protectedData: {
+                    ...protectedData,
+                    shippingReminders: {
+                      ...flags,
+                      shippingReminderSentEndOfDay: true
+                    }
                   }
                 }
-              }
-            });
-            console.log(`[shipping-reminder] Marked end-of-day reminder as sent for tx ${txId}`);
-          } catch (updateError) {
-            console.error(`[shipping-reminder] Failed to mark end-of-day reminder as sent:`, updateError.message);
+              });
+              console.log(`[shipping-reminder] Marked end-of-day reminder as sent for tx ${txId}`);
+            } catch (updateError) {
+              console.error(`[shipping-reminder] Failed to mark end-of-day reminder as sent:`, updateError.message);
+            }
+            
+            sentEndOfDay++;
+          } else {
+            console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking end-of-day reminder as sent for tx ${txId}`);
           }
-          
-          sentEndOfDay++;
         } catch (e) {
           console.error(`[shipping-reminder] SMS failed for end-of-day reminder:`, e?.message || e);
           failed++;
@@ -461,32 +469,36 @@ async function sendShippingReminders() {
           try {
             const message = `Sherbrt 🍧: Your item was not shipped out in time. This transaction has been canceled.`;
             
-            await sendSMS(providerPhone, message, {
+            const smsResult = await sendSMS(providerPhone, message, {
               role: 'lender',
               tag: 'shipping_auto_cancel',
               meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
             });
             
-            // Mark as sent
-            try {
-              await readSdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...protectedData,
-                    shippingReminders: {
-                      ...flags,
-                      shippingAutoCancelSent: true
+            // Only mark as sent if SMS was actually sent
+            if (!smsResult?.skipped) {
+              try {
+                await readSdk.transactions.update({
+                  id: tx.id,
+                  attributes: {
+                    protectedData: {
+                      ...protectedData,
+                      shippingReminders: {
+                        ...flags,
+                        shippingAutoCancelSent: true
+                      }
                     }
                   }
-                }
-              });
-              console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
-            } catch (updateError) {
-              console.error(`[shipping-reminder] Failed to mark auto-cancel as sent:`, updateError.message);
+                });
+                console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
+              } catch (updateError) {
+                console.error(`[shipping-reminder] Failed to mark auto-cancel as sent:`, updateError.message);
+              }
+              
+              sentCancel++;
+            } else {
+              console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking auto-cancel as sent for tx ${txId}`);
             }
-            
-            sentCancel++;
           } catch (e) {
             console.error(`[shipping-reminder] SMS failed for auto-cancel:`, e?.message || e);
             failed++;

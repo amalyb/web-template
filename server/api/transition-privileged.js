@@ -1320,7 +1320,7 @@ async function createShippingLabels({
         if (existingNotification?.sent === true) {
           console.log(`📱 Label created SMS already sent to borrower (${maskPhone(borrowerPhone)}) - skipping`);
         } else {
-          await sendSMS(
+          const smsResult = await sendSMS(
             borrowerPhone,
             `Sherbrt: your item will ship soon. Track at ${trackingUrl}`,
             { 
@@ -1331,22 +1331,29 @@ async function createShippingLabels({
               meta: { listingId: listing?.id?.uuid || listing?.id }
             }
           );
-          console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for label created with tracking: ${maskUrl(trackingUrl)}`);
           
-          // Mark as sent in protectedData
-          try {
-            const notificationResult = await upsertProtectedData(txId, {
-              shippingNotification: {
-                labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
+          // Check if SMS was actually sent (not skipped by guards)
+          if (smsResult && smsResult.skipped) {
+            console.log(`📱 Label created SMS was skipped: ${smsResult.reason} - NOT setting labelCreated flag`);
+            // Don't set flag - allow retry later
+          } else {
+            console.log(`📱 SMS sent to borrower (${maskPhone(borrowerPhone)}) for label created with tracking: ${maskUrl(trackingUrl)}`);
+            
+            // Mark as sent in protectedData (only if SMS was actually sent)
+            try {
+              const notificationResult = await upsertProtectedData(txId, {
+                shippingNotification: {
+                  labelCreated: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
+                }
+              }, { source: 'shippo' });
+              if (notificationResult && notificationResult.success === false) {
+                console.warn('⚠️ [PERSIST] Failed to save notification state:', notificationResult.error);
+              } else {
+                console.log(`✅ [PERSIST] Updated shippingNotification.labelCreated`);
               }
-            }, { source: 'shippo' });
-            if (notificationResult && notificationResult.success === false) {
-              console.warn('⚠️ [PERSIST] Failed to save notification state:', notificationResult.error);
-            } else {
-              console.log(`✅ [PERSIST] Updated shippingNotification.labelCreated`);
+            } catch (updateError) {
+              console.warn(`❌ [PERSIST] Exception saving notification state:`, updateError.message);
             }
-          } catch (updateError) {
-            console.warn(`❌ [PERSIST] Exception saving notification state:`, updateError.message);
           }
         }
       } else if (borrowerPhone) {

@@ -427,7 +427,7 @@ async function sendOverdueReminders() {
               }
               
               try {
-                await sendSMS(borrowerPhone, message, {
+                const smsResult = await sendSMS(borrowerPhone, message, {
                   role: 'borrower',
                   tag: tag,
                   meta: { 
@@ -438,33 +438,37 @@ async function sendOverdueReminders() {
                   }
                 });
                 
-                // Update transaction with SMS notification tracking only
+                // Only update transaction with SMS notification tracking if SMS was actually sent
                 // (Charges are now handled by applyCharges() below)
-                const updatedReturnData = {
-                  ...returnData,
-                  overdue: {
-                    ...overdue,
-                    daysLate: daysLate,
-                    lastNotifiedDay: daysLate
-                  }
-                };
-                
-                try {
-                  await readSdk.transactions.update({
-                    id: tx.id,
-                    attributes: {
-                      protectedData: {
-                        ...protectedData,
-                        return: updatedReturnData
-                      }
+                if (!smsResult?.skipped) {
+                  const updatedReturnData = {
+                    ...returnData,
+                    overdue: {
+                      ...overdue,
+                      daysLate: daysLate,
+                      lastNotifiedDay: daysLate
                     }
-                  });
-                  console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
-                } catch (updateError) {
-                  console.error(`❌ Failed to update transaction:`, updateError.message);
+                  };
+                  
+                  try {
+                    await readSdk.transactions.update({
+                      id: tx.id,
+                      attributes: {
+                        protectedData: {
+                          ...protectedData,
+                          return: updatedReturnData
+                        }
+                      }
+                    });
+                    console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
+                  } catch (updateError) {
+                    console.error(`❌ Failed to update transaction:`, updateError.message);
+                  }
+                  
+                  sent++;
+                } else {
+                  console.log(`⏭️ SMS skipped (${smsResult.reason}) - NOT updating lastNotifiedDay flag for tx ${tx?.id?.uuid || '(no id)'}`);
                 }
-                
-                sent++;
               } catch (e) {
                 console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
                 failed++;

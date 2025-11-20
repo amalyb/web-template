@@ -230,7 +230,7 @@ async function sendShipByReminders() {
         }
         
         try {
-          await sendSMS(providerPhone, message, {
+          const smsResult = await sendSMS(providerPhone, message, {
             role: 'lender',
             tag: tag,
             meta: { 
@@ -239,28 +239,32 @@ async function sendShipByReminders() {
             }
           });
           
-          // Mark reminder as sent
-          const updatedReminders = { ...reminders, [reminderKey]: new Date().toISOString() };
-          
-          try {
-            await sdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...protectedData,
-                  outbound: {
-                    ...outbound,
-                    reminders: updatedReminders
+          // Only mark reminder as sent if SMS was actually sent
+          if (!smsResult?.skipped) {
+            const updatedReminders = { ...reminders, [reminderKey]: new Date().toISOString() };
+            
+            try {
+              await sdk.transactions.update({
+                id: tx.id,
+                attributes: {
+                  protectedData: {
+                    ...protectedData,
+                    outbound: {
+                      ...outbound,
+                      reminders: updatedReminders
+                    }
                   }
                 }
-              }
-            });
-            console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
-          } catch (updateError) {
-            console.error(`❌ Failed to update transaction reminders:`, updateError.message);
+              });
+              console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
+            } catch (updateError) {
+              console.error(`❌ Failed to update transaction reminders:`, updateError.message);
+            }
+            
+            sent++;
+          } else {
+            console.log(`⏭️ SMS skipped (${smsResult.reason}) - NOT updating reminder flag for tx ${tx?.id?.uuid || '(no id)'}`);
           }
-          
-          sent++;
         } catch (e) {
           console.error(`❌ SMS failed to ${providerPhone}:`, e?.message || e);
           failed++;

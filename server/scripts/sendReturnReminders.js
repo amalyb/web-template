@@ -206,35 +206,39 @@ async function sendReturnReminders() {
       }
 
       try {
-        await sendSMS(borrowerPhone, message, { 
+        const smsResult = await sendSMS(borrowerPhone, message, { 
           role: 'borrower', 
           kind: 'return-reminder',
           tag: tag,
           meta: { transactionId: tx?.id?.uuid || tx?.id }
         });
         
-        // Mark T-1 as sent for idempotency
-        if (deliveryEnd === tMinus1) {
-          try {
-            await sdk.transactions.update({
-              id: tx.id,
-              attributes: {
-                protectedData: {
-                  ...pd,
-                  return: {
-                    ...returnData,
-                    tMinus1SentAt: new Date().toISOString()
+        // Only mark T-1 as sent for idempotency if SMS was actually sent
+        if (!smsResult?.skipped) {
+          if (deliveryEnd === tMinus1) {
+            try {
+              await sdk.transactions.update({
+                id: tx.id,
+                attributes: {
+                  protectedData: {
+                    ...pd,
+                    return: {
+                      ...returnData,
+                      tMinus1SentAt: new Date().toISOString()
+                    }
                   }
                 }
-              }
-            });
-            console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
-          } catch (updateError) {
-            console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
+              });
+              console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+            } catch (updateError) {
+              console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
+            }
           }
+          
+          sent++;
+        } else {
+          console.log(`⏭️ SMS skipped (${smsResult.reason}) - NOT marking T-1 as sent for tx ${tx?.id?.uuid || '(no id)'}`);
         }
-        
-        sent++;
       } catch (e) {
         console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
         failed++;
