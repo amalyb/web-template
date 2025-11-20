@@ -1,0 +1,32 @@
+{
+  "event": {
+    "id": "webhook-event-id-12345",
+    "type": "track_updated",
+    "mode": "live",
+    "created_at": "2025-01-18T14:00:00Z"
+  },
+  "data": {
+    "tracking_number": "REPLACE_WITH_REAL_TRACKING_NUMBER",
+    "carrier": "REPLACE_WITH_REAL_CARRIER",
+    "tracking_status": {
+      "status": "DELIVERED",
+      "status_details": "Delivered to recipient",
+      "substatus": {
+        "code": "DELIVERED",
+        "text": "Delivered to recipient"
+      },
+      "status_date": "2025-01-18T14:00:00Z",
+      "location": {
+        "city": "New York",
+        "state": "NY",
+        "zip": "10001",
+        "country": "US"
+      }
+    },
+    "metadata": {
+      "transactionId": "REPLACE_WITH_REAL_TRANSACTION_ID",
+      "direction": "outbound"
+    }
+  }
+}
+
