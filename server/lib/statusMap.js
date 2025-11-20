@@ -68,11 +68,32 @@ function isShippedStatus(status) {
 /**
  * Check if status indicates delivered
  * 
+ * Handles variations like:
+ * - DELIVERED
+ * - DELIVERED_TO_ACCESS_POINT
+ * - DELIVERED_TO_RECIPIENT
+ * - DELIVERED (Locker)
+ * - DELIVERED_TO_NEIGHBOR
+ * 
  * @param {string} status - Raw status from Shippo
  * @returns {boolean}
  */
 function isDeliveredStatus(status) {
-  return toCarrierPhase(status) === 'DELIVERED';
+  if (!status) return false;
+  const upperStatus = String(status).trim().toUpperCase();
+  
+  // Check exact matches first (fast path)
+  if (DELIVERED_STATUSES.has(upperStatus)) {
+    return true;
+  }
+  
+  // Check if status starts with "DELIVERED" to catch variations
+  // Examples: DELIVERED_TO_ACCESS_POINT, DELIVERED (Locker), etc.
+  if (upperStatus.startsWith('DELIVERED')) {
+    return true;
+  }
+  
+  return false;
 }
 
 module.exports = { 
