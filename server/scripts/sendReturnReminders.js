@@ -10,37 +10,107 @@ try {
   sendSMS = () => Promise.resolve();
 }
 
-// ✅ Use the correct SDK helper
-const { getTrustedSdk } = require('../api-util/sdk');
+// ✅ Use the correct SDK helper for scripts (Integration SDK preferred, no user token needed)
+const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 
-// Create a trusted SDK instance for scripts (no req needed)
+// Helper to mask secrets for logging
+function maskSecret(value, keepLast = 6) {
+  if (!value || typeof value !== 'string') return '(empty or not a string)';
+  if (value.length <= keepLast) return '***';
+  return value.slice(0, -keepLast).replace(/./g, '*') + value.slice(-keepLast);
+}
+
+// Helper to check for hidden whitespace/BOM
+function checkForHiddenChars(value) {
+  if (!value) return { hasWhitespace: false, hasBOM: false, issues: [] };
+  const issues = [];
+  if (/\s/.test(value)) issues.push('contains whitespace');
+  if (value.charCodeAt(0) === 0xFEFF) issues.push('has BOM');
+  if (/\n/.test(value)) issues.push('contains newline');
+  if (/\r/.test(value)) issues.push('contains carriage return');
+  if (/\t/.test(value)) issues.push('contains tab');
+  return {
+    hasWhitespace: /\s/.test(value),
+    hasBOM: value.charCodeAt(0) === 0xFEFF,
+    issues: issues.length > 0 ? issues : ['none']
+  };
+}
+
+// Create SDK instance for scripts using centralized helper
+// This uses Integration SDK (preferred) or Marketplace SDK (fallback)
+// No user token required - perfect for backend automation
 async function getScriptSdk() {
-  const sharetribeSdk = require('sharetribe-flex-sdk');
-  const CLIENT_ID = process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID;
-  const CLIENT_SECRET = process.env.SHARETRIBE_SDK_CLIENT_SECRET;
-  const BASE_URL = process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL;
+  // ===== DIAGNOSTIC: Log SDK initialization details =====
+  console.log('\n[FLEX-400-DIAG] ===== SDK INITIALIZATION DIAGNOSTICS =====');
   
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error('Missing Sharetribe credentials: REACT_APP_SHARETRIBE_SDK_CLIENT_ID and SHARETRIBE_SDK_CLIENT_SECRET required');
+  const INTEGRATION_ID = process.env.INTEGRATION_CLIENT_ID;
+  const INTEGRATION_SECRET = process.env.INTEGRATION_CLIENT_SECRET;
+  const MARKETPLACE_ID = process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID;
+  const MARKETPLACE_SECRET = process.env.SHARETRIBE_SDK_CLIENT_SECRET;
+  const BASE_URL = process.env.SHARETRIBE_SDK_BASE_URL || process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL;
+  
+  // Log which credentials are present
+  if (INTEGRATION_ID && INTEGRATION_SECRET) {
+    console.log(`[FLEX-400-DIAG] Using Integration SDK (preferred for scripts)`);
+    console.log(`[FLEX-400-DIAG] Integration Client ID: ${maskSecret(INTEGRATION_ID)}`);
+    console.log(`[FLEX-400-DIAG] Integration Secret present: YES`);
+  } else if (MARKETPLACE_ID && MARKETPLACE_SECRET) {
+    console.log(`[FLEX-400-DIAG] Using Marketplace SDK (fallback)`);
+    console.log(`[FLEX-400-DIAG] Marketplace Client ID: ${maskSecret(MARKETPLACE_ID)}`);
+    console.log(`[FLEX-400-DIAG] Marketplace Secret present: YES`);
+  } else {
+    console.error(`[FLEX-400-DIAG] ❌ Missing credentials!`);
+    console.error(`[FLEX-400-DIAG] Need either:`);
+    console.error(`[FLEX-400-DIAG]   - INTEGRATION_CLIENT_ID + INTEGRATION_CLIENT_SECRET (preferred), or`);
+    console.error(`[FLEX-400-DIAG]   - REACT_APP_SHARETRIBE_SDK_CLIENT_ID + SHARETRIBE_SDK_CLIENT_SECRET`);
   }
   
-  const sdk = sharetribeSdk.createInstance({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    baseUrl: BASE_URL,
-  });
+  console.log(`[FLEX-400-DIAG] BASE_URL: ${BASE_URL || '(will use default: https://flex-api.sharetribe.com)'}`);
   
-  // Exchange token to get trusted access
-  const response = await sdk.exchangeToken();
-  const trustedToken = response.data;
+  // Use centralized SDK factory (handles Integration vs Marketplace automatically)
+  // This does NOT call exchangeToken() - Integration SDK doesn't need it,
+  // and Marketplace SDK with clientSecret can work without user token exchange
+  const sdk = getFlexSdk();
   
-  return sharetribeSdk.createInstance({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
+  // ===== DIAGNOSTIC: Test query to verify SDK works =====
+  let testQuerySuccess = false;
+  let testQueryError = null;
+  
+  try {
+    console.log('[FLEX-400-DIAG] Running test query: sdk.transactions.query({ per_page: 1 })...');
+    const testResult = await sdk.transactions.query({ per_page: 1 });
+    testQuerySuccess = true;
+    console.log(`[FLEX-400-DIAG] ✅ Test query succeeded. Found ${testResult?.data?.data?.length || 0} transactions`);
+  } catch (err) {
+    testQuerySuccess = false;
+    testQueryError = err;
+    console.error('[FLEX-400-DIAG] ❌ Test query FAILED');
+    console.error(`[FLEX-400-DIAG] Test query error message: ${err?.message || '(no message)'}`);
+    if (err.response) {
+      console.error(`[FLEX-400-DIAG] Test query response status: ${err.response.status}`);
+      console.error(`[FLEX-400-DIAG] Test query response data: ${JSON.stringify(err.response.data, null, 2)}`);
+    }
+    if (err.stack) {
+      console.error(`[FLEX-400-DIAG] Test query stack trace:\n${err.stack}`);
+    }
+    // Don't throw here - let the actual query attempt happen so we can see the full error
+  }
+  
+  // Store diagnostics for summary
+  global.__flex400Diagnostics = {
+    exchangeTokenSuccess: true, // Integration SDK doesn't use exchangeToken
+    exchangeTokenError: null,
+    testQuerySuccess,
+    testQueryError,
+    clientIdMasked: INTEGRATION_ID ? maskSecret(INTEGRATION_ID) : maskSecret(MARKETPLACE_ID),
+    clientSecretPresent: !!(INTEGRATION_SECRET || MARKETPLACE_SECRET),
     baseUrl: BASE_URL,
-    tokenStore: sharetribeSdk.tokenStore.memoryStore(trustedToken),
-  });
+    marketplaceId: process.env.REACT_APP_SHARETRIBE_MARKETPLACE_ID,
+    usingIntegrationSdk: !!(INTEGRATION_ID && INTEGRATION_SECRET),
+  };
+  
+  return sdk;
 }
 
 // ---- CLI flags / env guards ----
@@ -74,6 +144,67 @@ function yyyymmdd(d) {
 
 async function sendReturnReminders() {
   console.log('🚀 Starting return reminder SMS script...');
+  
+  // ===== DIAGNOSTIC: Verify environment variables =====
+  console.log('\n[FLEX-400-DIAG] ===== ENVIRONMENT VARIABLE VERIFICATION =====');
+  const envVarsToCheck = [
+    'REACT_APP_SHARETRIBE_SDK_CLIENT_ID',
+    'SHARETRIBE_SDK_CLIENT_SECRET',
+    'REACT_APP_SHARETRIBE_SDK_BASE_URL',
+    'REACT_APP_SHARETRIBE_MARKETPLACE_ID',
+    'PUBLIC_BASE_URL',
+    'SITE_URL',
+  ];
+  
+  const envCheckResults = {};
+  for (const varName of envVarsToCheck) {
+    const value = process.env[varName];
+    const isMissing = !value;
+    const hasWhitespace = value ? /\s/.test(value) : false;
+    const hasNewline = value ? /\n/.test(value) : false;
+    const charCheck = checkForHiddenChars(value);
+    
+    envCheckResults[varName] = {
+      present: !isMissing,
+      masked: maskSecret(value),
+      hasWhitespace,
+      hasNewline,
+      hiddenCharIssues: charCheck.issues,
+    };
+    
+    console.log(`[FLEX-400-DIAG] ${varName}:`);
+    console.log(`[FLEX-400-DIAG]   Present: ${!isMissing ? 'YES' : 'NO'}`);
+    if (!isMissing) {
+      console.log(`[FLEX-400-DIAG]   Masked value: ${maskSecret(value)}`);
+      console.log(`[FLEX-400-DIAG]   Has whitespace: ${hasWhitespace}`);
+      console.log(`[FLEX-400-DIAG]   Has newline: ${hasNewline}`);
+      console.log(`[FLEX-400-DIAG]   Hidden char issues: ${charCheck.issues.join(', ')}`);
+    }
+  }
+  
+  // Store env check results for summary
+  global.__flex400EnvCheck = envCheckResults;
+  
+  // ===== DIAGNOSTIC: Log raw SDK-related env vars (filtered) =====
+  console.log('\n[FLEX-400-DIAG] ===== RAW ENVIRONMENT VARIABLES (SDK-RELATED ONLY) =====');
+  const sdkEnvVars = {
+    REACT_APP_SHARETRIBE_SDK_CLIENT_ID: process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID,
+    SHARETRIBE_SDK_CLIENT_SECRET: process.env.SHARETRIBE_SDK_CLIENT_SECRET,
+    REACT_APP_SHARETRIBE_SDK_BASE_URL: process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL,
+    REACT_APP_SHARETRIBE_MARKETPLACE_ID: process.env.REACT_APP_SHARETRIBE_MARKETPLACE_ID,
+  };
+  console.log('[FLEX-400-DIAG] Raw SDK env vars (masked):');
+  for (const [key, value] of Object.entries(sdkEnvVars)) {
+    console.log(`[FLEX-400-DIAG]   ${key}: ${value ? maskSecret(value) : '(not set)'}`);
+    if (value) {
+      // Show JSON stringified version to reveal hidden chars
+      const jsonStr = JSON.stringify(value);
+      if (jsonStr !== `"${value}"`) {
+        console.log(`[FLEX-400-DIAG]     JSON.stringify reveals: ${jsonStr}`);
+      }
+    }
+  }
+  
   try {
     const sdk = await getScriptSdk();
     console.log('✅ SDK initialized');
@@ -94,7 +225,38 @@ async function sendReturnReminders() {
       per_page: 100, // use snake_case like our other scripts
     };
 
-    const res = await sdk.transactions.query(query);
+    // ===== DIAGNOSTIC: Log actual query attempt =====
+    console.log('\n[FLEX-400-DIAG] ===== EXECUTING ACTUAL QUERY =====');
+    console.log(`[FLEX-400-DIAG] Query: ${JSON.stringify(query, null, 2)}`);
+    
+    let actualQuerySuccess = false;
+    let actualQueryError = null;
+    let res = null;
+    
+    try {
+      res = await sdk.transactions.query(query);
+      actualQuerySuccess = true;
+      console.log(`[FLEX-400-DIAG] ✅ Actual query succeeded. Found ${res?.data?.data?.length || 0} transactions`);
+    } catch (err) {
+      actualQuerySuccess = false;
+      actualQueryError = err;
+      console.error('[FLEX-400-DIAG] ❌ Actual query FAILED');
+      console.error(`[FLEX-400-DIAG] Actual query error message: ${err?.message || '(no message)'}`);
+      if (err.response) {
+        console.error(`[FLEX-400-DIAG] Actual query response status: ${err.response.status}`);
+        console.error(`[FLEX-400-DIAG] Actual query response data: ${JSON.stringify(err.response.data, null, 2)}`);
+      }
+      if (err.stack) {
+        console.error(`[FLEX-400-DIAG] Actual query stack trace:\n${err.stack}`);
+      }
+      throw err; // Re-throw to maintain existing error behavior
+    }
+    
+    // Store actual query results for summary
+    global.__flex400ActualQuery = {
+      success: actualQuerySuccess,
+      error: actualQueryError,
+    };
     const txs = res?.data?.data || [];
     const included = new Map();
     for (const inc of res?.data?.included || []) {
@@ -291,12 +453,90 @@ async function sendReturnReminders() {
 
     console.log(`\n📊 Done. Sent=${sent} Failed=${failed} Processed=${processed}`);
     if (DRY) console.log('🧪 DRY-RUN mode: no real SMS were sent.');
+    
+    // ===== DIAGNOSTIC: Generate summary =====
+    console.log('\n[FLEX-400-DIAG] ===== FLEX-400-DIAGNOSTIC SUMMARY =====');
+    const diag = global.__flex400Diagnostics || {};
+    const envCheck = global.__flex400EnvCheck || {};
+    const actualQuery = global.__flex400ActualQuery || {};
+    
+    console.log(`[FLEX-400-DIAG] 1. SDK Type: ${diag.usingIntegrationSdk ? 'Integration SDK (no token exchange needed)' : 'Marketplace SDK'}`);
+    console.log(`[FLEX-400-DIAG]    Note: Integration SDK does not use exchangeToken() - authentication handled automatically`);
+    
+    console.log(`[FLEX-400-DIAG] 2. Test query success: ${diag.testQuerySuccess ? 'YES' : 'NO'}`);
+    if (!diag.testQuerySuccess && diag.testQueryError) {
+      console.log(`[FLEX-400-DIAG]    Error: ${diag.testQueryError?.message || '(no message)'}`);
+      if (diag.testQueryError?.response) {
+        console.log(`[FLEX-400-DIAG]    Status: ${diag.testQueryError.response.status}`);
+        console.log(`[FLEX-400-DIAG]    Data: ${JSON.stringify(diag.testQueryError.response.data, null, 2)}`);
+      }
+    }
+    
+    console.log(`[FLEX-400-DIAG] 3. Actual query success: ${actualQuery.success ? 'YES' : 'NO'}`);
+    if (!actualQuery.success && actualQuery.error) {
+      console.log(`[FLEX-400-DIAG]    Error: ${actualQuery.error?.message || '(no message)'}`);
+      if (actualQuery.error?.response) {
+        console.log(`[FLEX-400-DIAG]    Status: ${actualQuery.error.response.status}`);
+        console.log(`[FLEX-400-DIAG]    Data: ${JSON.stringify(actualQuery.error.response.data, null, 2)}`);
+      }
+    }
+    
+    console.log(`[FLEX-400-DIAG] 4. Environment variables:`);
+    for (const [varName, check] of Object.entries(envCheck)) {
+      if (!check.present) {
+        console.log(`[FLEX-400-DIAG]    ${varName}: MISSING`);
+      } else if (check.hasWhitespace || check.hasNewline || check.hiddenCharIssues.length > 1) {
+        console.log(`[FLEX-400-DIAG]    ${varName}: MALFORMED (${check.hiddenCharIssues.join(', ')})`);
+      }
+    }
+    
+    console.log(`[FLEX-400-DIAG] 5. SDK Configuration:`);
+    console.log(`[FLEX-400-DIAG]    Client ID: ${diag.clientIdMasked || '(not logged)'}`);
+    console.log(`[FLEX-400-DIAG]    Client Secret present: ${diag.clientSecretPresent ? 'YES' : 'NO'}`);
+    console.log(`[FLEX-400-DIAG]    BASE_URL: ${diag.baseUrl || '(not set, using default)'}`);
+    console.log(`[FLEX-400-DIAG]    Marketplace ID: ${diag.marketplaceId || '(not set)'}`);
+    
+    // Determine root cause
+    console.log(`[FLEX-400-DIAG] 6. Root Cause Analysis:`);
+    if (!diag.testQuerySuccess) {
+      console.log(`[FLEX-400-DIAG]    → Issue: Test query failed (bad credentials, network, or permissions)`);
+      if (diag.testQueryError?.response?.status === 400) {
+        console.log(`[FLEX-400-DIAG]    → Flex returned 400, likely:`);
+        console.log(`[FLEX-400-DIAG]       - Wrong clientId/clientSecret pair`);
+        console.log(`[FLEX-400-DIAG]       - Missing or invalid baseUrl`);
+        console.log(`[FLEX-400-DIAG]       - Using Marketplace credentials instead of Integration credentials`);
+      }
+    } else if (!actualQuery.success) {
+      console.log(`[FLEX-400-DIAG]    → Issue: Test query OK, but actual query failed (query-specific problem)`);
+      if (actualQuery.error?.response?.status === 400) {
+        console.log(`[FLEX-400-DIAG]    → Flex returned 400 on actual query, check query parameters`);
+      }
+    } else {
+      console.log(`[FLEX-400-DIAG]    → All queries succeeded - no Flex 400 error detected`);
+    }
+    
+    console.log('[FLEX-400-DIAG] ===== END DIAGNOSTIC SUMMARY =====\n');
+    
   } catch (err) {
-    console.error('❌ Fatal:', err?.message || err);
+    console.error('\n❌ Fatal error:', err?.message || err);
     if (err.response) {
       console.error('🔎 Flex API response status:', err.response.status);
       console.error('🔎 Flex API response data:', JSON.stringify(err.response.data, null, 2));
+      console.error('🔎 Flex API response headers:', JSON.stringify(err.response.headers || {}, null, 2));
     }
+    if (err.stack) {
+      console.error('🔎 Stack trace:', err.stack);
+    }
+    
+    // Provide helpful guidance based on error type
+    if (err.response?.status === 400) {
+      console.error('\n💡 Troubleshooting 400 error:');
+      console.error('   1. Check that INTEGRATION_CLIENT_ID + INTEGRATION_CLIENT_SECRET are set (preferred)');
+      console.error('   2. Or verify REACT_APP_SHARETRIBE_SDK_CLIENT_ID + SHARETRIBE_SDK_CLIENT_SECRET are correct');
+      console.error('   3. Ensure BASE_URL is correct (default: https://flex-api.sharetribe.com)');
+      console.error('   4. Verify credentials match your Flex marketplace (Integration vs Marketplace API)');
+    }
+    
     process.exit(1);
   }
 }
