@@ -79,17 +79,19 @@ async function sendReturnReminders() {
     console.log('✅ SDK initialized');
 
     // today/tomorrow window (allow overrides for testing)
-    const today = process.env.FORCE_TODAY || yyyymmdd(Date.now());
-    const tomorrow = process.env.FORCE_TOMORROW || yyyymmdd(Date.now() + 24 * 60 * 60 * 1000);
+    const now = Date.now();
+    const nowISO = new Date(now).toISOString();
+    const today = process.env.FORCE_TODAY || yyyymmdd(now);
+    const tomorrow = process.env.FORCE_TOMORROW || yyyymmdd(now + 24 * 60 * 60 * 1000);
     const tMinus1 = yyyymmdd(new Date(today).getTime() - 24 * 60 * 60 * 1000);
-    console.log(`📅 Window: t-1=${tMinus1}, today=${today}, tomorrow=${tomorrow}`);
+    console.log(`[RETURN-REMINDER-DEBUG] 📅 Current time: ${nowISO} (UTC)`);
+    console.log(`[RETURN-REMINDER-DEBUG] 📅 Window: t-1=${tMinus1}, today=${today}, tomorrow=${tomorrow}`);
 
     // Query transactions for T-1, today, and tomorrow
     const query = {
       state: 'delivered',
-      deliveryEnd: [tMinus1, today, tomorrow],
       include: ['customer', 'listing'],
-      perPage: 50,
+      per_page: 100, // use snake_case like our other scripts
     };
 
     const res = await sdk.transactions.query(query);
@@ -109,7 +111,34 @@ async function sendReturnReminders() {
       processed++;
 
       const deliveryEnd = tx?.attributes?.deliveryEnd;
-      if (deliveryEnd !== tMinus1 && deliveryEnd !== today && deliveryEnd !== tomorrow) continue;
+      const deliveryEndRaw = deliveryEnd;
+      const deliveryEndNormalized = deliveryEnd ? yyyymmdd(deliveryEnd) : null;
+      const bookingEnd = tx?.attributes?.booking?.end;
+      const bookingEndNormalized = bookingEnd ? yyyymmdd(bookingEnd) : null;
+      
+      // [RETURN-REMINDER-DEBUG] Log transaction details for debugging
+      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || tx?.id || '(no id)'} deliveryEndRaw=${deliveryEndRaw} deliveryEndNormalized=${deliveryEndNormalized} bookingEnd=${bookingEnd} bookingEndNormalized=${bookingEndNormalized} today=${today} tomorrow=${tomorrow} tMinus1=${tMinus1}`);
+      
+      // Check both raw and normalized deliveryEnd
+      const matchesWindow = deliveryEnd === tMinus1 || deliveryEnd === today || deliveryEnd === tomorrow ||
+                            deliveryEndNormalized === tMinus1 || deliveryEndNormalized === today || deliveryEndNormalized === tomorrow;
+      
+      if (!matchesWindow) {
+        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} SKIPPED - deliveryEnd (${deliveryEndRaw}) does not match window [${tMinus1}, ${today}, ${tomorrow}]`);
+        continue;
+      }
+      
+      // Determine which reminder window this transaction falls into
+      let reminderType = null;
+      if (deliveryEnd === tMinus1 || deliveryEndNormalized === tMinus1) {
+        reminderType = 'T-1';
+      } else if (deliveryEnd === today || deliveryEndNormalized === today) {
+        reminderType = 'TODAY';
+      } else if (deliveryEnd === tomorrow || deliveryEndNormalized === tomorrow) {
+        reminderType = 'TOMORROW';
+      }
+      
+      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} MATCHES window - reminderType=${reminderType} deliveryEnd=${deliveryEndRaw}`);
 
       // resolve customer from included
       const custRef = tx?.relationships?.customer?.data;
@@ -122,9 +151,11 @@ async function sendReturnReminders() {
         null;
 
       if (!borrowerPhone) {
-        console.warn(`⚠️ No borrower phone for tx ${tx?.id?.uuid || '(no id)'}`);
+        console.warn(`[RETURN-REMINDER-DEBUG] ⚠️ No borrower phone for tx ${tx?.id?.uuid || '(no id)'} - SKIPPING`);
         continue;
       }
+      
+      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} borrowerPhone=${borrowerPhone ? borrowerPhone.replace(/\d(?=\d{4})/g, '*') : 'MISSING'}`);
 
       if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
         if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
@@ -137,7 +168,14 @@ async function sendReturnReminders() {
       const pd = tx?.attributes?.protectedData || {};
       const returnData = pd.return || {};
       
-      if (deliveryEnd === tMinus1) {
+      // Use normalized date for comparison if raw doesn't match
+      const effectiveDeliveryEnd = (deliveryEnd === tMinus1 || deliveryEndNormalized === tMinus1) ? tMinus1 :
+                                   (deliveryEnd === today || deliveryEndNormalized === today) ? today :
+                                   (deliveryEnd === tomorrow || deliveryEndNormalized === tomorrow) ? tomorrow : null;
+      
+      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} effectiveDeliveryEnd=${effectiveDeliveryEnd} reminderType=${reminderType}`);
+      
+      if (effectiveDeliveryEnd === tMinus1) {
         // T-1 day: Send QR/label (use real label if available)
         // Check for return label in priority order: QR URL (preferred), then label URL
         let returnLabelUrl = pd.returnQrUrl ||  // Preferred: USPS QR code URL
@@ -149,7 +187,7 @@ async function sendReturnReminders() {
         
         // If no return label exists, log warning (label should have been created during accept transition)
         if (!returnLabelUrl && !returnData.tMinus1SentAt) {
-          console.warn(`[return-reminders] ⚠️ No return label found for tx ${tx?.id?.uuid || '(no id)'} - label should have been created during accept transition`);
+          console.warn(`[RETURN-REMINDER-DEBUG] [return-reminders] ⚠️ No return label found for tx ${tx?.id?.uuid || '(no id)'} - label should have been created during accept transition - SKIPPING`);
           // Note: Creating a real Shippo label here would require addresses, parcel info, etc.
           // For now, skip sending T-1 reminder if no label exists (better than sending placeholder)
           continue;
@@ -167,7 +205,7 @@ async function sendReturnReminders() {
         message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${shortUrl} Thanks for sharing style 💌`;
         tag = 'return_tminus1_to_borrower';
         
-      } else if (deliveryEnd === today) {
+      } else if (effectiveDeliveryEnd === today) {
         // Today: Ship back
         // Check if package already scanned - skip reminder if so
         if (
@@ -215,7 +253,8 @@ async function sendReturnReminders() {
         
         // Only mark T-1 as sent for idempotency if SMS was actually sent
         if (!smsResult?.skipped) {
-          if (deliveryEnd === tMinus1) {
+          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} SMS sent successfully - tag=${tag}`);
+          if (effectiveDeliveryEnd === tMinus1) {
             try {
               await sdk.transactions.update({
                 id: tx.id,
@@ -237,7 +276,7 @@ async function sendReturnReminders() {
           
           sent++;
         } else {
-          console.log(`⏭️ SMS skipped (${smsResult.reason}) - NOT marking T-1 as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+          console.log(`[RETURN-REMINDER-DEBUG] ⏭️ SMS skipped (${smsResult.reason}) - NOT marking T-1 as sent for tx ${tx?.id?.uuid || '(no id)'}`);
         }
       } catch (e) {
         console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
@@ -254,6 +293,10 @@ async function sendReturnReminders() {
     if (DRY) console.log('🧪 DRY-RUN mode: no real SMS were sent.');
   } catch (err) {
     console.error('❌ Fatal:', err?.message || err);
+    if (err.response) {
+      console.error('🔎 Flex API response status:', err.response.status);
+      console.error('🔎 Flex API response data:', JSON.stringify(err.response.data, null, 2));
+    }
     process.exit(1);
   }
 }
