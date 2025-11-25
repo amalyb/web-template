@@ -8,7 +8,7 @@
  * 3. 48-hour "auto-cancel" flow for unshipped items
  * 
  * CRON SCHEDULING (Render/Heroku):
- * Run every 15 minutes: */15 * * * * node server/scripts/sendShippingReminders.js
+ * Run every 15 minutes: *\/15 * * * * node server/scripts/sendShippingReminders.js
  * 
  * For testing:
  * npm run test:shipping-reminders

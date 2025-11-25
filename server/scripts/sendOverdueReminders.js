@@ -1,3 +1,20 @@
+#!/usr/bin/env node
+/**
+ * Overdue Reminder SMS Script
+ * 
+ * Sends overdue return reminders and applies late fees:
+ * - SMS reminders for borrowers who haven't returned items
+ * - Applies daily late fees ($15/day) for days 1-4
+ * - Applies replacement charge for day 5+ (6+ chargeable days)
+ * 
+ * CRON SCHEDULING (Render/Heroku):
+ * Run daily at 9 AM UTC: 0 9 * * * node server/scripts/sendOverdueReminders.js
+ * 
+ * For testing:
+ * npm run worker:overdue-reminders -- --dry-run
+ */
+require('dotenv').config();
+
 const getFlexSdk = require('../util/getFlexSdk');              // Integration SDK (privileged)
 const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace SDK (reads)
 const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
