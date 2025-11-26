@@ -24,12 +24,11 @@ try {
   sendSMS = () => Promise.resolve();
 }
 
-// ✅ Use centralized SDK factories
-const getFlexSdk = require('../util/getFlexSdk');              // Integration SDK (privileged)
-const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace SDK (reads)
+// ✅ Use centralized SDK factory (same pattern as sendReturnReminders.js)
+// getFlexSdk() automatically uses Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
+const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
-const { getIntegrationSdk } = require('../api-util/integrationSdk');
 
 // ---- CLI flags / env guards ----
 const argv = process.argv.slice(2);
@@ -217,10 +216,24 @@ async function sendShippingReminders() {
   console.log('[shipping-reminder] Starting shipping reminder SMS script...');
   
   try {
-    // Initialize SDKs
-    const integSdk = getFlexSdk();           // for transitions (cancellation)
-    const readSdk = getMarketplaceSdk();    // for queries/search
-    const integrationSdk = getIntegrationSdk(); // for privileged operations
+    // Initialize SDK using centralized helper (same pattern as sendReturnReminders.js)
+    // getFlexSdk() automatically uses Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
+    const sdk = getFlexSdk();
+    
+    // Log Integration SDK configuration (non-secret)
+    const integrationClientId = process.env.INTEGRATION_CLIENT_ID || 'MISSING';
+    const integrationBaseUrl =
+      process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL ||
+      process.env.SHARETRIBE_SDK_BASE_URL ||
+      process.env.FLEX_INTEGRATION_API_BASE_URL ||
+      'MISSING';
+    
+    console.log('[shipping-reminder] Integration env summary', {
+      hasClientId: !!integrationClientId && integrationClientId !== 'MISSING',
+      integrationClientIdPrefix: integrationClientId !== 'MISSING' ? integrationClientId.slice(0, 6) : null,
+      integrationBaseUrl,
+    });
+    
     console.log('[shipping-reminder] SDKs initialized');
     
     const now = new Date();
@@ -239,7 +252,7 @@ async function sendShippingReminders() {
     
     let transactions, included;
     try {
-      const response = await readSdk.transactions.query(query);
+      const response = await sdk.transactions.query(query);
       transactions = response?.data?.data || [];
       included = new Map();
       for (const inc of response?.data?.included || []) {
@@ -247,7 +260,16 @@ async function sendShippingReminders() {
         included.set(key, inc);
       }
     } catch (queryError) {
-      console.error('[shipping-reminder] Query failed', queryError.message);
+      // Detailed error logging for 403 debugging
+      console.error('[shipping-reminder] Flex query failed', {
+        status: queryError.response && queryError.response.status,
+        data: queryError.response && queryError.response.data,
+        headers: queryError.response && queryError.response.headers && {
+          'x-sharetribe-request-id': queryError.response.headers['x-sharetribe-request-id'],
+        },
+        message: queryError.message,
+        code: queryError.code,
+      });
       throw queryError;
     }
     
@@ -383,7 +405,7 @@ async function sendShippingReminders() {
           // Only mark as sent if SMS was actually sent
           if (!smsResult?.skipped) {
             try {
-              await readSdk.transactions.update({
+              await sdk.transactions.update({
                 id: tx.id,
                 attributes: {
                   protectedData: {
@@ -429,7 +451,7 @@ async function sendShippingReminders() {
           // Only mark as sent if SMS was actually sent
           if (!smsResult?.skipped) {
             try {
-              await readSdk.transactions.update({
+              await sdk.transactions.update({
                 id: tx.id,
                 attributes: {
                   protectedData: {
@@ -462,7 +484,7 @@ async function sendShippingReminders() {
         console.log(`[shipping-reminder] Auto-cancel triggered for tx ${txId}`);
         
         // Cancel the transaction first
-        const cancelResult = await cancelTransaction(txId, integrationSdk);
+        const cancelResult = await cancelTransaction(txId, sdk);
         
         if (cancelResult.success || cancelResult.error === 'invalid_state' || cancelResult.dryRun) {
           // Send SMS after cancellation (or in dry-run mode)
@@ -475,25 +497,25 @@ async function sendShippingReminders() {
               meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
             });
             
-            // Only mark as sent if SMS was actually sent
-            if (!smsResult?.skipped) {
-              try {
-                await readSdk.transactions.update({
-                  id: tx.id,
-                  attributes: {
-                    protectedData: {
-                      ...protectedData,
-                      shippingReminders: {
-                        ...flags,
-                        shippingAutoCancelSent: true
+              // Only mark as sent if SMS was actually sent
+              if (!smsResult?.skipped) {
+                try {
+                  await sdk.transactions.update({
+                    id: tx.id,
+                    attributes: {
+                      protectedData: {
+                        ...protectedData,
+                        shippingReminders: {
+                          ...flags,
+                          shippingAutoCancelSent: true
+                        }
                       }
                     }
-                  }
-                });
-                console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
-              } catch (updateError) {
-                console.error(`[shipping-reminder] Failed to mark auto-cancel as sent:`, updateError.message);
-              }
+                  });
+                  console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
+                } catch (updateError) {
+                  console.error(`[shipping-reminder] Failed to mark auto-cancel as sent:`, updateError.message);
+                }
               
               sentCancel++;
             } else {
@@ -521,6 +543,16 @@ async function sendShippingReminders() {
     }
     
   } catch (err) {
+    // Detailed error logging for 403 debugging
+    console.error('[shipping-reminder] Flex query failed', {
+      status: err.response && err.response.status,
+      data: err.response && err.response.data,
+      headers: err.response && err.response.headers && {
+        'x-sharetribe-request-id': err.response.headers['x-sharetribe-request-id'],
+      },
+      message: err.message,
+      code: err.code,
+    });
     console.error('[shipping-reminder] Fatal:', err?.message || err);
     process.exit(1);
   }

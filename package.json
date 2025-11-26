@@ -133,6 +133,7 @@
     "jobs:reminders": "node server/scripts/sendShipByReminders.js",
     "test:shipping-reminders": "node server/scripts/sendShippingReminders.js --dry-run --verbose",
     "worker:shipping-reminders": "node server/scripts/sendShippingReminders.js",
+    "debug:lender-shipping-query": "node server/scripts/debugLenderShippingQuery.js",
     "worker:overdue-reminders": "node server/scripts/sendOverdueReminders.js"
   },
   "browserslist": {
