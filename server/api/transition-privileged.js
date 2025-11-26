@@ -543,7 +543,10 @@ async function createShippingLabels({
       rate: selectedRate.object_id,
       async: false,
       label_file_type: 'PNG',
-      metadata: JSON.stringify({ transactionId: txId }) // Include transaction ID for webhook lookup
+      metadata: JSON.stringify({ 
+        transactionId: txId,
+        direction: 'outbound'
+      }) // Include transaction ID and direction for webhook lookup
     };
     
     // Only request QR code for USPS (UPS doesn't support it)
@@ -1018,7 +1021,10 @@ async function createShippingLabels({
             rate: returnSelectedRate.object_id,
             async: false,
             label_file_type: 'PNG',
-            metadata: JSON.stringify({ transactionId: txId }) // Include transaction ID for webhook lookup
+            metadata: JSON.stringify({ 
+              transactionId: txId,
+              direction: 'return'
+            }) // Include transaction ID and direction for webhook lookup
           };
           
           if (returnSelectedRate.provider.toUpperCase() === 'USPS') {

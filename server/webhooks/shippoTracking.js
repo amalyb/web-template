@@ -287,6 +287,9 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.warn('[ShippoWebhook] Legacy txId metadata detected; using txId as transactionId');
       }
       
+      // Debug log after metadata parsing
+      console.log('[SHIPPO-WEBHOOK] direction=', metadata.direction, 'txId=', txId, 'tracking=', trackingNumber);
+      
       // [SHIPPO DELIVERY DEBUG] Structured logging for webhook payload
       console.log(`[SHIPPO DELIVERY DEBUG] 📦 Webhook received:`);
       console.log(`[SHIPPO DELIVERY DEBUG]   tracking_number: ${trackingNumber || 'MISSING'}`);
