@@ -42,7 +42,6 @@ function logFlexError(context, err, extra = {}) {
 }
 
 const getFlexSdk = require('../util/getFlexSdk');              // Integration SDK (privileged)
-const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace SDK (reads)
 const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
@@ -116,9 +115,9 @@ async function sendOverdueReminders() {
   console.log('🚀 Starting overdue reminder SMS script...');
   
   try {
-    // Initialize both SDKs: Marketplace for reads, Integration for privileged operations
-    const integSdk = getFlexSdk();           // for transitions/charges
-    const readSdk  = getMarketplaceSdk();    // for queries/search
+    // Initialize Integration SDK for all operations (reads + transitions/charges)
+    const integSdk = getFlexSdk();           // Integration SDK (privileged: reads + transitions/charges)
+    const readSdk  = integSdk;               // Use Integration SDK for all transaction queries/updates
     console.log('✅ SDKs initialized (read + integ)');
     
     // Startup integration configuration logging
