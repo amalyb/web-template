@@ -15,6 +15,32 @@
  */
 require('dotenv').config();
 
+/**
+ * Helper function to normalize Flex error output with detailed diagnostics
+ */
+function logFlexError(context, err, extra = {}) {
+  const status = err?.response?.status || err?.status;
+  const data = err?.response?.data;
+  const headers = err?.response?.headers || {};
+  const correlationId =
+    headers['x-sharetribe-correlation-id'] ||
+    headers['x-correlation-id'] ||
+    headers['x-request-id'];
+
+  console.error('[OVERDUE][ERROR]', {
+    context,
+    status,
+    correlationId,
+    message: err?.message,
+    responseData: data,
+    ...extra,
+  });
+
+  if (err?.stack) {
+    console.error('[OVERDUE][STACK]', err.stack);
+  }
+}
+
 const getFlexSdk = require('../util/getFlexSdk');              // Integration SDK (privileged)
 const getMarketplaceSdk = require('../util/getMarketplaceSdk'); // Marketplace SDK (reads)
 const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
@@ -94,6 +120,13 @@ async function sendOverdueReminders() {
     const integSdk = getFlexSdk();           // for transitions/charges
     const readSdk  = getMarketplaceSdk();    // for queries/search
     console.log('✅ SDKs initialized (read + integ)');
+    
+    // Startup integration configuration logging
+    console.log('[OVERDUE] Integration config', {
+      baseUrl: process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL,
+      integrationClientId: `${process.env.INTEGRATION_CLIENT_ID?.slice(0, 6)}…${process.env.INTEGRATION_CLIENT_ID?.slice(-4)}`,
+      marketplaceId: process.env.REACT_APP_SHARETRIBE_MARKETPLACE_ID,
+    });
     
     // Diagnostic startup logging
     if (process.env.DIAG === '1') {
@@ -215,29 +248,12 @@ async function sendOverdueReminders() {
         
         allTransactions.push(...transactions);
         console.log(`📊 Found ${transactions.length} ${state} transactions`);
-      } catch (queryError) {
-        // Debug logging for errors
-        const status = queryError.response?.status;
-        const data = queryError.response?.data;
-        
-        if (process.env.DIAG === '1') {
-          console.error('[DIAG] Query error details:', {
-            endpoint: 'transactions.query',
-            status,
-            data,
-            query,
-            errorMessage: queryError.message,
-            errorCode: queryError.code
-          });
-        } else {
-          console.error(`❌ Query failed for state ${state}`, { 
-            status, 
-            query,
-            errorMessage: queryError.message
-          });
-        }
+      } catch (err) {
+        logFlexError(`transactions.query (state=${state})`, err, { query });
+        console.warn('[OVERDUE] Skipping state due to query error', { state });
         
         // Helpful hint for 403 errors
+        const status = err?.response?.status || err?.status;
         if (status === 403) {
           console.error('');
           console.error('⚠️  403 FORBIDDEN - Possible causes:');
@@ -249,6 +265,7 @@ async function sendOverdueReminders() {
         
         // Helpful hint for 400 errors
         if (status === 400) {
+          const data = err?.response?.data;
           console.error('');
           console.error('⚠️  400 BAD REQUEST - Possible causes:');
           console.error('   1. Invalid query parameters (check per_page vs perPage)');
@@ -257,14 +274,14 @@ async function sendOverdueReminders() {
           console.error('');
           if (data?.errors) {
             console.error('   API Errors:');
-            data.errors.forEach((err, i) => {
-              console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
+            data.errors.forEach((errItem, i) => {
+              console.error(`   [${i}] ${errItem.title || errItem.detail || JSON.stringify(errItem)}`);
             });
           }
         }
         
         // Continue with other states even if one fails
-        console.warn(`⚠️ Skipping ${state} state due to query error`);
+        continue;
       }
     }
 
@@ -479,6 +496,10 @@ async function sendOverdueReminders() {
                     });
                     console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
                   } catch (updateError) {
+                    logFlexError('transactions.update (SMS notification tracking)', updateError, {
+                      txId: tx?.id?.uuid || tx?.id,
+                      state: currentState
+                    });
                     console.error(`❌ Failed to update transaction:`, updateError.message);
                   }
                   
@@ -527,16 +548,11 @@ async function sendOverdueReminders() {
           }
         }
       } catch (chargeError) {
-        if (process.env.DIAG === '1') {
-          console.error('[DIAG] Charge error details:', {
-            endpoint: 'transactions.transition (via applyCharges)',
-            status: chargeError.response?.status || chargeError.status,
-            data: chargeError.response?.data,
-            txId: tx?.id?.uuid || tx?.id,
-            scenario: scenario,
-            errorMessage: chargeError.message,
-          });
-        }
+        logFlexError(`applyCharges (scenario=${scenario})`, chargeError, {
+          txId: tx?.id?.uuid || tx?.id,
+          scenario: scenario,
+          state: currentState
+        });
         
         console.error(`❌ [${scenario}] Charge failed for tx ${tx?.id?.uuid || '(no id)'}: ${chargeError.message}`);
         
