@@ -197,11 +197,14 @@ if (cspEnabled) {
 
   // When a CSP directive is violated, the browser posts a JSON body
   // to the defined report URL and we need to parse this body.
-  app.use(
-    bodyParser.json({
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/webhooks/shippo')) {
+      return next();
+    }
+    return bodyParser.json({
       type: ['json', 'application/csp-report'],
-    })
-  );
+    })(req, res, next);
+  });
 
   // CSP can be turned on in report or block mode. In report mode, the
   // browser checks the policy and calls the report URL when the
