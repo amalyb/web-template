@@ -76,13 +76,41 @@ const router = express.Router();
 
 // Middleware to capture raw body for signature verification
 router.use('/shippo', express.raw({ type: 'application/json' }), (req, res, next) => {
+  // EARLY LOGGING: Log ALL webhook attempts, even if they fail later
+  // This helps debug cases where webhooks fail before reaching the main handler
+  const rawBodyStr = req.body?.toString?.() || String(req.body || '');
+  console.log(`[SHIPPO-WEBHOOK-ATTEMPT] 📥 Webhook received: body_length=${rawBodyStr.length} bytes`);
+  console.log(`[SHIPPO-WEBHOOK-ATTEMPT] 📥 Headers: x-shippo-signature=${req.headers['x-shippo-signature'] ? 'PRESENT' : 'MISSING'}`);
+  
   // Store raw body for signature verification
   req.rawBody = req.body;
   // Parse JSON for processing
   try {
     req.body = JSON.parse(req.body.toString());
+    
+    // Log parsed data (safe - no sensitive data in tracking number)
+    const trackingNumber = req.body?.data?.tracking_number || 'UNKNOWN';
+    const eventType = req.body?.event?.type || 'unknown';
+    const eventMode = req.body?.event?.mode || 'unknown';
+    
+    // Safely extract txId from metadata (handle both string and object formats)
+    let txIdFromMetadata = 'MISSING';
+    try {
+      if (req.body?.data?.metadata) {
+        const metadata = typeof req.body.data.metadata === 'string' ? 
+          JSON.parse(req.body.data.metadata) : 
+          req.body.data.metadata;
+        txIdFromMetadata = metadata?.transactionId || metadata?.txId || 'MISSING';
+      }
+    } catch (metaError) {
+      // Metadata parsing failed - not critical for early logging
+      txIdFromMetadata = 'PARSE_ERROR';
+    }
+    
+    console.log(`[SHIPPO-WEBHOOK-ATTEMPT] ✅ Parsed JSON: event=${eventType}, mode=${eventMode}, tracking=${trackingNumber}, txId=${txIdFromMetadata}`);
   } catch (error) {
-    console.error('❌ Failed to parse JSON body:', error.message);
+    console.error(`[SHIPPO-WEBHOOK-ATTEMPT] ❌ Failed to parse JSON body: ${error.message}`);
+    console.error(`[SHIPPO-WEBHOOK-ATTEMPT] ❌ Raw body preview (first 500 chars): ${rawBodyStr.substring(0, 500)}...`);
     return res.status(400).json({ error: 'Invalid JSON' });
   }
   next();
@@ -342,12 +370,36 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       const isDelivery = isDeliveredStatus(trackingStatus);
       const isFirstScan = firstScanStatuses.includes(upperStatus) || isPreTransitWithScan;
       
+      // OUT_FOR_DELIVERY is an intermediate status - log it for visibility but don't trigger SMS
+      // (first scan SMS should have already been sent earlier in the tracking lifecycle)
+      const isOutForDelivery = upperStatus === 'OUT_FOR_DELIVERY' || upperStatus === 'OUT FOR DELIVERY' || upperStatusDetails.includes('OUT FOR DELIVERY');
+      
       // [SHIPPO DELIVERY DEBUG] Log delivery detection logic
       console.log(`[SHIPPO DELIVERY DEBUG] 🔍 Delivery detection:`);
       console.log(`[SHIPPO DELIVERY DEBUG]   upperStatus: ${upperStatus || 'MISSING'}`);
       console.log(`[SHIPPO DELIVERY DEBUG]   isDelivery: ${isDelivery}`);
       console.log(`[SHIPPO DELIVERY DEBUG]   isFirstScan: ${isFirstScan}`);
+      console.log(`[SHIPPO DELIVERY DEBUG]   isOutForDelivery: ${isOutForDelivery}`);
       console.log(`[SHIPPO DELIVERY DEBUG]   hasFacilityScan: ${hasFacilityScan}`);
+      
+      // Handle OUT_FOR_DELIVERY status - log for visibility but don't trigger SMS
+      if (isOutForDelivery) {
+        console.log(`[SHIPPO-WEBHOOK] 📦 Status is OUT_FOR_DELIVERY - logging for visibility but not triggering SMS`);
+        console.log(`[SHIPPO-WEBHOOK] direction=${metadata.direction || 'none'}, txId=${txId || 'MISSING'}, tracking=${trackingNumber || 'MISSING'}`);
+        // Still try to find transaction and log it for debugging
+        if (txId) {
+          try {
+            const sdk = await getTrustedSdk();
+            const response = await sdk.transactions.show({ id: txId });
+            const transaction = response.data.data;
+            console.log(`[SHIPPO-WEBHOOK] ✅ Found transaction ${transaction.id} for OUT_FOR_DELIVERY status`);
+            console.log(`[SHIPPO-WEBHOOK] Transaction state: ${transaction.attributes?.state || 'unknown'}`);
+          } catch (error) {
+            console.warn(`[SHIPPO-WEBHOOK] ⚠️ Could not find transaction for OUT_FOR_DELIVERY: ${error.message}`);
+          }
+        }
+        return res.status(200).json({ message: 'OUT_FOR_DELIVERY status logged (no SMS - first scan should have already been sent)' });
+      }
       
       if (!upperStatus || (!isDelivery && !isFirstScan)) {
         console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ NOT treating as delivered/first-scan:`);
@@ -386,6 +438,43 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         matchStrategy = metadata.transactionId ? 'metadata.transactionId' : 'metadata.txId';
         console.log(`✅ Found transaction by metadata transaction ID: ${transaction.id}`);
       } catch (error) {
+        // Enhanced error logging for transaction lookup failures
+        const errorStatus = error?.response?.status || error?.status;
+        const errorData = error?.response?.data || error?.data;
+        const errorCode = errorData?.errors?.[0]?.code;
+        const errorTitle = errorData?.errors?.[0]?.title || errorData?.message || error.message;
+        
+        console.error(`[SHIPPO DELIVERY DEBUG] ❌ Transaction lookup by ID failed:`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txId}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   error.message: ${error.message}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   HTTP status: ${errorStatus || 'N/A'}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   error.code: ${errorCode || 'N/A'}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   error.title: ${errorTitle || 'N/A'}`);
+        
+        // Log environment context
+        const integClientId = process.env.INTEGRATION_CLIENT_ID;
+        const shippoMode = process.env.SHIPPO_MODE || 'NOT SET';
+        const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
+                        process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
+                        'https://flex-api.sharetribe.com (default)';
+        
+        console.error(`[SHIPPO DELIVERY DEBUG]   environment context:`);
+        console.error(`[SHIPPO DELIVERY DEBUG]     SHIPPO_MODE: ${shippoMode}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]     Base URL: ${baseUrl}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]     INTEGRATION_CLIENT_ID: ${integClientId ? integClientId.substring(0, 8) + '...' + integClientId.substring(integClientId.length - 4) : 'NOT SET'}`);
+        
+        if (errorStatus === 404) {
+          console.error(`[SHIPPO DELIVERY DEBUG]   → HTTP 404: Transaction does not exist in this environment`);
+          console.error(`[SHIPPO DELIVERY DEBUG]   → Check: Is transaction ID correct? Is SDK pointing to correct marketplace?`);
+        } else if (errorStatus === 401 || errorStatus === 403) {
+          console.error(`[SHIPPO DELIVERY DEBUG]   → HTTP ${errorStatus}: Authentication/authorization failed`);
+          console.error(`[SHIPPO DELIVERY DEBUG]   → Check: INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET are correct`);
+        }
+        
+        if (errorData) {
+          console.error(`[SHIPPO DELIVERY DEBUG]   full error response:`, JSON.stringify(errorData, null, 2));
+        }
+        
         console.warn(`⚠️ Failed to find transaction by metadata transaction ID: ${error.message}`);
       }
     }
@@ -407,8 +496,22 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       console.error(`[SHIPPO DELIVERY DEBUG]   tracking_number: ${trackingNumber || 'MISSING'}`);
       console.error(`[SHIPPO DELIVERY DEBUG]   metadata.transactionId: ${txId || 'MISSING'}`);
       console.error(`[SHIPPO DELIVERY DEBUG]   matchStrategy attempted: ${matchStrategy}`);
+      
+      // Log environment context for debugging
+      const integClientId = process.env.INTEGRATION_CLIENT_ID;
+      const shippoMode = process.env.SHIPPO_MODE || 'NOT SET';
+      const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
+                      process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
+                      'https://flex-api.sharetribe.com (default)';
+      
+      console.error(`[SHIPPO DELIVERY DEBUG]   environment context:`);
+      console.error(`[SHIPPO DELIVERY DEBUG]     SHIPPO_MODE: ${shippoMode}`);
+      console.error(`[SHIPPO DELIVERY DEBUG]     Base URL: ${baseUrl}`);
+      console.error(`[SHIPPO DELIVERY DEBUG]     INTEGRATION_CLIENT_ID: ${integClientId ? integClientId.substring(0, 8) + '...' + integClientId.substring(integClientId.length - 4) : 'NOT SET'}`);
+      
       if (txId) {
         console.error(`[SHIPPO DELIVERY DEBUG]   Transaction lookup by ID failed - check if transaction exists: ${txId}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   → Run debug script: node server/scripts/debugShippoDeliveryForTx.js ${txId} ${trackingNumber || ''}`);
       }
       if (trackingNumber) {
         console.error(`[SHIPPO DELIVERY DEBUG]   Tracking number search failed - only searches last 100 transactions`);
@@ -435,13 +538,19 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     // We treat events with metadata.direction === 'return' as return scans.
     // Also check if tracking number matches known return tracking number as fallback.
     // IMPORTANT: Payout only triggers on return scans, never on outbound scans.
-    const isReturnTracking = (metadata.direction === 'return') ||
+    // For older labels without direction metadata, assume outbound if not explicitly return.
+    const explicitDirection = metadata.direction;
+    const isReturnTracking = (explicitDirection === 'return') ||
                             (trackingNumber === protectedData.returnTrackingNumber) ||
                             (trackingNumber === returnData.label?.trackingNumber);
     
+    // For older labels without direction metadata, assume outbound if not explicitly return
+    const isOutbound = !isReturnTracking;
+    
     console.log(`[SHIPPO DELIVERY DEBUG] 🔍 Direction check:`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   explicitDirection: ${explicitDirection || 'none (assuming outbound)'}`);
     console.log(`[SHIPPO DELIVERY DEBUG]   isReturnTracking: ${isReturnTracking}`);
-    console.log(`[SHIPPO DELIVERY DEBUG]   metadata.direction: ${metadata.direction || 'none'}`);
+    console.log(`[SHIPPO DELIVERY DEBUG]   isOutbound: ${isOutbound}`);
     console.log(`[SHIPPO DELIVERY DEBUG]   matches returnTrackingNumber: ${trackingNumber === protectedData.returnTrackingNumber}`);
     console.log(`🔍 [PAYOUT] Tracking type: ${isReturnTracking ? 'RETURN' : 'OUTBOUND'} (metadata.direction=${metadata.direction || 'none'})`);
     if (isReturnTracking) {

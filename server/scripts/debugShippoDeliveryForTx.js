@@ -1,178 +1,255 @@
 #!/usr/bin/env node
 /**
- * Debug script for investigating missing "item delivered" SMS for a specific transaction
+ * Debug script for investigating missing "item shipped" and "item delivered" SMS
  * 
  * Usage:
- *   node server/scripts/debugShippoDeliveryForTx.js <transactionId>
+ *   node server/scripts/debugShippoDeliveryForTx.js <transactionId> [trackingNumber]
  * 
  * Example:
- *   node server/scripts/debugShippoDeliveryForTx.js 691d0411-e7ea-422a-aa5d-918cfab181be
+ *   node server/scripts/debugShippoDeliveryForTx.js 692f518d-3c5d-472a-a3d4-4167c90c3ad9 1Z8BF618YN81406063
  * 
- * This script fetches the transaction and logs:
- * - Transaction ID and Order ID
- * - Shippo shipment ID (if stored)
- * - Shippo tracking number
- * - All protectedData.shipping fields
- * - shippingNotification flags (delivered, firstScan, labelCreated)
- * - Borrower phone number (all lookup paths)
+ * This script:
+ * 1. Tests transaction lookup by ID (same as webhook handler)
+ * 2. Tests transaction lookup by tracking number (fallback path)
+ * 3. Logs full error details if lookup fails
+ * 4. Verifies borrower phone number
+ * 5. Checks SMS configuration flags
  */
 
 require('dotenv').config();
 const { getTrustedSdk } = require('../api-util/integrationSdk');
 
+// Import the same helper used in webhook handler
+async function findTransactionByTrackingNumber(sdk, trackingNumber) {
+  console.log(`🔍 Searching for transaction with tracking number: ${trackingNumber}`);
+  
+  try {
+    // Query last 100 transactions to find matching tracking number
+    const query = {
+      limit: 100,
+      include: ['customer', 'listing']
+    };
+    
+    const response = await sdk.transactions.query(query);
+    const transactions = response.data.data;
+    
+    console.log(`📊 Searched ${transactions.length} transactions for tracking number`);
+    
+    // Look for transaction with matching tracking number
+    for (const transaction of transactions) {
+      const protectedData = transaction.attributes.protectedData || {};
+      
+      if (protectedData.outboundTrackingNumber === trackingNumber || 
+          protectedData.returnTrackingNumber === trackingNumber) {
+        console.log(`✅ Found transaction ${transaction.id} with tracking number ${trackingNumber}`);
+        return transaction;
+      }
+    }
+    
+    console.warn(`⚠️ No transaction found with tracking number: ${trackingNumber}`);
+    return null;
+    
+  } catch (error) {
+    console.error(`❌ Error searching for transaction with tracking number:`, error.message);
+    return null;
+  }
+}
+
 async function main() {
   const txId = process.argv[2];
+  const trackingNumber = process.argv[3];
   
   if (!txId) {
-    console.error('❌ Usage: node server/scripts/debugShippoDeliveryForTx.js <transactionId>');
-    console.error('   Example: node server/scripts/debugShippoDeliveryForTx.js 691d0411-e7ea-422a-aa5d-918cfab181be');
+    console.error('❌ Usage: node server/scripts/debugShippoDeliveryForTx.js <transactionId> [trackingNumber]');
+    console.error('   Example: node server/scripts/debugShippoDeliveryForTx.js 692f518d-3c5d-472a-a3d4-4167c90c3ad9 1Z8BF618YN81406063');
     process.exit(1);
   }
   
+  console.log('═'.repeat(80));
+  console.log('🔍 [SHIPPO DELIVERY DEBUG] Transaction Lookup Debug');
+  console.log('═'.repeat(80));
+  console.log(`  Transaction ID: ${txId}`);
+  console.log(`  Tracking Number: ${trackingNumber || 'NOT PROVIDED'}`);
+  console.log('');
+  
+  // Log environment configuration
+  console.log('📋 [ENV CONFIG] Integration SDK Configuration:');
+  const integClientId = process.env.INTEGRATION_CLIENT_ID;
+  const integClientSecret = process.env.INTEGRATION_CLIENT_SECRET;
+  const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
+                  process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
+                  'https://flex-api.sharetribe.com (default)';
+  const shippoMode = process.env.SHIPPO_MODE || 'NOT SET';
+  const smsEnabled = process.env.SMS_ENABLED || 'NOT SET';
+  const smsDryRun = process.env.SMS_DRY_RUN || 'NOT SET';
+  
+  console.log(`  INTEGRATION_CLIENT_ID: ${integClientId ? integClientId.substring(0, 8) + '...' + integClientId.substring(integClientId.length - 4) : 'NOT SET'}`);
+  console.log(`  INTEGRATION_CLIENT_SECRET: ${integClientSecret ? '***SET***' : 'NOT SET'}`);
+  console.log(`  Base URL: ${baseUrl}`);
+  console.log(`  SHIPPO_MODE: ${shippoMode}`);
+  console.log(`  SMS_ENABLED: ${smsEnabled}`);
+  console.log(`  SMS_DRY_RUN: ${smsDryRun}`);
+  console.log('');
+  
   try {
-    console.log('🔍 [SHIPPO DELIVERY DEBUG] Fetching transaction:', txId);
-    console.log('─'.repeat(80));
-    
     const sdk = getTrustedSdk();
-    const response = await sdk.transactions.show({
-      id: txId,
-      include: ['customer', 'provider', 'listing']
-    }, { expand: true });
     
-    const transaction = response.data.data;
-    const protectedData = transaction.attributes.protectedData || {};
-    const metadata = transaction.attributes.metadata || {};
+    // Test 1: Lookup by transaction ID (primary method)
+    console.log('─'.repeat(80));
+    console.log('TEST 1: Lookup by Transaction ID (Primary Method)');
+    console.log('─'.repeat(80));
+    console.log(`🔍 Looking up transaction by ID: ${txId}`);
     
-    console.log('\n📦 [SHIPPO DELIVERY DEBUG] Transaction Details:');
-    console.log('  Transaction ID:', transaction.id?.uuid || transaction.id);
-    console.log('  Order ID:', transaction.id?.uuid || transaction.id, '(same as transaction ID)');
-    console.log('  State:', transaction.attributes?.state || 'N/A');
-    console.log('  Last Transition:', transaction.attributes?.lastTransition || 'N/A');
+    let transaction = null;
+    let lookupError = null;
     
-    console.log('\n📦 [SHIPPO DELIVERY DEBUG] Shippo Shipment/Tracking Data:');
-    console.log('  Shippo Shipment ID:', protectedData.shippoShipmentId || protectedData.outbound?.shippoShipmentId || 'NOT SET');
-    console.log('  Shippo Tracking Number:', protectedData.outboundTrackingNumber || protectedData.outbound?.trackingNumber || 'NOT SET');
-    console.log('  Tracking Number (outbound):', protectedData.outboundTrackingNumber || 'NOT SET');
-    console.log('  Tracking Number (return):', protectedData.returnTrackingNumber || 'NOT SET');
-    
-    console.log('\n📦 [SHIPPO DELIVERY DEBUG] Outbound Shipping Data:');
-    console.log('  outboundTrackingNumber:', protectedData.outboundTrackingNumber || 'NOT SET');
-    console.log('  outboundCarrier:', protectedData.outboundCarrier || 'NOT SET');
-    console.log('  outboundTrackingUrl:', protectedData.outboundTrackingUrl || 'NOT SET');
-    console.log('  outboundLabelUrl:', protectedData.outboundLabelUrl || 'NOT SET');
-    console.log('  outboundService:', protectedData.outboundService || 'NOT SET');
-    console.log('  outboundPurchasedAt:', protectedData.outboundPurchasedAt || 'NOT SET');
-    
-    // Check nested outbound object
-    if (protectedData.outbound) {
-      console.log('\n📦 [SHIPPO DELIVERY DEBUG] Nested outbound object:');
-      console.log('  outbound.trackingNumber:', protectedData.outbound.trackingNumber || 'NOT SET');
-      console.log('  outbound.carrier:', protectedData.outbound.carrier || 'NOT SET');
-      console.log('  outbound.shippoShipmentId:', protectedData.outbound.shippoShipmentId || 'NOT SET');
+    try {
+      const response = await sdk.transactions.show({ 
+        id: txId,
+        include: ['customer', 'provider', 'listing']
+      });
+      transaction = response.data.data;
+      console.log(`✅ SUCCESS: Found transaction by ID`);
+      console.log(`   Transaction ID: ${transaction.id?.uuid || transaction.id}`);
+      console.log(`   State: ${transaction.attributes?.state || 'N/A'}`);
+      console.log(`   Last Transition: ${transaction.attributes?.lastTransition || 'N/A'}`);
+    } catch (error) {
+      lookupError = error;
+      console.error(`❌ FAILED: Transaction lookup by ID failed`);
+      console.error(`   Error message: ${error.message}`);
+      
+      // Log full error details
+      if (error.response) {
+        console.error(`   HTTP Status: ${error.response.status}`);
+        console.error(`   Status Text: ${error.response.statusText}`);
+        console.error(`   Response Data:`, JSON.stringify(error.response.data, null, 2));
+      }
+      if (error.request) {
+        console.error(`   Request URL: ${error.request?.path || 'N/A'}`);
+      }
+      console.error(`   Error Code: ${error.code || 'N/A'}`);
+      console.error(`   Stack: ${error.stack}`);
     }
     
-    console.log('\n📦 [SHIPPO DELIVERY DEBUG] Return Shipping Data:');
-    console.log('  returnTrackingNumber:', protectedData.returnTrackingNumber || 'NOT SET');
-    console.log('  returnCarrier:', protectedData.returnCarrier || 'NOT SET');
+    // Test 2: Lookup by tracking number (fallback method)
+    if (!transaction && trackingNumber) {
+      console.log('');
+      console.log('─'.repeat(80));
+      console.log('TEST 2: Lookup by Tracking Number (Fallback Method)');
+      console.log('─'.repeat(80));
+      
+      try {
+        transaction = await findTransactionByTrackingNumber(sdk, trackingNumber);
+        if (transaction) {
+          console.log(`✅ SUCCESS: Found transaction by tracking number`);
+          console.log(`   Transaction ID: ${transaction.id?.uuid || transaction.id}`);
+        } else {
+          console.log(`❌ FAILED: No transaction found with tracking number ${trackingNumber}`);
+          console.log(`   Note: This search only checks the last 100 transactions`);
+        }
+      } catch (error) {
+        console.error(`❌ ERROR: Tracking number search failed`);
+        console.error(`   Error: ${error.message}`);
+        if (error.response) {
+          console.error(`   HTTP Status: ${error.response.status}`);
+          console.error(`   Response Data:`, JSON.stringify(error.response.data, null, 2));
+        }
+      }
+    } else if (!trackingNumber) {
+      console.log('');
+      console.log('⚠️  Tracking number not provided - skipping fallback lookup test');
+    }
     
-    console.log('\n📬 [SHIPPO DELIVERY DEBUG] Shipping Notification Flags:');
-    const shippingNotification = protectedData.shippingNotification || {};
-    
-    console.log('  labelCreated:');
-    console.log('    sent:', shippingNotification.labelCreated?.sent || false);
-    console.log('    sentAt:', shippingNotification.labelCreated?.sentAt || 'NOT SET');
-    
-    console.log('  firstScan:');
-    console.log('    sent:', shippingNotification.firstScan?.sent || false);
-    console.log('    sentAt:', shippingNotification.firstScan?.sentAt || 'NOT SET');
-    
-    console.log('  delivered:');
-    console.log('    sent:', shippingNotification.delivered?.sent || false);
-    console.log('    sentAt:', shippingNotification.delivered?.sentAt || 'NOT SET');
-    
-    console.log('\n📊 [SHIPPO DELIVERY DEBUG] Last Tracking Status:');
-    const lastTrackingStatus = protectedData.lastTrackingStatus || {};
-    console.log('  status:', lastTrackingStatus.status || 'NOT SET');
-    console.log('  substatus:', lastTrackingStatus.substatus || 'NOT SET');
-    console.log('  timestamp:', lastTrackingStatus.timestamp || 'NOT SET');
-    console.log('  event:', lastTrackingStatus.event || 'NOT SET');
-    
-    console.log('\n📱 [SHIPPO DELIVERY DEBUG] Borrower Contact Info (all lookup paths):');
-    const customer = response.data.included?.find(i => 
-      (i.type === 'user' || i.type === 'profile') && 
-      (i.id?.uuid === transaction.relationships?.customer?.data?.id?.uuid ||
-       i.id === transaction.relationships?.customer?.data?.id)
-    );
-    
-    console.log('  1. customer.profile.protectedData.phone:', 
-      customer?.attributes?.profile?.protectedData?.phone || 'NOT FOUND');
-    console.log('  2. protectedData.customerPhone:', 
-      protectedData.customerPhone || 'NOT FOUND');
-    console.log('  3. metadata.customerPhone:', 
-      metadata.customerPhone || 'NOT FOUND');
-    
-    const borrowerPhone = customer?.attributes?.profile?.protectedData?.phone || 
-                         protectedData.customerPhone ||
-                         metadata.customerPhone ||
-                         'NOT FOUND';
-    const borrowerEmail = customer?.attributes?.profile?.protectedData?.email ||
-                         customer?.attributes?.email ||
-                         'NOT FOUND';
-    console.log('\n  → Final borrower phone:', borrowerPhone);
-    console.log('  → Borrower email:', borrowerEmail);
-    
-    console.log('\n🔍 [SHIPPO DELIVERY DEBUG] Analysis:');
-    const deliveredSent = shippingNotification.delivered?.sent === true;
-    const hasOutboundTracking = !!protectedData.outboundTrackingNumber;
-    const hasBorrowerPhone = borrowerPhone !== 'NOT FOUND';
-    
-    console.log('  ✓ Has outbound tracking number:', hasOutboundTracking);
-    console.log('  ✓ Has borrower phone:', hasBorrowerPhone);
-    console.log('  ✓ Delivered SMS flag set:', deliveredSent);
-    
-    if (deliveredSent) {
-      console.log('\n  ⚠️  DELIVERED FLAG ALREADY SET - SMS should have been sent');
-      console.log('  ⚠️  Possible reasons for missing SMS:');
-      console.log('     - SMS sending failed (check Twilio logs)');
-      console.log('     - Phone number invalid/missing');
-      console.log('     - SMS feature flags disabled (SMS_DRY_RUN, ONLY_PHONE)');
-      console.log('     - Twilio credentials missing');
+    // If transaction found, analyze it
+    if (transaction) {
+      console.log('');
+      console.log('─'.repeat(80));
+      console.log('TRANSACTION ANALYSIS');
+      console.log('─'.repeat(80));
+      
+      const protectedData = transaction.attributes.protectedData || {};
+      const metadata = transaction.attributes.metadata || {};
+      
+      console.log('\n📦 Tracking Data:');
+      console.log(`  Outbound Tracking: ${protectedData.outboundTrackingNumber || 'NOT SET'}`);
+      console.log(`  Return Tracking: ${protectedData.returnTrackingNumber || 'NOT SET'}`);
+      console.log(`  Outbound Carrier: ${protectedData.outboundCarrier || 'NOT SET'}`);
+      
+      console.log('\n📬 SMS Notification Flags:');
+      const shippingNotification = protectedData.shippingNotification || {};
+      console.log(`  First Scan Sent: ${shippingNotification.firstScan?.sent || false}`);
+      console.log(`  First Scan Sent At: ${shippingNotification.firstScan?.sentAt || 'NOT SET'}`);
+      console.log(`  Delivered Sent: ${shippingNotification.delivered?.sent || false}`);
+      console.log(`  Delivered Sent At: ${shippingNotification.delivered?.sentAt || 'NOT SET'}`);
+      
+      console.log('\n📱 Borrower Phone Lookup:');
+      // Try all the same lookup paths as webhook handler
+      const customer = transaction.relationships?.customer?.data;
+      const customerPhone1 = customer?.attributes?.profile?.protectedData?.phone;
+      const customerPhone2 = protectedData.customerPhone;
+      const customerPhone3 = metadata.customerPhone;
+      
+      console.log(`  1. customer.profile.protectedData.phone: ${customerPhone1 || 'NOT FOUND'}`);
+      console.log(`  2. protectedData.customerPhone: ${customerPhone2 || 'NOT FOUND'}`);
+      console.log(`  3. metadata.customerPhone: ${customerPhone3 || 'NOT FOUND'}`);
+      
+      const borrowerPhone = customerPhone1 || customerPhone2 || customerPhone3;
+      console.log(`  → Final borrower phone: ${borrowerPhone || 'NOT FOUND'}`);
+      
+      if (!borrowerPhone) {
+        console.log(`  ⚠️  WARNING: No borrower phone found - SMS cannot be sent`);
+      }
+      
+      console.log('\n🔍 SMS Configuration Check:');
+      const hasTwilioCreds = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN);
+      console.log(`  SMS_ENABLED: ${smsEnabled}`);
+      console.log(`  SMS_DRY_RUN: ${smsDryRun} ${smsDryRun === '0' || smsDryRun === 'false' ? '(SMS WILL BE SENT)' : '(SMS WILL BE SKIPPED)'}`);
+      console.log(`  Twilio Credentials: ${hasTwilioCreds ? 'PRESENT' : 'MISSING'}`);
+      console.log(`  Borrower Phone: ${borrowerPhone || 'MISSING'}`);
+      
+      if (borrowerPhone && hasTwilioCreds && (smsDryRun === '0' || smsDryRun === 'false' || !smsDryRun)) {
+        console.log(`  ✅ SMS should be sent if webhook is received`);
+      } else {
+        console.log(`  ⚠️  SMS will be skipped due to:`);
+        if (!borrowerPhone) console.log(`     - Missing borrower phone`);
+        if (!hasTwilioCreds) console.log(`     - Missing Twilio credentials`);
+        if (smsDryRun !== '0' && smsDryRun !== 'false' && smsDryRun !== 'NOT SET') console.log(`     - SMS_DRY_RUN is enabled`);
+      }
     } else {
-      console.log('\n  ⚠️  DELIVERED FLAG NOT SET - SMS was never sent');
-      console.log('  ⚠️  Possible reasons:');
-      console.log('     - Webhook never received (check Shippo dashboard)');
-      console.log('     - Webhook received but status not DELIVERED');
-      console.log('     - Webhook received but transaction not matched');
-      console.log('     - Webhook received but idempotency check failed');
-      console.log('     - Webhook received but mode mismatch (SHIPPO_MODE filter)');
-      console.log('     - Webhook received but borrower phone missing');
+      console.log('');
+      console.log('─'.repeat(80));
+      console.log('❌ TRANSACTION NOT FOUND');
+      console.log('─'.repeat(80));
+      console.log('Possible reasons:');
+      console.log('  1. Transaction ID is incorrect');
+      console.log('  2. Integration SDK is pointing to wrong environment (test vs live)');
+      console.log('  3. Integration SDK credentials are incorrect');
+      console.log('  4. Transaction exists in different marketplace');
+      console.log('  5. Transaction was deleted');
+      console.log('');
+      if (lookupError?.response?.status === 404) {
+        console.log('  → HTTP 404 indicates transaction does not exist in this environment');
+      } else if (lookupError?.response?.status === 401 || lookupError?.response?.status === 403) {
+        console.log('  → HTTP 401/403 indicates authentication/authorization issue');
+        console.log('  → Check INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET');
+      }
     }
     
-    // Output key values for use in other scripts
-    console.log('\n📋 [SHIPPO DELIVERY DEBUG] Key Values for Next Steps:');
-    console.log('  Tracking Number:', protectedData.outboundTrackingNumber || 'MISSING');
-    console.log('  Carrier:', protectedData.outboundCarrier || 'MISSING');
-    console.log('  Borrower Phone:', borrowerPhone);
-    
-    console.log('\n' + '─'.repeat(80));
-    console.log('✅ [SHIPPO DELIVERY DEBUG] Debug complete');
-    console.log('\n💡 Next step: Use tracking number and carrier to fetch Shippo tracking status:');
-    console.log(`   node server/scripts/fetchShippoTracking.js ${protectedData.outboundCarrier || 'CARRIER'} ${protectedData.outboundTrackingNumber || 'TRACKING_NUMBER'}`);
+    console.log('');
+    console.log('═'.repeat(80));
+    console.log('✅ Debug complete');
+    console.log('═'.repeat(80));
     
   } catch (error) {
-    console.error('❌ [SHIPPO DELIVERY DEBUG] Error:', error.message);
+    console.error('❌ [SHIPPO DELIVERY DEBUG] Fatal Error:', error.message);
     console.error('   Stack:', error.stack);
     if (error.response) {
       console.error('   Status:', error.response.status);
       console.error('   Status Text:', error.response.statusText);
       console.error('   Data:', JSON.stringify(error.response.data, null, 2));
     }
-    if (error.request) {
-      console.error('   Request:', error.request);
-    }
     process.exit(1);
   }
 }
 
 main();
-

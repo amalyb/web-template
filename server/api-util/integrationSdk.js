@@ -4,10 +4,21 @@ const { createInstance } = require('sharetribe-flex-integration-sdk');
 let cached;
 function getIntegrationSdk() {
   if (!cached) {
+    // Determine base URL (same logic as getFlexSdk for consistency)
+    const baseUrl =
+      process.env.SHARETRIBE_SDK_BASE_URL ||
+      process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL ||
+      'https://flex-api.sharetribe.com';
+    
     cached = createInstance({
       clientId: process.env.INTEGRATION_CLIENT_ID,
       clientSecret: process.env.INTEGRATION_CLIENT_SECRET,
+      baseUrl, // Explicitly set base URL to ensure correct environment
     });
+    
+    // Log SDK configuration for debugging (mask sensitive data)
+    const mask = v => (v ? v.slice(0, 8) + '...' + v.slice(-4) : '(not set)');
+    console.log(`[IntegrationSDK] Initialized with clientId=${mask(process.env.INTEGRATION_CLIENT_ID)} baseUrl=${baseUrl}`);
   }
   return cached;
 }
