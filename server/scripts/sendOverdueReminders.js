@@ -97,6 +97,72 @@ function isInTransit(trackingStatus) {
   return upperStatus === 'IN_TRANSIT' || upperStatus === 'ACCEPTED';
 }
 
+function hasReplacementCharged(tx) {
+  const pd = tx?.attributes?.protectedData || {};
+  const ret = pd.return || {};
+  return !!ret.replacementCharged;
+}
+
+async function triggerReplacementCompletionIfNeeded({ sdk, txId }) {
+  try {
+    const { data } = await sdk.transactions.show({ id: txId });
+    const tx = data.data;
+    const state = tx?.attributes?.state;
+    const lastTransition = tx?.attributes?.lastTransition;
+    const replacementCharged = hasReplacementCharged(tx);
+    
+    console.log('[REPLACEMENT-PAYOUT] check', {
+      txId,
+      state,
+      lastTransition,
+      replacementCharged,
+    });
+
+    if (!replacementCharged) {
+      console.log('[REPLACEMENT-PAYOUT] Skip - replacement not charged yet');
+      return;
+    }
+
+    if (state !== 'accepted') {
+      console.log('[REPLACEMENT-PAYOUT] Skip - state not accepted (likely already completed)');
+      return;
+    }
+
+    if (lastTransition === 'transition/complete-return' || lastTransition === 'transition/complete-replacement') {
+      console.log('[REPLACEMENT-PAYOUT] Skip - already completed via', lastTransition);
+      return;
+    }
+
+    try {
+      await sdk.transactions.transition({
+        id: txId,
+        transition: 'transition/complete-replacement',
+        params: {}
+      });
+      console.log('[REPLACEMENT-PAYOUT] transition/complete-replacement triggered successfully');
+    } catch (transitionError) {
+      const status = transitionError?.response?.status || transitionError?.status;
+      const code = transitionError?.response?.data?.errors?.[0]?.code;
+      const title = transitionError?.response?.data?.errors?.[0]?.title || transitionError?.message;
+      if (status === 400 || status === 409) {
+        console.log(`[REPLACEMENT-PAYOUT] Idempotent skip (status ${status}, code ${code || 'none'}): ${title}`);
+      } else {
+        console.error('[REPLACEMENT-PAYOUT] Failed to trigger transition/complete-replacement', {
+          status,
+          code,
+          title,
+          message: transitionError.message,
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[REPLACEMENT-PAYOUT] Failed to load transaction for completion', {
+      txId,
+      message: error?.message,
+    });
+  }
+}
+
 /**
  * @deprecated This function is now handled by applyCharges() from lib/lateFees.js
  * Kept for backward compatibility only. Do not use in new code.
@@ -475,10 +541,10 @@ async function sendOverdueReminders() {
                 // (Charges are now handled by applyCharges() below)
                 if (!smsResult?.skipped) {
                   const updatedReturnData = {
-                    ...returnData,
+                    ...(returnData || {}),
                     overdue: {
-                      ...overdue,
-                      daysLate: daysLate,
+                      ...(overdue || {}),
+                      daysLate,
                       lastNotifiedDay: daysLate
                     }
                   };
@@ -488,7 +554,7 @@ async function sendOverdueReminders() {
                       id: tx.id,
                       attributes: {
                         protectedData: {
-                          ...protectedData,
+                          ...(protectedData || {}),
                           return: updatedReturnData
                         }
                       }
@@ -542,6 +608,14 @@ async function sendOverdueReminders() {
               });
             }
             charged++;
+            
+            // Trigger payout only after confirmed replacement charge
+            if (chargeResult.items.includes('replacement')) {
+              await triggerReplacementCompletionIfNeeded({
+                sdk: integSdk,
+                txId: tx.id.uuid || tx.id
+              });
+            }
           } else {
             console.log(`ℹ️ [${scenario}] No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'})`);
           }

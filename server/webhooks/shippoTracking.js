@@ -10,6 +10,18 @@ const { SMS_TAGS } = require('../lib/sms/tags');
 const { toCarrierPhase, isShippedStatus, isDeliveredStatus } = require('../lib/statusMap');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 
+function hasReturnFirstScan(tx) {
+  const pd = tx?.attributes?.protectedData || {};
+  const ret = pd.return || {};
+  return !!ret.firstScanAt;
+}
+
+function hasReplacementCharged(tx) {
+  const pd = tx?.attributes?.protectedData || {};
+  const ret = pd.return || {};
+  return !!ret.replacementCharged;
+}
+
 // In-memory LRU cache for first-scan idempotency (24h TTL)
 // Format: Map<trackingNumber, timestamp>
 const firstScanCache = new Map();
@@ -560,57 +572,30 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     }
     
     // Handle return tracking - send SMS to lender and trigger payout
-    // 
-    // PAYOUT TRIGGER LOGIC:
-    // - Only triggers on RETURN direction scans (borrower → lender)
-    // - Only triggers on first scan statuses (TRANSIT, IN_TRANSIT, ACCEPTED, ACCEPTANCE)
-    // - Only triggers when transaction is in state 'accepted' (not already delivered/complete)
-    // - Idempotent: duplicate webhooks won't create multiple payouts
-    //
-    // TEST PLAN for return scan → payout flow:
-    // 1. Create a booking that reaches state/accepted (provider has accepted, item shipped out)
-    // 2. Ensure the transaction has a return tracking number in protectedData.returnTrackingNumber
-    // 3. Trigger a Shippo webhook with:
-    //    - metadata.direction === 'return' OR tracking number matches returnTrackingNumber
-    //    - tracking_status.status === 'TRANSIT' or 'IN_TRANSIT' or 'ACCEPTED' (first scan statuses)
-    //    - metadata.transactionId set to the transaction UUID
-    // 4. Verify logs show:
-    //    - return.firstScanAt is set in protectedData
-    //    - [PAYOUT] transition/complete-return is called
-    //    - Transaction moves from state 'accepted' to state 'delivered'
-    //    - Stripe payout is created (check Stripe dashboard or logs)
-    // 5. Verify idempotency: sending the same webhook again should skip payout (already delivered)
-    //
+
     if (isReturnTracking && isFirstScan) {
       console.log('📬 [PAYOUT] Processing return first scan - sending SMS to lender and triggering payout');
       
-      // Check if return first scan SMS already sent
-      if (returnData.firstScanAt) {
-        console.log('ℹ️ [PAYOUT] Return first scan SMS already sent - skipping (idempotent)');
-        return res.status(200).json({ message: 'Return first scan SMS already sent - idempotent' });
-      }
+      const alreadyHasScan = hasReturnFirstScan(transaction);
+      let scanRecorded = alreadyHasScan;
+      let updatedTransaction = transaction;
       
-      // Get lender phone
-      const lenderPhone = getLenderPhone(transaction);
-      if (!lenderPhone) {
-        console.warn('⚠️ No lender phone number found - cannot send return SMS');
-        return res.status(400).json({ error: 'No lender phone number found' });
-      }
-      
-      // Get listing title (truncate if too long)
-      const rawTitle = transaction.attributes.listing?.title || 'your item';
-      const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-      
-      // Generate public carrier tracking URL (shorter than Shippo URLs)
-      const returnCarrier = protectedData.returnCarrier;
-      const publicTrackingUrl = getPublicTrackingUrl(returnCarrier, trackingNumber);
-      console.log(`[TRACKINGLINK] Using short public link for return: ${publicTrackingUrl} (carrier: ${returnCarrier || 'unknown'})`);
-      
-      // Use short link for even more compact SMS
-      const shortTrackingUrl = await shortLink(publicTrackingUrl);
-      const message = `📬 Return in transit: "${listingTitle}". Track: ${shortTrackingUrl}`;
-      
-      try {
+      if (!alreadyHasScan) {
+        const lenderPhone = getLenderPhone(transaction);
+        if (!lenderPhone) {
+          console.warn('⚠️ No lender phone number found - cannot send return SMS');
+          return res.status(400).json({ error: 'No lender phone number found' });
+        }
+        
+        const rawTitle = transaction.attributes.listing?.title || 'your item';
+        const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
+        const returnCarrier = protectedData.returnCarrier;
+        const publicTrackingUrl = getPublicTrackingUrl(returnCarrier, trackingNumber);
+        console.log(`[TRACKINGLINK] Using short public link for return: ${publicTrackingUrl} (carrier: ${returnCarrier || 'unknown'})`);
+        
+        const shortTrackingUrl = await shortLink(publicTrackingUrl);
+        const message = `📬 Return in transit: "${listingTitle}". Track: ${shortTrackingUrl}`;
+        
         const smsResult = await sendSMS(lenderPhone, message, {
           role: 'lender',
           transactionId: transaction.id,
@@ -622,9 +607,9 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           }
         });
         
-        // Check if SMS was actually sent (not skipped by guards)
         if (smsResult && smsResult.skipped) {
           console.log(`⚠️ [PAYOUT] Return first scan SMS was skipped: ${smsResult.reason} - NOT setting firstScanAt timestamp`);
+          console.log('ℹ️ [PAYOUT] Skipping payout trigger because SMS was skipped and scan not recorded');
           return res.status(200).json({ 
             success: false, 
             message: `Return first scan SMS skipped: ${smsResult.reason}`,
@@ -633,13 +618,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           });
         }
         
-        // Update transaction with return first scan timestamp (only if SMS was actually sent)
         try {
           const txId = transaction.id.uuid || transaction.id;
           const result = await upsertProtectedData(txId, {
             return: {
-              ...returnData,
-              firstScanAt: timestamp() // ← respects FORCE_NOW
+              ...(returnData || {}),
+              firstScanAt: timestamp()
             }
           }, { source: 'webhook' });
           
@@ -647,107 +631,113 @@ async function handleTrackingWebhook(req, res, opts = {}) {
             console.error(`❌ Failed to update transaction with return first scan:`, result.error);
           } else {
             console.log(`💾 Updated transaction with return first scan timestamp`);
+            updatedTransaction = {
+              ...(transaction || {}),
+              attributes: {
+                ...(transaction?.attributes || {}),
+                protectedData: {
+                  ...(protectedData || {}),
+                  return: {
+                    ...(returnData || {}),
+                    firstScanAt: transaction?.attributes?.protectedData?.return?.firstScanAt || timestamp()
+                  }
+                }
+              }
+            };
+            scanRecorded = hasReturnFirstScan(updatedTransaction);
           }
         } catch (updateError) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }
         
-        // Trigger transition/complete-return to move transaction to delivered state and create payout
-        // This replaces the automatic time-based payout (booking-end + 2 days)
-        try {
-          const txId = transaction.id.uuid || transaction.id;
-          const currentState = transaction.attributes?.state;
-          const lastTransition = transaction.attributes?.lastTransition;
-          
-          console.log(`🔄 [PAYOUT] Checking if transition/complete-return should be triggered for tx ${txId}`);
-          console.log(`🔄 [PAYOUT] Current state: ${currentState}`);
-          console.log(`🔄 [PAYOUT] Last transition: ${lastTransition || 'none'}`);
-          
-          // STATE GUARD 1: Check if transaction is already delivered/complete
-          // Prevent payout if already in delivered state or already completed
-          if (currentState === 'delivered') {
-            console.log(`ℹ️ [PAYOUT] Transaction is already in 'delivered' state - skipping payout (already completed)`);
-            // Skip payout trigger but continue to send response
-          }
-          // STATE GUARD 2: Check if transition/complete-return or transition/complete-replacement already happened
-          // This provides additional idempotency protection
-          else if (lastTransition === 'transition/complete-return' || lastTransition === 'transition/complete-replacement') {
-            console.log(`ℹ️ [PAYOUT] Transaction already completed via '${lastTransition}' - skipping payout (idempotent)`);
-            // Skip payout trigger but continue to send response
-          }
-          // STATE GUARD 3: Only trigger if transaction is in :state/accepted
-          // Reject if in earlier states (pending-payment, preauthorized) or other unexpected states
-          else if (currentState !== 'accepted') {
-            console.log(`ℹ️ [PAYOUT] Transaction is in state '${currentState}' (not 'accepted') - skipping transition/complete-return`);
-            console.log(`ℹ️ [PAYOUT] Payout can only be triggered from 'accepted' state`);
-            // Skip payout trigger but continue to send response
-          }
-          // All guards passed - proceed with payout trigger
-          else {
-            console.log(`✅ [PAYOUT] All state guards passed - triggering transition/complete-return for tx ${txId}`);
-            
-            const integrationSdk = getIntegrationSdk();
-            
-            try {
-              // Call transition/complete-return with correct Flex transaction ID and transition name
-              const transitionResponse = await integrationSdk.transactions.transition({
-                id: txId, // Flex transaction ID (not Shippo shipment ID)
-                transition: 'transition/complete-return', // Exact match with process.edn
-                params: {}
-              });
-              
-              console.log(`✅ [PAYOUT] transition/complete-return succeeded for tx ${txId}`);
-              console.log(`✅ [PAYOUT] Transaction moved to state: ${transitionResponse?.data?.data?.attributes?.state || 'unknown'}`);
-              
-            } catch (transitionError) {
-              // IDEMPOTENCY & ERROR HANDLING:
-              // Handle 409/400 as non-fatal (already transitioned, wrong state, etc.)
-              // Log other errors clearly but don't crash the webhook handler
-              const errorStatus = transitionError?.response?.status || transitionError?.status;
-              const errorData = transitionError?.response?.data || transitionError?.data;
-              const errorCode = errorData?.errors?.[0]?.code;
-              const errorTitle = errorData?.errors?.[0]?.title || errorData?.message || transitionError.message;
-              
-              if (errorStatus === 409 || errorStatus === 400) {
-                // 409 = Conflict (already in target state or invalid transition)
-                // 400 = Bad Request (invalid transition, wrong state, etc.)
-                // These are idempotent cases - treat as success
-                console.log(`ℹ️ [PAYOUT] transition/complete-return already applied or invalid (status: ${errorStatus}, code: ${errorCode || 'none'})`);
-                console.log(`ℹ️ [PAYOUT] This is expected for duplicate webhooks - treating as idempotent success`);
-                console.log(`ℹ️ [PAYOUT] Error details: ${errorTitle}`);
-              } else {
-                // Real errors (auth, network, 5xx) - log with detail but don't fail webhook
-                console.error(`❌ [PAYOUT] Failed to trigger transition/complete-return for tx ${txId}`);
-                console.error(`❌ [PAYOUT] Error status: ${errorStatus || 'unknown'}`);
-                console.error(`❌ [PAYOUT] Error code: ${errorCode || 'none'}`);
-                console.error(`❌ [PAYOUT] Error message: ${transitionError.message}`);
-                console.error(`❌ [PAYOUT] Error data:`, JSON.stringify(errorData, null, 2));
-                // Don't throw - webhook should still return 200 (SMS was sent successfully)
-              }
-            }
-          }
-        } catch (payoutError) {
-          // Catch-all for unexpected errors during payout trigger
-          // Log but don't fail the webhook - SMS was already sent successfully
-          console.error(`❌ [PAYOUT] Unexpected error during payout trigger:`, payoutError.message);
-          console.error(`❌ [PAYOUT] Stack:`, payoutError.stack);
-          // Don't throw - webhook should still return 200
+        if (!scanRecorded) {
+          console.log('⚠️ [PAYOUT] Return scan timestamp missing after update - skipping payout trigger');
+          return res.status(200).json({
+            success: false,
+            message: 'Return scan not recorded; payout not triggered'
+          });
         }
         
         console.log(`✅ Return first scan SMS sent to lender ${lenderPhone}`);
-        return res.status(200).json({ 
-          success: true, 
-          message: 'Return first scan SMS sent to lender',
-          transactionId: transaction.id,
-          lenderPhone: lenderPhone
-        });
-        
-      } catch (smsError) {
-        console.error(`❌ Failed to send return first scan SMS to lender:`, smsError.message);
-        return res.status(500).json({ error: 'Failed to send return first scan SMS to lender' });
+      } else {
+        console.log('ℹ️ [PAYOUT] Return scan already recorded - skipping lender SMS but evaluating payout guard');
       }
+
+      transaction = updatedTransaction || transaction;
+
+      if (!hasReturnFirstScan(transaction)) {
+        console.log('⚠️ [PAYOUT] Guard: return scan missing - refusing payout trigger');
+        return res.status(200).json({
+          success: false,
+          message: 'Return scan missing; payout not triggered'
+        });
+      }
+
+      try {
+        const txId = transaction.id.uuid || transaction.id;
+        const currentState = transaction.attributes?.state;
+        const lastTransition = transaction.attributes?.lastTransition;
+        const replacementAlreadyCharged = hasReplacementCharged(transaction);
+        
+        console.log(`🔄 [PAYOUT] Checking if transition/complete-return should be triggered for tx ${txId}`);
+        console.log(`🔄 [PAYOUT] Current state: ${currentState}`);
+        console.log(`🔄 [PAYOUT] Last transition: ${lastTransition || 'none'}`);
+        console.log(`🔄 [PAYOUT] replacementCharged flag: ${replacementAlreadyCharged}`);
+        
+        if (currentState === 'delivered') {
+          console.log(`ℹ️ [PAYOUT] Transaction is already in 'delivered' state - skipping payout (already completed)`);
+        } else if (lastTransition === 'transition/complete-return' || lastTransition === 'transition/complete-replacement') {
+          console.log(`ℹ️ [PAYOUT] Transaction already completed via '${lastTransition}' - skipping payout (idempotent)`);
+        } else if (currentState !== 'accepted') {
+          console.log(`ℹ️ [PAYOUT] Transaction is in state '${currentState}' (not 'accepted') - skipping transition/complete-return`);
+          console.log(`ℹ️ [PAYOUT] Payout can only be triggered from 'accepted' state`);
+        } else {
+          console.log(`✅ [PAYOUT] All state guards passed - triggering transition/complete-return for tx ${txId}`);
+          
+          const integrationSdk = getIntegrationSdk();
+          
+          try {
+            const transitionResponse = await integrationSdk.transactions.transition({
+              id: txId,
+              transition: 'transition/complete-return',
+              params: {}
+            });
+            
+            console.log(`✅ [PAYOUT] transition/complete-return succeeded for tx ${txId}`);
+            console.log(`✅ [PAYOUT] Transaction moved to state: ${transitionResponse?.data?.data?.attributes?.state || 'unknown'}`);
+            
+          } catch (transitionError) {
+            const errorStatus = transitionError?.response?.status || transitionError?.status;
+            const errorData = transitionError?.response?.data || transitionError?.data;
+            const errorCode = errorData?.errors?.[0]?.code;
+            const errorTitle = errorData?.errors?.[0]?.title || errorData?.message || transitionError.message;
+            
+            if (errorStatus === 409 || errorStatus === 400) {
+              console.log(`ℹ️ [PAYOUT] transition/complete-return already applied or invalid (status: ${errorStatus}, code: ${errorCode || 'none'})`);
+              console.log(`ℹ️ [PAYOUT] This is expected for duplicate webhooks - treating as idempotent success`);
+              console.log(`ℹ️ [PAYOUT] Error details: ${errorTitle}`);
+            } else {
+              console.error(`❌ [PAYOUT] Failed to trigger transition/complete-return for tx ${txId}`);
+              console.error(`❌ [PAYOUT] Error status: ${errorStatus || 'unknown'}`);
+              console.error(`❌ [PAYOUT] Error code: ${errorCode || 'none'}`);
+              console.error(`❌ [PAYOUT] Error message: ${transitionError.message}`);
+              console.error(`❌ [PAYOUT] Error data:`, JSON.stringify(errorData, null, 2));
+            }
+          }
+        }
+      } catch (payoutError) {
+        console.error(`❌ [PAYOUT] Unexpected error during payout trigger:`, payoutError.message);
+        console.error(`❌ [PAYOUT] Stack:`, payoutError.stack);
+      }
+      
+      return res.status(200).json({ 
+        success: true, 
+        message: alreadyHasScan 
+          ? 'Return scan already recorded; payout guard evaluated'
+          : 'Return first scan recorded; payout guard evaluated',
+        transactionId: transaction.id
+      });
     }
-    
     // Check if SMS already sent (idempotency) based on event type for outbound
     if (!isReturnTracking) {
       // [SHIPPO DELIVERY DEBUG] Log idempotency check for delivered
@@ -820,7 +810,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         message = "🎁 Your Sherbrt borrow was delivered! 🍧 Don't forget to take pics and tag @shoponsherbrt while you're slaying in your borrowed fit! 📸✨";
         smsType = 'delivery';
         protectedDataUpdate = {
-          ...protectedData,
+          ...(protectedData || {}),
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
@@ -828,7 +818,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
             event: 'delivered'
           },
           shippingNotification: {
-            ...protectedData.shippingNotification,
+            ...(protectedData?.shippingNotification || {}),
             delivered: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
           }
         };
@@ -859,7 +849,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.log(`[STEP-4] Sending borrower SMS for tracking ${trackingNumber}, txId=${transaction.id}`);
         console.log(`[STEP-4] Message length: ${message.length} chars, shortLink: ${shortTrackingUrl}`);
         protectedDataUpdate = {
-          ...protectedData,
+          ...(protectedData || {}),
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
@@ -867,7 +857,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
             event: 'first_scan'
           },
           shippingNotification: {
-            ...protectedData.shippingNotification,
+            ...(protectedData?.shippingNotification || {}),
             firstScan: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
           }
         };
