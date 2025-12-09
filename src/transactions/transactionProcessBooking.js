@@ -48,9 +48,9 @@ export const transitions = {
   // Admin can also cancel the transition.
   CANCEL: 'transition/cancel',
 
-  // The backend will mark the transaction completed.
-  COMPLETE: 'transition/complete',
-  OPERATOR_COMPLETE: 'transition/operator-complete',
+  // Payout / completion guarded by return scan or replacement charge.
+  COMPLETE_RETURN: 'transition/complete-return',
+  COMPLETE_REPLACEMENT: 'transition/complete-replacement',
 
   // Reviews are given through transaction transitions. Review 1 can be
   // by provider or customer, and review 2 will be the other party of
@@ -144,8 +144,8 @@ export const graph = {
     [states.ACCEPTED]: {
       on: {
         [transitions.CANCEL]: states.CANCELED,
-        [transitions.COMPLETE]: states.DELIVERED,
-        [transitions.OPERATOR_COMPLETE]: states.DELIVERED,
+        [transitions.COMPLETE_RETURN]: states.DELIVERED,
+        [transitions.COMPLETE_REPLACEMENT]: states.DELIVERED,
       },
     },
 
@@ -182,8 +182,8 @@ export const isRelevantPastTransition = transition => {
     transitions.ACCEPT,
     transitions.OPERATOR_ACCEPT,
     transitions.CANCEL,
-    transitions.COMPLETE,
-    transitions.OPERATOR_COMPLETE,
+    transitions.COMPLETE_RETURN,
+    transitions.COMPLETE_REPLACEMENT,
     transitions.CONFIRM_PAYMENT,
     transitions.DECLINE,
     transitions.OPERATOR_DECLINE,
@@ -222,8 +222,8 @@ export const isPrivileged = transition => {
 // Check when transaction is completed (booking over)
 export const isCompleted = transition => {
   const txCompletedTransitions = [
-    transitions.COMPLETE,
-    transitions.OPERATOR_COMPLETE,
+    transitions.COMPLETE_RETURN,
+    transitions.COMPLETE_REPLACEMENT,
     transitions.REVIEW_1_BY_CUSTOMER,
     transitions.REVIEW_1_BY_PROVIDER,
     transitions.REVIEW_2_BY_CUSTOMER,

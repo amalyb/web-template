@@ -107,14 +107,14 @@
     {:name :action/decline-booking}],
    :from :state/preauthorized,
    :to :state/expired}
-  {:name :transition/complete,
+  {:name :transition/complete-return,
    :actor :actor.role/operator,
-   :actions [{:name :action/stripe-create-payout}],
+   :actions [{:name :action/complete-return}],
    :from :state/accepted,
    :to :state/delivered}
-  {:name :transition/operator-complete,
+  {:name :transition/complete-replacement,
    :actor :actor.role/operator,
-   :actions [{:name :action/stripe-create-payout}],
+   :actions [{:name :action/complete-replacement}],
    :from :state/accepted,
    :to :state/delivered}
   ;; Privileged transition for applying late fees / replacement charges
@@ -242,27 +242,27 @@
    :to :actor.role/customer,
    :template :booking-expired-request}
   {:name :notification/booking-money-paid,
-   :on :transition/complete,
+   :on :transition/complete-return,
    :to :actor.role/provider,
    :template :booking-money-paid}
   {:name :notification/review-period-start-provider,
-   :on :transition/complete,
+   :on :transition/complete-return,
    :to :actor.role/provider,
    :template :booking-review-by-provider-wanted}
   {:name :notification/review-period-start-customer,
-   :on :transition/complete,
+   :on :transition/complete-return,
    :to :actor.role/customer,
    :template :booking-review-by-customer-wanted}
   {:name :notification/booking-money-paid-operator-complete,
-   :on :transition/operator-complete,
+   :on :transition/complete-replacement,
    :to :actor.role/provider,
    :template :booking-money-paid}
   {:name :notification/review-period-start-provider-operator-complete,
-   :on :transition/operator-complete,
+   :on :transition/complete-replacement,
    :to :actor.role/provider,
    :template :booking-review-by-provider-wanted}
   {:name :notification/review-period-start-customer-operator-complete,
-   :on :transition/operator-complete,
+   :on :transition/complete-replacement,
    :to :actor.role/customer,
    :template :booking-review-by-customer-wanted}
   {:name :notification/review-by-provider-first,

@@ -576,7 +576,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     //    - metadata.transactionId set to the transaction UUID
     // 4. Verify logs show:
     //    - return.firstScanAt is set in protectedData
-    //    - [PAYOUT] transition/complete is called
+    //    - [PAYOUT] transition/complete-return is called
     //    - Transaction moves from state 'accepted' to state 'delivered'
     //    - Stripe payout is created (check Stripe dashboard or logs)
     // 5. Verify idempotency: sending the same webhook again should skip payout (already delivered)
@@ -652,14 +652,14 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           console.error(`❌ Failed to update transaction:`, updateError.message);
         }
         
-        // Trigger transition/complete to move transaction to delivered state and create payout
+        // Trigger transition/complete-return to move transaction to delivered state and create payout
         // This replaces the automatic time-based payout (booking-end + 2 days)
         try {
           const txId = transaction.id.uuid || transaction.id;
           const currentState = transaction.attributes?.state;
           const lastTransition = transaction.attributes?.lastTransition;
           
-          console.log(`🔄 [PAYOUT] Checking if transition/complete should be triggered for tx ${txId}`);
+          console.log(`🔄 [PAYOUT] Checking if transition/complete-return should be triggered for tx ${txId}`);
           console.log(`🔄 [PAYOUT] Current state: ${currentState}`);
           console.log(`🔄 [PAYOUT] Last transition: ${lastTransition || 'none'}`);
           
@@ -669,34 +669,34 @@ async function handleTrackingWebhook(req, res, opts = {}) {
             console.log(`ℹ️ [PAYOUT] Transaction is already in 'delivered' state - skipping payout (already completed)`);
             // Skip payout trigger but continue to send response
           }
-          // STATE GUARD 2: Check if transition/complete or transition/operator-complete already happened
+          // STATE GUARD 2: Check if transition/complete-return or transition/complete-replacement already happened
           // This provides additional idempotency protection
-          else if (lastTransition === 'transition/complete' || lastTransition === 'transition/operator-complete') {
+          else if (lastTransition === 'transition/complete-return' || lastTransition === 'transition/complete-replacement') {
             console.log(`ℹ️ [PAYOUT] Transaction already completed via '${lastTransition}' - skipping payout (idempotent)`);
             // Skip payout trigger but continue to send response
           }
           // STATE GUARD 3: Only trigger if transaction is in :state/accepted
           // Reject if in earlier states (pending-payment, preauthorized) or other unexpected states
           else if (currentState !== 'accepted') {
-            console.log(`ℹ️ [PAYOUT] Transaction is in state '${currentState}' (not 'accepted') - skipping transition/complete`);
+            console.log(`ℹ️ [PAYOUT] Transaction is in state '${currentState}' (not 'accepted') - skipping transition/complete-return`);
             console.log(`ℹ️ [PAYOUT] Payout can only be triggered from 'accepted' state`);
             // Skip payout trigger but continue to send response
           }
           // All guards passed - proceed with payout trigger
           else {
-            console.log(`✅ [PAYOUT] All state guards passed - triggering transition/complete for tx ${txId}`);
+            console.log(`✅ [PAYOUT] All state guards passed - triggering transition/complete-return for tx ${txId}`);
             
             const integrationSdk = getIntegrationSdk();
             
             try {
-              // Call transition/complete with correct Flex transaction ID and transition name
+              // Call transition/complete-return with correct Flex transaction ID and transition name
               const transitionResponse = await integrationSdk.transactions.transition({
                 id: txId, // Flex transaction ID (not Shippo shipment ID)
-                transition: 'transition/complete', // Exact match with process.edn
+                transition: 'transition/complete-return', // Exact match with process.edn
                 params: {}
               });
               
-              console.log(`✅ [PAYOUT] transition/complete succeeded for tx ${txId}`);
+              console.log(`✅ [PAYOUT] transition/complete-return succeeded for tx ${txId}`);
               console.log(`✅ [PAYOUT] Transaction moved to state: ${transitionResponse?.data?.data?.attributes?.state || 'unknown'}`);
               
             } catch (transitionError) {
@@ -712,12 +712,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
                 // 409 = Conflict (already in target state or invalid transition)
                 // 400 = Bad Request (invalid transition, wrong state, etc.)
                 // These are idempotent cases - treat as success
-                console.log(`ℹ️ [PAYOUT] transition/complete already applied or invalid (status: ${errorStatus}, code: ${errorCode || 'none'})`);
+                console.log(`ℹ️ [PAYOUT] transition/complete-return already applied or invalid (status: ${errorStatus}, code: ${errorCode || 'none'})`);
                 console.log(`ℹ️ [PAYOUT] This is expected for duplicate webhooks - treating as idempotent success`);
                 console.log(`ℹ️ [PAYOUT] Error details: ${errorTitle}`);
               } else {
                 // Real errors (auth, network, 5xx) - log with detail but don't fail webhook
-                console.error(`❌ [PAYOUT] Failed to trigger transition/complete for tx ${txId}`);
+                console.error(`❌ [PAYOUT] Failed to trigger transition/complete-return for tx ${txId}`);
                 console.error(`❌ [PAYOUT] Error status: ${errorStatus || 'unknown'}`);
                 console.error(`❌ [PAYOUT] Error code: ${errorCode || 'none'}`);
                 console.error(`❌ [PAYOUT] Error message: ${transitionError.message}`);
