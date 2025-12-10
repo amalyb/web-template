@@ -1214,4 +1214,3 @@ if (process.env.TEST_ENDPOINTS) {
 }
 
 module.exports = router;
-
