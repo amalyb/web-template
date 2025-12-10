@@ -218,6 +218,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
     // Detect scenario based on state and firstScanAt
     const hasScan = isScanned(returnData);
     const scanDate = returnData.firstScanAt ? dayjs(returnData.firstScanAt) : null;
+    const isDeliveredWithoutScan = currentState === 'delivered' && !hasScan;
     
     let scenario, lateDays, transitionName, effectiveDate;
     
@@ -257,8 +258,8 @@ async function applyCharges({ sdkInstance, txId, now }) {
       console.log(`[lateFees] State: ${currentState}, Scan date: ${ymd(scanDate)}, Return due: ${ymd(returnDueAt)}`);
       console.log(`[lateFees] Days late (based on scan): ${lateDays}`);
       
-    } else if (currentState === 'accepted' && !hasScan) {
-      // SCENARIO B: Never returned (no scan, still in accepted state)
+    } else if ((currentState === 'accepted' || currentState === 'delivered') && !hasScan) {
+      // SCENARIO B: Never returned (no scan, accepted OR delivered state)
       scenario = 'non-return';
       effectiveDate = dayjs(now);
       
@@ -269,9 +270,17 @@ async function applyCharges({ sdkInstance, txId, now }) {
       
       transitionName = 'transition/privileged-apply-late-fees-non-return';
       
-      console.log(`[lateFees] SCENARIO B: Never returned`);
-      console.log(`[lateFees] State: ${currentState}, No scan, Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}`);
+      console.log(`[lateFees] SCENARIO B: Never returned (state=${currentState})`);
+      console.log(`[lateFees] No scan, Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}`);
       console.log(`[lateFees] Days late (based on today): ${lateDays}`);
+      if (isDeliveredWithoutScan) {
+        console.log('[lateFees][DELIVERED-WITHOUT-SCAN][PROCESSING]', {
+          state: currentState,
+          txId,
+          returnDue: ymd(returnDueAt),
+          today: ymd(now),
+        });
+      }
       
     } else {
       // Unexpected state/scenario combination

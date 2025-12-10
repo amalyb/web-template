@@ -355,6 +355,11 @@ async function sendOverdueReminders() {
     let sent = 0, failed = 0, processed = 0;
     let charged = 0, chargesFailed = 0;
 
+    // Overdue rules summary:
+    // - If past expected return date AND no return scan AND no replacement charge:
+    //   -> treat as overdue and keep sending late SMS/fees (even if state === 'delivered').
+    // - Once a return scan exists, or replacementCharged is true:
+    //   -> stop overdue processing for this transaction.
     for (const tx of allTransactions) {
       processed++;
       
@@ -364,9 +369,10 @@ async function sendOverdueReminders() {
       // Get return due date
       const protectedData = tx?.attributes?.protectedData || {};
       const returnData = protectedData.return || {};
+      const replacementCharged = hasReplacementCharged(tx);
       
       // Stop SMS once replacement has been charged
-      if (returnData.replacementCharged) {
+      if (replacementCharged) {
         if (VERBOSE) {
           console.log(
             `⏭️ Skipping tx ${tx?.id?.uuid || '(no id)'} - replacement already charged`
@@ -385,10 +391,12 @@ async function sendOverdueReminders() {
       
       const returnDate = new Date(returnDueAt);
       const hasScan = !!returnData.firstScanAt;
+      const isDeliveredWithoutScan = currentState === 'delivered' && !hasScan;
       
       // Determine scenario and check if transaction qualifies
       let scenario;
       let shouldProcess = false;
+      let precomputedDaysLate;
       
       if (currentState === 'delivered' && hasScan) {
         // SCENARIO A: Returned late (has scan, in delivered state)
@@ -403,17 +411,37 @@ async function sendOverdueReminders() {
         } else {
           if (VERBOSE) console.log(`✅ Returned on time for tx ${tx?.id?.uuid || '(no id)'} - no late fees`);
         }
-      } else if (currentState === 'accepted' && !hasScan) {
-        // SCENARIO B: Never returned (no scan, still in accepted state)
+      } else if ((currentState === 'accepted' || currentState === 'delivered') && !hasScan) {
+        // SCENARIO B: Never returned (no scan, accepted OR delivered state)
         // Check if today is past return due date (using chargeable late days)
         const daysLate = computeChargeableLateDays(todayDate, returnDate);
+        precomputedDaysLate = daysLate;
         
         if (daysLate >= 1) {
           scenario = 'non-return';
           shouldProcess = true;
-          console.log(`[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} chargeable days late (due: ${ymd(returnDate)}, today: ${today})`);
+          const baseLog = `[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} chargeable days late (due: ${ymd(returnDate)}, today: ${today}, state: ${currentState})`;
+          console.log(baseLog);
+          if (isDeliveredWithoutScan) {
+            console.log('[OVERDUE][DELIVERED-WITHOUT-SCAN][PROCESSING]', {
+              txId: tx?.id?.uuid || tx?.id,
+              state: currentState,
+              returnDue: ymd(returnDate),
+              today,
+            });
+          }
         } else {
-          if (VERBOSE) console.log(`⏭️ Not yet overdue for tx ${tx?.id?.uuid || '(no id)'}`);
+          if (isDeliveredWithoutScan) {
+            console.log('[OVERDUE][DELIVERED-WITHOUT-SCAN][SKIP]', {
+              txId: tx?.id?.uuid || tx?.id,
+              state: currentState,
+              reason: 'not yet past due',
+              returnDue: ymd(returnDate),
+              today,
+            });
+          } else if (VERBOSE) {
+            console.log(`⏭️ Not yet overdue for tx ${tx?.id?.uuid || '(no id)'}`);
+          }
         }
       } else {
         // Skip unexpected combinations
@@ -440,7 +468,7 @@ async function sendOverdueReminders() {
         daysLate = computeChargeableLateDays(scanDate, returnDate);
       } else {
         // Scenario B: Based on today (ongoing lateness for non-return)
-        daysLate = computeChargeableLateDays(todayDate, returnDate);
+        daysLate = typeof precomputedDaysLate === 'number' ? precomputedDaysLate : computeChargeableLateDays(todayDate, returnDate);
       }
       
       // SMS reminders: Only send for Scenario B (never returned)
