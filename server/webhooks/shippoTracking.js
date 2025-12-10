@@ -10,6 +10,58 @@ const { SMS_TAGS } = require('../lib/sms/tags');
 const { toCarrierPhase, isShippedStatus, isDeliveredStatus } = require('../lib/statusMap');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 
+const FLEX_TX_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseShippoMetadata(rawMetadata) {
+  if (!rawMetadata) return {};
+
+  if (typeof rawMetadata === 'string') {
+    try {
+      return JSON.parse(rawMetadata);
+    } catch (e) {
+      console.warn('[SHIPPO-WEBHOOK][METADATA-PARSE-ERROR]', e.message);
+      return {};
+    }
+  }
+
+  if (typeof rawMetadata === 'object') {
+    return rawMetadata;
+  }
+
+  return {};
+}
+
+function getTransactionIdFromShippoMetadata(metadata = {}) {
+  const raw =
+    metadata.transactionId ||
+    metadata.txId ||
+    metadata.transaction_id ||
+    metadata.tx_id ||
+    null;
+
+  if (!raw) {
+    console.warn('[SHIPPO-WEBHOOK][NO-METADATA-TXID]', { metadata });
+    return null;
+  }
+
+  if (typeof raw === 'object' && raw !== null) {
+    if (raw.uuid) {
+      return String(raw.uuid);
+    }
+    if (raw.id) {
+      return String(raw.id);
+    }
+  }
+
+  const txIdStr = String(raw);
+  if (!FLEX_TX_ID_REGEX.test(txIdStr)) {
+    console.warn('[SHIPPO-WEBHOOK][TXID-FORMAT-INVALID]', { txId: txIdStr });
+    return null;
+  }
+
+  return txIdStr;
+}
+
 function hasReturnFirstScan(tx) {
   const pd = tx?.attributes?.protectedData || {};
   const ret = pd.return || {};
@@ -99,30 +151,13 @@ router.use('/shippo', express.raw({ type: 'application/json' }), (req, res, next
   // Parse JSON for processing
   try {
     req.body = JSON.parse(req.body.toString());
-    
-    // Log parsed data (safe - no sensitive data in tracking number)
+    // Log parsed data (safe - limited fields only)
     const trackingNumber = req.body?.data?.tracking_number || 'UNKNOWN';
     const eventType = req.body?.event?.type || 'unknown';
     const eventMode = req.body?.event?.mode || 'unknown';
-    
-    // Safely extract txId from metadata (handle both string and object formats)
-    let txIdFromMetadata = 'MISSING';
-    try {
-      if (req.body?.data?.metadata) {
-        const metadata = typeof req.body.data.metadata === 'string' ? 
-          JSON.parse(req.body.data.metadata) : 
-          req.body.data.metadata;
-        txIdFromMetadata = metadata?.transactionId || metadata?.txId || 'MISSING';
-      }
-    } catch (metaError) {
-      // Metadata parsing failed - not critical for early logging
-      txIdFromMetadata = 'PARSE_ERROR';
-    }
-    
-    console.log(`[SHIPPO-WEBHOOK-ATTEMPT] ✅ Parsed JSON: event=${eventType}, mode=${eventMode}, tracking=${trackingNumber}, txId=${txIdFromMetadata}`);
+    console.log(`[SHIPPO-WEBHOOK-ATTEMPT] ✅ Parsed JSON: event=${eventType}, mode=${eventMode}, tracking=${trackingNumber}`);
   } catch (error) {
     console.error(`[SHIPPO-WEBHOOK-ATTEMPT] ❌ Failed to parse JSON body: ${error.message}`);
-    console.error(`[SHIPPO-WEBHOOK-ATTEMPT] ❌ Raw body preview (first 500 chars): ${rawBodyStr.substring(0, 500)}...`);
     return res.status(400).json({ error: 'Invalid JSON' });
   }
   next();
@@ -267,12 +302,12 @@ function getLenderPhone(transaction) {
 // Main webhook handler logic (extracted for reusability)
 async function handleTrackingWebhook(req, res, opts = {}) {
   const { skipSignature = false, isTest = false } = opts;
-  
-  const eventType = req.body?.event || 'unknown';
+
+  const payload = req.body;
+  const eventType = payload?.event?.type || payload?.event || 'unknown';
   const testPrefix = isTest ? '[TEST] ' : '';
   console.log(`${testPrefix}🚀 Shippo webhook received! event=${eventType}`);
-  console.log(`${testPrefix}📋 Request body:`, JSON.stringify(req.body, null, 2));
-  
+
   // Verify Shippo signature (skip if not configured for test environments or if skipSignature is set)
   if (!skipSignature) {
     const webhookSecret = process.env.SHIPPO_WEBHOOK_SECRET;
@@ -290,8 +325,6 @@ async function handleTrackingWebhook(req, res, opts = {}) {
   }
   
   try {
-    const payload = req.body;
-      
       // Validate payload structure
       if (!payload || !payload.data) {
         console.warn('⚠️ Invalid payload structure - missing data field');
@@ -301,51 +334,34 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       const { data, event } = payload;
       
       // Extract tracking information
-      const trackingNumber = data.tracking_number;
-      const carrier = data.carrier;
+      const trackingNumber = data.tracking_number || data.trackingNumber || null;
+      const carrier = data.carrier || null;
       const trackingStatus = data.tracking_status?.status;
       const statusDetails = data.tracking_status?.status_details || data.tracking_status?.substatus || '';
       const substatus = statusDetails; // For backward compatibility with existing code
       
-      // Parse metadata if it's a JSON string (Shippo may send it as string)
-      let parsedMetadata = data.metadata || {};
-      if (typeof parsedMetadata === 'string') {
-        try {
-          parsedMetadata = JSON.parse(parsedMetadata);
-        } catch (e) {
-          console.warn('[ShippoWebhook] Failed to parse metadata as JSON:', e.message);
-          parsedMetadata = {};
-        }
+      const metadata = parseShippoMetadata(data.metadata);
+      const txIdStr = getTransactionIdFromShippoMetadata(metadata);
+      
+      console.log('[SHIPPO-WEBHOOK-ATTEMPT]', {
+        direction: metadata.direction || 'unknown',
+        rawStatus: trackingStatus || null,
+        trackingNumber,
+        carrier,
+        txId: txIdStr || null,
+      });
+      
+      if (!txIdStr) {
+        console.warn('[SHIPPO-WEBHOOK][NO-TXID-PARSED]', { metadata });
       }
       
-      // Support both transactionId (new) and txId (legacy) keys
-      const metadata = parsedMetadata || {};
-      const txId = metadata.transactionId || metadata.txId;
-      
-      // Warn if we're using legacy txId key
-      if (metadata.txId && !metadata.transactionId) {
-        console.warn('[ShippoWebhook] Legacy txId metadata detected; using txId as transactionId');
-      }
-      
-      // Debug log after metadata parsing
-      console.log('[SHIPPO-WEBHOOK] direction=', metadata.direction, 'txId=', txId, 'tracking=', trackingNumber);
-      
-      // [SHIPPO DELIVERY DEBUG] Structured logging for webhook payload
-      console.log(`[SHIPPO DELIVERY DEBUG] 📦 Webhook received:`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   tracking_number: ${trackingNumber || 'MISSING'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   carrier: ${carrier || 'MISSING'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   tracking_status.status: ${trackingStatus || 'MISSING'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   tracking_status.status_details: ${statusDetails || 'none'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   event.type: ${event?.type || 'MISSING'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   event.mode: ${event?.mode || 'MISSING'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   metadata.transactionId: ${txId || 'MISSING'}`);
-      console.log(`[SHIPPO DELIVERY DEBUG]   metadata.direction: ${metadata.direction || 'none'}`);
-      
-      console.log(`📦 Tracking Number: ${trackingNumber}`);
-      console.log(`🚚 Carrier: ${carrier}`);
-      console.log(`📊 Status: ${trackingStatus}`);
-      console.log(`📋 Status Details: ${statusDetails || 'none'}`);
-      console.log(`🏷️ Metadata:`, metadata);
+      // Debug log after metadata parsing (safe fields only)
+      console.log('[SHIPPO-WEBHOOK]', {
+        direction: metadata.direction || 'unknown',
+        txId: txIdStr || null,
+        trackingNumber: trackingNumber || 'MISSING',
+        status: trackingStatus || 'MISSING',
+      });
       
       // Gate by Shippo mode - ignore events whose event.mode doesn't match our SHIPPO_MODE
       const expectedMode = process.env.SHIPPO_MODE; // 'test' or 'live'
@@ -397,12 +413,18 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       // Handle OUT_FOR_DELIVERY status - log for visibility but don't trigger SMS
       if (isOutForDelivery) {
         console.log(`[SHIPPO-WEBHOOK] 📦 Status is OUT_FOR_DELIVERY - logging for visibility but not triggering SMS`);
-        console.log(`[SHIPPO-WEBHOOK] direction=${metadata.direction || 'none'}, txId=${txId || 'MISSING'}, tracking=${trackingNumber || 'MISSING'}`);
+        console.log(`[SHIPPO-WEBHOOK] direction=${metadata.direction || 'none'}, txId=${txIdStr || 'MISSING'}, tracking=${trackingNumber || 'MISSING'}`);
+        console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+          txId: txIdStr || null,
+          trackingNumber,
+          status: trackingStatus || null,
+          reason: 'out-for-delivery',
+        });
         // Still try to find transaction and log it for debugging
-        if (txId) {
+        if (txIdStr) {
           try {
             const sdk = await getTrustedSdk();
-            const response = await sdk.transactions.show({ id: txId });
+            const response = await sdk.transactions.show({ id: txIdStr });
             const transaction = response.data.data;
             console.log(`[SHIPPO-WEBHOOK] ✅ Found transaction ${transaction.id} for OUT_FOR_DELIVERY status`);
             console.log(`[SHIPPO-WEBHOOK] Transaction state: ${transaction.attributes?.state || 'unknown'}`);
@@ -430,6 +452,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         if (upperStatus && upperStatus.includes('DELIVER') && !isDelivery) {
           console.warn(`⚠️ [SHIPPO DELIVERY DEBUG] Status contains 'DELIVER' but didn't match delivery detection - please review: '${trackingStatus}'`);
         }
+        console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+          txId: txIdStr || null,
+          trackingNumber,
+          status: trackingStatus || null,
+          reason: 'status-not-relevant',
+        });
         return res.status(200).json({ message: `Status ${trackingStatus} ignored` });
       }
       
@@ -441,11 +469,11 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     let matchStrategy = 'unknown';
     
     // Method 1: Try to find by transaction ID from metadata (supports both transactionId and txId)
-    if (txId) {
-      console.log(`🔍 Looking up transaction by metadata transaction ID: ${txId}`);
+    if (txIdStr) {
+      console.log(`🔍 Looking up transaction by metadata transaction ID: ${txIdStr}`);
       try {
         const sdk = await getTrustedSdk();
-        const response = await sdk.transactions.show({ id: txId });
+        const response = await sdk.transactions.show({ id: txIdStr });
         transaction = response.data.data;
         matchStrategy = metadata.transactionId ? 'metadata.transactionId' : 'metadata.txId';
         console.log(`✅ Found transaction by metadata transaction ID: ${transaction.id}`);
@@ -457,7 +485,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         const errorTitle = errorData?.errors?.[0]?.title || errorData?.message || error.message;
         
         console.error(`[SHIPPO DELIVERY DEBUG] ❌ Transaction lookup by ID failed:`);
-        console.error(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txId}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txIdStr}`);
         console.error(`[SHIPPO DELIVERY DEBUG]   error.message: ${error.message}`);
         console.error(`[SHIPPO DELIVERY DEBUG]   HTTP status: ${errorStatus || 'N/A'}`);
         console.error(`[SHIPPO DELIVERY DEBUG]   error.code: ${errorCode || 'N/A'}`);
@@ -466,7 +494,8 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         // Log environment context
         const integClientId = process.env.INTEGRATION_CLIENT_ID;
         const shippoMode = process.env.SHIPPO_MODE || 'NOT SET';
-        const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
+        const baseUrl = process.env.FLEX_INTEGRATION_BASE_URL ||
+                        process.env.SHARETRIBE_SDK_BASE_URL || 
                         process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
                         'https://flex-api.sharetribe.com (default)';
         
@@ -506,13 +535,14 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     if (!transaction) {
       console.error(`[SHIPPO DELIVERY DEBUG] ❌ Could not find transaction for this tracking update`);
       console.error(`[SHIPPO DELIVERY DEBUG]   tracking_number: ${trackingNumber || 'MISSING'}`);
-      console.error(`[SHIPPO DELIVERY DEBUG]   metadata.transactionId: ${txId || 'MISSING'}`);
+      console.error(`[SHIPPO DELIVERY DEBUG]   metadata.transactionId: ${txIdStr || 'MISSING'}`);
       console.error(`[SHIPPO DELIVERY DEBUG]   matchStrategy attempted: ${matchStrategy}`);
       
       // Log environment context for debugging
       const integClientId = process.env.INTEGRATION_CLIENT_ID;
       const shippoMode = process.env.SHIPPO_MODE || 'NOT SET';
-      const baseUrl = process.env.SHARETRIBE_SDK_BASE_URL || 
+      const baseUrl = process.env.FLEX_INTEGRATION_BASE_URL ||
+                      process.env.SHARETRIBE_SDK_BASE_URL || 
                       process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL || 
                       'https://flex-api.sharetribe.com (default)';
       
@@ -521,15 +551,16 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       console.error(`[SHIPPO DELIVERY DEBUG]     Base URL: ${baseUrl}`);
       console.error(`[SHIPPO DELIVERY DEBUG]     INTEGRATION_CLIENT_ID: ${integClientId ? integClientId.substring(0, 8) + '...' + integClientId.substring(integClientId.length - 4) : 'NOT SET'}`);
       
-      if (txId) {
-        console.error(`[SHIPPO DELIVERY DEBUG]   Transaction lookup by ID failed - check if transaction exists: ${txId}`);
-        console.error(`[SHIPPO DELIVERY DEBUG]   → Run debug script: node server/scripts/debugShippoDeliveryForTx.js ${txId} ${trackingNumber || ''}`);
+      if (txIdStr) {
+        console.error(`[SHIPPO DELIVERY DEBUG]   Transaction lookup by ID failed - check if transaction exists: ${txIdStr}`);
+        console.error(`[SHIPPO DELIVERY DEBUG]   → Run debug script: node server/scripts/debugShippoDeliveryForTx.js ${txIdStr} ${trackingNumber || ''}`);
       }
       if (trackingNumber) {
         console.error(`[SHIPPO DELIVERY DEBUG]   Tracking number search failed - only searches last 100 transactions`);
         console.error(`[SHIPPO DELIVERY DEBUG]   If transaction is older, ensure metadata.transactionId is included in webhook`);
       }
       console.error('❌ Could not find transaction for this tracking update');
+      console.warn('[SHIPPO-WEBHOOK][TX-NOT-FOUND]', { txId: txIdStr || null, metadata });
       return res.status(404).json({ error: 'Transaction not found' });
     }
     
@@ -559,6 +590,14 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     // For older labels without direction metadata, assume outbound if not explicitly return
     const isOutbound = !isReturnTracking;
     
+    console.log('[SHIPPO-WEBHOOK-ATTEMPT]', {
+      direction: isReturnTracking ? 'return' : 'outbound',
+      rawStatus: trackingStatus || null,
+      trackingNumber,
+      carrier,
+      txId: txIdStr || null,
+    });
+    
     console.log(`[SHIPPO DELIVERY DEBUG] 🔍 Direction check:`);
     console.log(`[SHIPPO DELIVERY DEBUG]   explicitDirection: ${explicitDirection || 'none (assuming outbound)'}`);
     console.log(`[SHIPPO DELIVERY DEBUG]   isReturnTracking: ${isReturnTracking}`);
@@ -584,6 +623,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         const lenderPhone = getLenderPhone(transaction);
         if (!lenderPhone) {
           console.warn('⚠️ No lender phone number found - cannot send return SMS');
+          console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+            txId: txIdFromTransaction,
+            trackingNumber,
+            status: trackingStatus || null,
+            reason: 'missing-lender-phone',
+          });
           return res.status(400).json({ error: 'No lender phone number found' });
         }
         
@@ -667,6 +712,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
 
       if (!hasReturnFirstScan(transaction)) {
         console.log('⚠️ [PAYOUT] Guard: return scan missing - refusing payout trigger');
+        console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+          txId: txIdFromTransaction,
+          trackingNumber,
+          status: trackingStatus || null,
+          reason: 'missing-first-scan',
+        });
         return res.status(200).json({
           success: false,
           message: 'Return scan missing; payout not triggered'
@@ -686,17 +737,40 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         
         if (currentState === 'delivered') {
           console.log(`ℹ️ [PAYOUT] Transaction is already in 'delivered' state - skipping payout (already completed)`);
+          console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+            txId: txId,
+            trackingNumber,
+            status: trackingStatus || null,
+            reason: 'already-delivered',
+          });
         } else if (lastTransition === 'transition/complete-return' || lastTransition === 'transition/complete-replacement') {
           console.log(`ℹ️ [PAYOUT] Transaction already completed via '${lastTransition}' - skipping payout (idempotent)`);
+          console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+            txId: txId,
+            trackingNumber,
+            status: trackingStatus || null,
+            reason: 'already-completed',
+          });
         } else if (currentState !== 'accepted') {
           console.log(`ℹ️ [PAYOUT] Transaction is in state '${currentState}' (not 'accepted') - skipping transition/complete-return`);
           console.log(`ℹ️ [PAYOUT] Payout can only be triggered from 'accepted' state`);
+          console.log('[SHIPPO-WEBHOOK][NO-ACTION]', {
+            txId: txId,
+            trackingNumber,
+            status: trackingStatus || null,
+            reason: 'state-not-accepted',
+          });
         } else {
           console.log(`✅ [PAYOUT] All state guards passed - triggering transition/complete-return for tx ${txId}`);
           
           const integrationSdk = getIntegrationSdk();
           
           try {
+            console.log('[SHIPPO-WEBHOOK][COMPLETE-RETURN]', {
+              txId: txId,
+              trackingNumber,
+              status: trackingStatus || null,
+            });
             const transitionResponse = await integrationSdk.transactions.transition({
               id: txId,
               transition: 'transition/complete-return',

@@ -4,8 +4,12 @@ const { createInstance } = require('sharetribe-flex-integration-sdk');
 let cached;
 function getIntegrationSdk() {
   if (!cached) {
-    // Determine base URL (same logic as getFlexSdk for consistency)
+    // Explicit base URL selection for Integration SDK:
+    // - FLEX_INTEGRATION_BASE_URL controls env (set per test vs prod)
+    // - Falls back to SHARETRIBE_SDK_BASE_URL / REACT_APP_SHARETRIBE_SDK_BASE_URL
+    // - Defaults to public Flex API if nothing is provided
     const baseUrl =
+      process.env.FLEX_INTEGRATION_BASE_URL ||
       process.env.SHARETRIBE_SDK_BASE_URL ||
       process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL ||
       'https://flex-api.sharetribe.com';
