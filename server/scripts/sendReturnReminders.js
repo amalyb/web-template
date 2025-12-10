@@ -263,7 +263,8 @@ async function sendReturnReminders() {
         
         const shortUrl = await shortLink(returnLabelUrl);
         console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-        message = `📦 It's almost return time! Here's your QR to ship back tomorrow: ${shortUrl} Thanks for sharing style 💌`;
+        const labelNoun = labelType === 'QR' ? 'QR code' : 'shipping label';
+        message = `📦 It's almost return time! Please ship your item back tomorrow using this ${labelNoun}: ${shortUrl}. Late fees are $15/day if it ships after the return date. Thanks for sharing style 💌`;
         tag = 'return_tminus1_to_borrower';
         
       } else if (reminderType === 'TODAY') {
