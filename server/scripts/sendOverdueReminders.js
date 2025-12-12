@@ -4,8 +4,8 @@
  * 
  * Sends overdue return reminders and applies late fees:
  * - SMS reminders for borrowers who haven't returned items
- * - Applies daily late fees ($15/day) for days 1-4
- * - Applies replacement charge for day 5+ (6+ chargeable days)
+ * - Applies daily late fees ($15/day) starting Day 1
+ * - Replacement charging is manual / operator-initiated (not automatic)
  * 
  * CRON SCHEDULING (Render/Heroku):
  * Run daily at 9 AM UTC: 0 9 * * * node server/scripts/sendOverdueReminders.js
@@ -226,7 +226,7 @@ async function sendOverdueReminders() {
     // Test 3: Returned 6 days late
     //   - Create transaction with return due date = today - 6 days
     //   - Trigger return scan today (6 days late)
-    //   - Verify: Replacement charge applied (not daily fees), payout on scan
+//   - Verify: Late fees continue; replacement requires manual operator action
     //
     // Test 4: Never returned, 3 days late
     //   - Create transaction with return due date = today - 3 days
@@ -236,7 +236,7 @@ async function sendOverdueReminders() {
     // Test 5: Never returned, 6 days late
     //   - Create transaction with return due date = today - 6 days
     //   - Do NOT trigger return scan
-    //   - Verify: Replacement charge applied (no payout, stays in accepted state)
+//   - Verify: Late fees continue; replacement requires manual operator action
     //
     // ============================================================================
     // EDGE CASES: Business Days (Sundays + USPS Holidays Excluded)
@@ -252,8 +252,8 @@ async function sendOverdueReminders() {
     //   - Do NOT trigger return scan
     //   - Wait until Monday (e.g., 2025-01-13) - 4 chargeable days later
     //     (Thu, Fri, Sat, Mon; Sunday Jan 12 skipped)
-    //   - Verify: Replacement charge applied on Day 5 (next chargeable day after Day 4)
-    //   - Verify: Day 5 effectively falls on the next chargeable day because Sunday is excluded
+//   - Verify: Day 5+ is an escalation threshold (next chargeable day after Day 4)
+//   - Verify: Late fees continue; replacement requires manual operator action (no auto replacement)
     //
     // Test 8: Due right before USPS holiday (e.g., Wed before Thanksgiving)
     //   - Create transaction with return due date = Wednesday (e.g., 2025-11-26)
@@ -264,7 +264,7 @@ async function sendOverdueReminders() {
     // Test 9: Day 5 falls on a Sunday or holiday
     //   - Create transaction with return due date such that Day 5 would be Sunday/holiday
     //   - Verify: Day 5 effectively becomes the next chargeable day (e.g., Monday)
-    //   - Verify: Replacement charge applies on the first chargeable day after Day 4
+//   - Verify: Late fees continue; replacement (if any) is manual/operator-only (no auto replacement)
     //
     // ============================================================================
     // DIAGNOSTIC EXAMPLES (for verification)
@@ -278,9 +278,10 @@ async function sendOverdueReminders() {
     //   computeChargeableLateDays('2025-01-13', '2025-01-08') // => 4 (Thu, Fri, Sat, Mon)
     //
     // Day-5 threshold:
-    //   For computeChargeableLateDays(...) >= 5, applyCharges should attempt replacement,
-    //   and subsequent runs should neither re-charge replacement nor send further SMS
-    //   because replacementCharged === true.
+//   For computeChargeableLateDays(...) >= 5, treat this as an escalation threshold.
+//   Continue charging daily late fees.
+//   Do NOT attempt automatic replacement while auto replacement is disabled.
+//   Replacement, if pursued, must be manual/operator-initiated.
     // ============================================================================
 
     // Query both states: delivered (Scenario A) and accepted (Scenario B)
@@ -528,7 +529,7 @@ async function sendOverdueReminders() {
               let tag;
               
               if (daysLate === 1) {
-                message = `⚠️ Due yesterday. Please ship today to avoid $15/day late fees. QR: ${shortUrl}`;
+                message = `📦 Your Sherbrt return is now late. A $15/day late fee is being charged until your item is scanned in. If the item isn't shipped within 5 days, you may be charged the full replacement value. Please ship it back as soon as possible using your QR code or shipping label: ${shortUrl} 💌`;
                 tag = 'overdue_day1_to_borrower';
               } else if (daysLate === 2) {
                 message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${shortUrl}`;
@@ -737,7 +738,7 @@ function testOverdueScenarios() {
   
   // Test replacement evaluation
   if (daysLate >= 5) {
-    console.log('🔍 Would evaluate replacement charge');
+    console.log('🔍 Day 5+ escalation threshold reached (replacement is manual/operator-only)');
   }
 }
 
