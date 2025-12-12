@@ -1,57 +1,18 @@
 /**
- * Late Fees & Replacement Charge Logic
- * 
- * Applies late return fees ($15/day) and replacement charges (Day 5+)
- * for overdue transactions via Flex privileged transitions.
- * 
+ * Late fee & replacement policy (manual replacement model)
+ *
+ * - $15/day late fees accrue starting Day 1 and continue until the item is scanned in
+ * - Late fees are charged idempotently per effective day
+ * - Automatic replacement charging is DISABLED by design
+ * - Day 5+ represents an escalation threshold only (warnings / operator review)
+ * - Full replacement charges must be applied manually by an operator
+ *
+ * NOTE:
+ * AUTO_REPLACEMENT_ENABLED is intentionally false to prevent accidental replacement charges.
+ *
  * Called by: server/scripts/sendOverdueReminders.js
- * 
- * IMPORTANT: Late days are calculated as "chargeable late days" that exclude
- * Sundays and USPS federal holidays. This ensures:
- * - Daily $15 late fees are never charged "for" a Sunday or holiday
- * - The Day 5+ replacement threshold uses chargeable days (e.g., if Day 5
- *   would fall on a Sunday, Day 5 effectively becomes Monday instead)
- * 
- * ============================================================================
- * SCENARIO A: Returned Late (transaction in :state/delivered with scan)
- * ============================================================================
- * - Transaction reached :state/delivered via transition/complete on return scan
- * - Has protectedData.return.firstScanAt set (scan happened)
- * - Scan date is after return due date (returned late)
- * - Late days = chargeable days between returnDueDate and scanDate
- *   (Sundays and USPS holidays excluded)
- * - Days 1-4: Charge $15/day late fees
- * - Day 5+: Charge full replacement value instead
- * - Payout already happened on scan (via transition/complete)
- * 
- * ============================================================================
- * SCENARIO B: Never Returned (transaction in :state/accepted, no scan)
- * ============================================================================
- * - Transaction remains in :state/accepted (no return scan, no transition/complete)
- * - No protectedData.return.firstScanAt (never scanned)
- * - Past return due date
- * - Late days = chargeable days between returnDueDate and today
- *   (Sundays and USPS holidays excluded)
- * - Days 1-4: Charge $15/day late fees
- * - Day 5+: Charge full replacement value instead
- * - No payout (item never returned)
- * 
- * ============================================================================
- * IDEMPOTENCY FLAGS (in protectedData.return)
- * ============================================================================
- * - lastLateFeeDayCharged: YYYY-MM-DD date of last day for which late fee was charged
- *   Used to prevent charging the same day multiple times
- * - replacementCharged: boolean, true if replacement charge has been applied
- *   Once replacement is charged, no further daily fees are added
- * - chargeHistory: array of charge records with date, items, timestamp
- *   For audit trail and debugging
- * 
- * ============================================================================
- * EDGE CASE: Late Return After Replacement Charge
- * ============================================================================
- * If borrower gets replacement charge (Day 5+ non-return) and then returns
- * the item very late, the replacement charge remains. This is acceptable
- * for now. Future UX/policy decision: manual refunds, partial refunds, etc.
+ *
+ * Late days are calculated as "chargeable late days" that exclude Sundays and USPS federal holidays.
  */
 
 const dayjs = require('dayjs');
@@ -64,6 +25,8 @@ const {
 
 // Configuration
 const LATE_FEE_CENTS = 1500; // $15/day
+// Feature flag: gate automatic replacement charges (Day 5+) while keeping daily late fees
+const AUTO_REPLACEMENT_ENABLED = false;
 
 /**
  * Check if return shipment has been scanned by carrier
@@ -329,26 +292,26 @@ async function applyCharges({ sdkInstance, txId, now }) {
     
     if (replacementCharged) {
       console.log(`[lateFees] Replacement already charged - no further charges apply`);
-    } else if (lateDays >= 5) {
-      // Day 5+: Charge replacement (not daily fees)
-      if (!replacementCharged) {
-        const replacementCents = getReplacementValue(listing);
-        newLineItems.push({
-          code: 'replacement',
-          unitPrice: { amount: replacementCents, currency: 'USD' },
-          quantity: 1,
-          percentage: 0,
-          includeFor: ['customer']
-        });
-        console.log(`[lateFees] Adding replacement charge: $${replacementCents / 100} (Day ${lateDays}+)`);
+    } else if (AUTO_REPLACEMENT_ENABLED && lateDays >= 5) {
+      // Replacement charging is feature-flagged OFF. This block remains for future use.
+      const replacementCents = getReplacementValue(listing);
+      newLineItems.push({
+        code: 'replacement',
+        unitPrice: { amount: replacementCents, currency: 'USD' },
+        quantity: 1,
+        percentage: 0,
+        includeFor: ['customer']
+      });
+      console.log(`[lateFees] Adding replacement charge: $${replacementCents / 100} (Day ${lateDays}+)`);
+    } else if (lateDays >= 1) {
+      if (lateDays >= 5 && !AUTO_REPLACEMENT_ENABLED) {
+        // Day 5+ behavior (auto replacement disabled):
+        // - Automatic replacement is disabled
+        // - Continue charging daily late fees
+        // - Replacement, if needed, is handled manually by an operator
+        console.log('[lateFees] [replacement-disabled] lateDays>=5; auto replacement disabled; continuing daily late fees only');
       }
-    } else if (lateDays >= 1 && lateDays <= 4) {
-      // Days 1-4: Charge daily late fee (if not already charged for this day)
-      // For Scenario A, we charge based on the scan date
-      // For Scenario B, we charge based on today's date
-      // We need to ensure we don't double-charge the same day
-      
-      // Check if we've already charged for this effective date
+      // Days 1+ (including 5+ when replacement is disabled): charge daily late fee if not already charged for this day
       if (lastLateFeeDayCharged !== effectiveYmd) {
         newLineItems.push({
           code: 'late-fee',
