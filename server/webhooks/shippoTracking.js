@@ -62,6 +62,19 @@ function getTransactionIdFromShippoMetadata(metadata = {}) {
   return txIdStr;
 }
 
+// Normalize SHIPPO_MODE values to Shippo's event.mode vocabulary
+// Accepts legacy values:
+//   - "production" -> "live"
+//   - "sandbox" -> "test"
+// Returns lowercased string or null if empty
+function normalizeShippoMode(mode) {
+  if (!mode) return null;
+  const value = String(mode).toLowerCase();
+  if (value === 'production' || value === 'live') return 'live';
+  if (value === 'sandbox' || value === 'test') return 'test';
+  return value;
+}
+
 function hasReturnFirstScan(tx) {
   const pd = tx?.attributes?.protectedData || {};
   const ret = pd.return || {};
@@ -100,14 +113,57 @@ try {
 }
 
 // Shippo signature verification
+let lastCompareException = null;
+let lastCompareLengthsMatch = true;
+function safeTimingEqual(aStr, bStr) {
+  lastCompareException = null;
+  lastCompareLengthsMatch = true;
+  try {
+    if (!aStr || !bStr) {
+      lastCompareLengthsMatch = false;
+      return false;
+    }
+    const bufA = Buffer.from(aStr);
+    const bufB = Buffer.from(bStr);
+    lastCompareLengthsMatch = bufA.length === bufB.length;
+    if (!lastCompareLengthsMatch) return false;
+    const crypto = require('crypto');
+    return crypto.timingSafeEqual(bufA, bufB);
+  } catch (error) {
+    lastCompareException = error;
+    console.error('[SHIPPO-WEBHOOK][SIGNATURE-COMPARE-ERROR]', error.message);
+    return false;
+  }
+}
+
+/*
+Manual signature checks:
+- Missing header -> expect 401
+- Wrong header -> expect 401
+- Wrong-length header (e.g. "short") -> expect 401
+- Correct header -> node -e "const crypto=require('crypto'); const body='{}'; const secret=process.env.SHIPPO_WEBHOOK_SECRET || 'secret'; const sig=crypto.createHmac('sha256',secret).update(body).digest('hex'); console.log(sig)" then send header x-shippo-signature=<sig> with body "{}" -> expect 200
+*/
 function verifyShippoSignature(req, webhookSecret) {
+  const crypto = require('crypto');
   const shippoSignature = req.headers['x-shippo-signature'];
+
+  const logInvalidSignature = (reason, computedSignature = '') => {
+    const headerPresent = !!shippoSignature;
+    const headerLen = shippoSignature ? Buffer.byteLength(shippoSignature) : 0;
+    const computedLen = computedSignature ? Buffer.byteLength(computedSignature) : 0;
+    console.warn(
+      `[SHIPPO-WEBHOOK][SIGNATURE-INVALID] headerPresent=${headerPresent} headerLen=${headerLen} computedLen=${computedLen} reason=${reason}`
+    );
+  };
+
   if (!shippoSignature) {
+    logInvalidSignature('missing-header');
     console.log('⚠️ No X-Shippo-Signature header found');
     return false;
   }
   
   if (!webhookSecret) {
+    logInvalidSignature('missing-secret');
     console.log('⚠️ No SHIPPO_WEBHOOK_SECRET configured');
     return false;
   }
@@ -116,21 +172,35 @@ function verifyShippoSignature(req, webhookSecret) {
   const rawBody = req.rawBody;
   
   // Shippo uses HMAC SHA256
-  const crypto = require('crypto');
-  const signature = crypto
-    .createHmac('sha256', webhookSecret)
-    .update(rawBody)
-    .digest('hex');
+  let signature;
+  try {
+    signature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+  } catch (error) {
+    console.error('[SHIPPO-WEBHOOK][SIGNATURE-GENERATE-ERROR]', error.message);
+    logInvalidSignature('generate-error');
+    return false;
+  }
   
-  const isValid = crypto.timingSafeEqual(
-    Buffer.from(shippoSignature),
-    Buffer.from(signature)
-  );
+  if (!signature) {
+    logInvalidSignature('generate-error');
+    return false;
+  }
+  
+  const isValid = safeTimingEqual(shippoSignature, signature);
+  if (!isValid) {
+    const reason = !lastCompareLengthsMatch
+      ? 'length-mismatch'
+      : lastCompareException
+        ? 'compare-exception'
+        : 'mismatch';
+    logInvalidSignature(reason, signature);
+  }
   
   if (process.env.VERBOSE === '1') {
     console.log(`🔐 Shippo signature verification: ${isValid ? 'VALID' : 'INVALID'}`);
-    console.log(`🔐 Expected: ${signature}`);
-    console.log(`🔐 Received: ${shippoSignature}`);
   }
   
   return isValid;
@@ -314,7 +384,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     if (webhookSecret) {
       if (!verifyShippoSignature(req, webhookSecret)) {
         console.log(`${testPrefix}🚫 Invalid Shippo signature - rejecting request`);
-        return res.status(403).json({ error: 'Invalid signature' });
+        return res.status(401).json({ error: 'Invalid signature' });
       }
       console.log(`${testPrefix}✅ Shippo signature verified`);
     } else {
@@ -364,13 +434,20 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       });
       
       // Gate by Shippo mode - ignore events whose event.mode doesn't match our SHIPPO_MODE
-      const expectedMode = process.env.SHIPPO_MODE; // 'test' or 'live'
-      if (expectedMode && event?.mode && event.mode.toLowerCase() !== expectedMode.toLowerCase()) {
-        console.warn('[SHIPPO][WEBHOOK] Mode mismatch', { eventMode: event.mode, expectedMode });
+      const expectedModeRaw = process.env.SHIPPO_MODE; // accepts legacy values (production/sandbox)
+      const expectedMode = normalizeShippoMode(expectedModeRaw);
+      const eventMode = normalizeShippoMode(event?.mode);
+      if (expectedMode && eventMode && eventMode !== expectedMode) {
+        console.warn('[SHIPPO][WEBHOOK] Mode mismatch', { 
+          eventMode: event?.mode, 
+          normalizedEventMode: eventMode,
+          expectedMode: expectedModeRaw, 
+          normalizedExpectedMode: expectedMode 
+        });
         return res.status(200).json({ ok: true }); // ignore silently
       }
       
-      console.log(`✅ Shippo mode check passed: event.mode=${event?.mode || 'none'}, expected=${expectedMode || 'any'}`);
+      console.log(`✅ Shippo mode check passed: event.mode=${event?.mode || 'none'} (normalized=${eventMode || 'none'}), expected=${expectedModeRaw || 'any'} (normalized=${expectedMode || 'any'})`);
       
       // Check if status is DELIVERED or first-scan statuses (TRANSIT, IN_TRANSIT, ACCEPTED, ACCEPTANCE, PRE_TRANSIT with facility scan)
       const upperStatus = trackingStatus?.toUpperCase();
