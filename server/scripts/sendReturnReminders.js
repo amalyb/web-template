@@ -69,6 +69,7 @@ const getOpt = (name, def) => {
 };
 const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
 const VERBOSE = has('--verbose') || process.env.VERBOSE === '1';
+const DEBUG_SMS = process.env.DEBUG_SMS === '1';
 const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
 
@@ -105,320 +106,326 @@ async function sendReturnReminders() {
     const nowPT = dayjs().tz(TZ);
     const today = process.env.FORCE_TODAY || nowPT.format('YYYY-MM-DD');
     const tomorrow = process.env.FORCE_TOMORROW || nowPT.add(1, 'day').format('YYYY-MM-DD');
-    // tMinus1 is calculated based on whichever "today" is active (forced or PT)
-    const tMinus1 = dayjs(today).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
     console.log(`[RETURN-REMINDER-DEBUG] 📅 Current time (PT): ${nowPT.format()}`);
-    console.log(`[RETURN-REMINDER-DEBUG] 📅 Window: t-1=${tMinus1}, today=${today}, tomorrow=${tomorrow}`);
+    console.log(`[RETURN-REMINDER-DEBUG] 📅 Window: today=${today}, tomorrow=${tomorrow}`);
 
-    // Query transactions for T-1, today, and tomorrow
-    const query = {
+    // Query transactions for T-1, today, and tomorrow (with pagination)
+    const baseQuery = {
       state: 'delivered',
-      include: ['customer', 'listing'],
-      per_page: 100, // use snake_case like our other scripts
+      include: ['customer', 'listing', 'booking', 'provider'],
+      per_page: parseInt(process.env.PER_PAGE || '100', 10), // allow override for pagination testing
     };
 
-    const res = await sdk.transactions.query(query);
-    const txs = res?.data?.data || [];
-    const included = new Map();
-    for (const inc of res?.data?.included || []) {
-      // key like "user/UUID"
-      const key = `${inc.type}/${inc.id?.uuid || inc.id}`;
-      included.set(key, inc);
-    }
-
-    console.log(`📊 Found ${txs.length} candidate transactions`);
+    const ONLY_TX = process.env.ONLY_TX;
 
     let sent = 0, failed = 0, processed = 0;
+    let totalCandidates = 0;
+    let page = 1;
+    let hasNext = true;
+    let stopProcessing = false;
 
-    for (const tx of txs) {
-      processed++;
+    while (hasNext && !stopProcessing) {
+      const res = await sdk.transactions.query({ ...baseQuery, page });
+      const txs = res?.data?.data || [];
+      const meta = res?.data?.meta || {};
+      totalCandidates += txs.length;
 
-      const deliveryEnd = tx?.attributes?.deliveryEnd;
-      const deliveryEndRaw = deliveryEnd;
-      // Normalize deliveryEnd to Pacific Time date (handles both ISO strings and date-only strings)
-      const deliveryEndNormalized = deliveryEnd ? dayjs(deliveryEnd).tz(TZ).format('YYYY-MM-DD') : null;
-      const bookingEnd = tx?.attributes?.booking?.end;
-      // Normalize bookingEnd to Pacific Time date (handles both ISO strings and date-only strings)
-      const bookingEndNormalized = bookingEnd ? dayjs(bookingEnd).tz(TZ).format('YYYY-MM-DD') : null;
-      
-      // [RETURN-REMINDER-DEBUG] Log transaction details for debugging
-      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || tx?.id || '(no id)'} deliveryEndRaw=${deliveryEndRaw} deliveryEndNormalized=${deliveryEndNormalized} bookingEnd=${bookingEnd} bookingEndNormalized=${bookingEndNormalized} today=${today} tomorrow=${tomorrow} tMinus1=${tMinus1}`);
-      
-      // Compute first chargeable late date for this transaction (for "tomorrow" reminder)
-      const due = deliveryEndNormalized;
-      const firstChargeableLateDate = due ? getFirstChargeableLateDate(due) : null;
-      
-      // Check both raw and normalized deliveryEnd for T-1 and Today reminders
-      // Also include transactions eligible for "tomorrow" reminder (first chargeable late date)
-      const matchesTMinus1 = deliveryEnd === tMinus1 || deliveryEndNormalized === tMinus1;
-      const matchesToday = deliveryEnd === today || deliveryEndNormalized === today;
-      const matchesCalendarTomorrow = deliveryEnd === tomorrow || deliveryEndNormalized === tomorrow;
-      const matchesFirstChargeableLateDate = due && firstChargeableLateDate === today;
-      
-      const matchesWindow = matchesTMinus1 || matchesToday || matchesCalendarTomorrow || matchesFirstChargeableLateDate;
-      
-      if (!matchesWindow) {
-        console.log(`[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=not return day window deliveryEnd=${deliveryEndRaw} window=T-1:${tMinus1}|TODAY:${today}|TOMORROW:${tomorrow}|firstChargeableLateDate:${firstChargeableLateDate}`);
-        continue;
+      console.log(`[RETURN-REMINDER] page=${page} count=${txs.length} next_page=${meta.next_page}`);
+
+      const included = new Map();
+      for (const inc of res?.data?.included || []) {
+        // key like "user/UUID"
+        const key = `${inc.type}/${inc.id?.uuid || inc.id}`;
+        included.set(key, inc);
       }
-      
-      // Determine which reminder window this transaction falls into
-      let reminderType = null;
-      if (matchesTMinus1) {
-        reminderType = 'T-1';
-      } else if (matchesToday) {
-        reminderType = 'TODAY';
-      } else if (matchesFirstChargeableLateDate) {
-        // HYBRID: "tomorrow" reminder fires on first chargeable late date, not calendar tomorrow
-        reminderType = 'TOMORROW_CHARGEABLE';
-      } else if (matchesCalendarTomorrow) {
-        // Legacy fallback (shouldn't happen with new logic, but keep for safety)
-        reminderType = 'TOMORROW';
-      }
-      
-      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} MATCHES window - reminderType=${reminderType} deliveryEnd=${deliveryEndRaw} due=${due} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today}`);
 
-      // resolve customer from included
-      const custRef = tx?.relationships?.customer?.data;
-      const custKey = custRef ? `${custRef.type}/${custRef.id?.uuid || custRef.id}` : null;
-      const customer = custKey ? included.get(custKey) : null;
-      
-      // Prefer checkout-entered phone stored on the transaction, then fall back to profile phone
-      const protectedData = tx?.attributes?.protectedData || {};
-      const normalizePhoneCandidate = (val) => {
-        const trimmed = val && String(val).trim();
-        if (!trimmed) return null;
-        return trimmed.length >= 7 ? trimmed : null;
-      };
+      for (const tx of txs) {
+        processed++;
 
-      const checkoutPhoneCandidate =
-        protectedData.customerPhone ||
-        protectedData.phone ||
-        protectedData.customer_phone ||
-        protectedData?.checkoutDetails?.customerPhone ||
-        protectedData?.checkoutDetails?.phone;
-      const checkoutPhone = normalizePhoneCandidate(checkoutPhoneCandidate);
+        const txId = tx?.id?.uuid || tx?.id?.uuid?.uuid || tx?.id?.toString?.() || tx?.id;
+        if (ONLY_TX && txId !== ONLY_TX) {
+          if (VERBOSE) console.log(`[RETURN-REMINDER-DEBUG] skipping non-target tx=${txId || '(no id)'} ONLY_TX=${ONLY_TX}`);
+          continue;
+        }
 
-      const profilePhoneCandidate =
-        customer?.attributes?.profile?.protectedData?.phone ||
-        customer?.attributes?.profile?.protectedData?.phoneNumber;
-      const profilePhone = normalizePhoneCandidate(profilePhoneCandidate);
+        const deliveryEnd = tx?.attributes?.deliveryEnd;
+        const deliveryEndRaw = deliveryEnd;
+        const deliveryEndNormalized = deliveryEnd ? dayjs(deliveryEnd).tz(TZ).format('YYYY-MM-DD') : null;
 
-      const borrowerPhone = checkoutPhone || profilePhone || null;
-
-      if (!borrowerPhone) {
-        console.warn(`[RETURN-REMINDER][NO-PHONE] Skipping return-day SMS, no checkout/prof phone`, { txId: tx?.id?.uuid || '(no id)' });
-        continue;
-      }
-      
-      console.log(`[RETURN-REMINDER][PHONE-SELECTED] tx=${tx?.id?.uuid || '(no id)'} used=${checkoutPhone ? 'checkoutPhone(protectedData)' : 'profilePhone'}`);
-
-      if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
-        if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
-        continue;
-      }
-      
-      const maskedPhone = borrowerPhone.replace(/\d(?=\d{4})/g, '*');
-      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} borrowerPhone=${maskedPhone}`);
-
-      // choose message based on delivery end date
-      let message;
-      let tag;
-      const pd = tx?.attributes?.protectedData || {};
-      const returnData = pd.return || {};
-      
-      // Use normalized date for comparison if raw doesn't match
-      // For TOMORROW_CHARGEABLE, we use the firstChargeableLateDate logic instead of calendar tomorrow
-      const effectiveDeliveryEnd = matchesTMinus1 ? tMinus1 :
-                                   matchesToday ? today :
-                                   matchesFirstChargeableLateDate ? firstChargeableLateDate :
-                                   matchesCalendarTomorrow ? tomorrow : null;
-      
-      console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} effectiveDeliveryEnd=${effectiveDeliveryEnd} reminderType=${reminderType}`);
-      
-      if (reminderType === 'T-1') {
-        // T-1 day: Send QR/label (use real label if available)
-        // Check for return label in priority order: QR URL (preferred), then label URL
-        let returnLabelUrl = pd.returnQrUrl ||  // Preferred: USPS QR code URL
-                            pd.returnLabelUrl || // Fallback: PDF label URL
-                            returnData.label?.url || 
-                            pd.returnLabel || 
-                            pd.shippingLabelUrl || 
-                            pd.returnShippingLabel;
+        const bookingRef = tx?.relationships?.booking?.data;
+        const bookingKey = bookingRef ? `${bookingRef.type}/${bookingRef.id?.uuid || bookingRef.id}` : null;
+        const booking = bookingKey ? included.get(bookingKey) : null;
+        const bookingEndRaw = booking?.attributes?.end || null;
+        const bookingEndNormalized = bookingEndRaw ? dayjs(bookingEndRaw).tz(TZ).format('YYYY-MM-DD') : null;
         
-        // If no return label exists, log warning (label should have been created during accept transition)
-        if (!returnLabelUrl && !returnData.tMinus1SentAt) {
-          console.warn(`[RETURN-REMINDER-DEBUG] [return-reminders] ⚠️ No return label found for tx ${tx?.id?.uuid || '(no id)'} - label should have been created during accept transition - SKIPPING`);
-          // Note: Creating a real Shippo label here would require addresses, parcel info, etc.
-          // For now, skip sending T-1 reminder if no label exists (better than sending placeholder)
+        // [RETURN-REMINDER-DEBUG] Log transaction details for debugging
+        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || tx?.id || '(no id)'} bookingEndRaw=${bookingEndRaw} bookingEndNormalized=${bookingEndNormalized} deliveryEndRaw=${deliveryEndRaw} deliveryEndNormalized=${deliveryEndNormalized} today=${today} tomorrow=${tomorrow}`);
+        
+        const due = bookingEndNormalized;
+        if (!due) {
+          console.log(`[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=missing booking end bookingKey=${bookingKey} bookingEndRaw=${bookingEndRaw}`);
+          continue;
+        }
+
+        const tMinus1ForTx = dayjs(due).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
+        const firstChargeableLateDate = getFirstChargeableLateDate(due);
+        
+        const matchesTMinus1 = today === tMinus1ForTx;
+        const matchesToday = today === due;
+        const matchesFirstChargeableLateDate = firstChargeableLateDate === today;
+        
+        const matchesWindow = matchesTMinus1 || matchesToday || matchesFirstChargeableLateDate;
+        
+        if (!matchesWindow) {
+          console.log(`[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=not return day window due=${due} bookingEndRaw=${bookingEndRaw} window=T-1:${tMinus1ForTx}|TODAY:${due}|firstChargeableLateDate:${firstChargeableLateDate}`);
           continue;
         }
         
-        // Log whether we're using QR or label URL
-        const labelType = pd.returnQrUrl ? 'QR' : 'label';
-        const labelSource = pd.returnQrUrl ? 'returnQrUrl' : 
-                           pd.returnLabelUrl ? 'returnLabelUrl' : 
-                           returnData.label?.url ? 'returnData.label.url' : 'other';
-        console.log(`[return-reminders] Using ${labelType} URL from ${labelSource} for tx ${tx?.id?.uuid || '(no id)'}`);
+        // Determine which reminder window this transaction falls into
+        let reminderType = null;
+        if (matchesTMinus1) {
+          reminderType = 'T-1';
+        } else if (matchesToday) {
+          reminderType = 'TODAY';
+        } else if (matchesFirstChargeableLateDate) {
+          reminderType = 'TOMORROW_CHARGEABLE';
+        }
+
+        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} MATCHES window - reminderType=${reminderType} due=${due} tMinus1ForTx=${tMinus1ForTx} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today}`);
+
+        // resolve customer from included
+        const custRef = tx?.relationships?.customer?.data;
+        const custKey = custRef ? `${custRef.type}/${custRef.id?.uuid || custRef.id}` : null;
+        const customer = custKey ? included.get(custKey) : null;
         
-        const shortUrl = await shortLink(returnLabelUrl);
-        console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-        const labelNoun = labelType === 'QR' ? 'QR code' : 'shipping label';
-        message = `📦 It's almost return time! Please ship your item back tomorrow using this ${labelNoun}: ${shortUrl}. Late fees are $15/day if it ships after the return date. Thanks for sharing style 💌`;
-        tag = 'return_tminus1_to_borrower';
-        
-      } else if (reminderType === 'TODAY') {
-        // Today: Ship back
-        // Idempotency check: skip if already sent
-        if (returnData.todayReminderSentAt) {
-          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TODAY reminder, already sent at ${returnData.todayReminderSentAt}`);
+        // Prefer checkout-entered phone stored on the transaction, then fall back to profile phone
+        const protectedData = tx?.attributes?.protectedData || {};
+        const normalizePhoneCandidate = (val) => {
+          const trimmed = val && String(val).trim();
+          if (!trimmed) return null;
+          return trimmed.length >= 7 ? trimmed : null;
+        };
+
+        const checkoutPhoneCandidate =
+          protectedData.customerPhone ||
+          protectedData.phone ||
+          protectedData.customer_phone ||
+          protectedData?.checkoutDetails?.customerPhone ||
+          protectedData?.checkoutDetails?.phone;
+        const checkoutPhone = normalizePhoneCandidate(checkoutPhoneCandidate);
+
+        const profilePhoneCandidate =
+          customer?.attributes?.profile?.protectedData?.phone ||
+          customer?.attributes?.profile?.protectedData?.phoneNumber;
+        const profilePhone = normalizePhoneCandidate(profilePhoneCandidate);
+
+        const borrowerPhone = checkoutPhone || profilePhone || null;
+
+        if (!borrowerPhone) {
+          console.warn(`[RETURN-REMINDER][NO-PHONE] Skipping return-day SMS, no checkout/prof phone`, { txId: tx?.id?.uuid || '(no id)' });
           continue;
         }
         
-        // Check if package already scanned - skip reminder if so
-        if (
-          returnData.firstScanAt ||
-          returnData.status === 'accepted' ||
-          returnData.status === 'in_transit'
-        ) {
-          console.log(`[return-reminders] 🚚 Package already scanned for tx ${tx?.id?.uuid || '(no id)'} - skipping day-of reminder`);
+        console.log(`[RETURN-REMINDER][PHONE-SELECTED] tx=${tx?.id?.uuid || '(no id)'} used=${checkoutPhone ? 'checkoutPhone(protectedData)' : 'profilePhone'}`);
+
+        if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
+          if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
           continue;
         }
         
-        const returnLabelUrl = returnData.label?.url ||
-                              pd.returnLabelUrl || 
+        const maskedPhone = borrowerPhone.replace(/\d(?=\d{4})/g, '*');
+        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} borrowerPhone=${maskedPhone}`);
+
+        // choose message based on due date derived from booking end
+        let message;
+        let tag;
+        const pd = tx?.attributes?.protectedData || {};
+        const returnData = pd.return || {};
+        
+        const effectiveReminderDate = reminderType === 'TOMORROW_CHARGEABLE' ? firstChargeableLateDate : due;
+        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} effectiveReminderDate=${effectiveReminderDate} reminderType=${reminderType}`);
+        
+        if (reminderType === 'T-1') {
+          // T-1 day: Send QR/label (use real label if available)
+          // Check for return label in priority order: QR URL (preferred), then label URL
+          let returnLabelUrl = pd.returnQrUrl ||  // Preferred: USPS QR code URL
+                              pd.returnLabelUrl || // Fallback: PDF label URL
+                              returnData.label?.url || 
                               pd.returnLabel || 
                               pd.shippingLabelUrl || 
                               pd.returnShippingLabel;
-
-        if (returnLabelUrl) {
-          const shortUrl = await shortLink(returnLabelUrl);
-          console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-          message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}`;
-          tag = 'return_reminder_today';
-        } else {
-          message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
-          tag = 'return_reminder_today_no_label';
-        }
-        
-      } else if (reminderType === 'TOMORROW_CHARGEABLE') {
-        // HYBRID: "Tomorrow" reminder fires on first chargeable late date
-        // Idempotency check: skip if already sent
-        if (returnData.tomorrowReminderSentAt) {
-          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TOMORROW reminder, already sent at ${returnData.tomorrowReminderSentAt}`);
-          continue;
-        }
-        
-        // Log detailed info for debugging
-        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${due} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today} → sending TOMORROW reminder`);
-        
-        message = `⏳ Your Sherbrt return is due tomorrow—please ship it back and submit pics & feedback.`;
-        tag = 'return_reminder_tomorrow';
-      } else {
-        // Legacy fallback (shouldn't happen with new logic, but keep for safety)
-        // Tomorrow: Due tomorrow (calendar-based)
-        // Idempotency check: skip if already sent
-        if (returnData.tomorrowReminderSentAt) {
-          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TOMORROW reminder, already sent at ${returnData.tomorrowReminderSentAt}`);
-          continue;
-        }
-        
-        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} using legacy calendar-based TOMORROW reminder`);
-        
-        message = `⏳ Your Sherbrt return is due tomorrow—please ship it back and submit pics & feedback.`;
-        tag = 'return_reminder_tomorrow';
-      }
-
-      if (VERBOSE) {
-        console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
-      }
-
-      try {
-        const smsResult = await sendSMS(borrowerPhone, message, { 
-          role: 'borrower', 
-          kind: 'return-reminder',
-          tag: tag,
-          meta: { transactionId: tx?.id?.uuid || tx?.id }
-        });
-        
-        // Only mark reminder as sent for idempotency if SMS was actually sent
-        if (!smsResult?.skipped) {
-          console.log(`[RETURN-REMINDER][SENT] tx=${tx?.id?.uuid || '(no id)'} phone=${maskedPhone}`);
-          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} SMS sent successfully - tag=${tag}`);
-          const timestamp = new Date().toISOString();
           
-          if (reminderType === 'T-1') {
-            try {
-              await sdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...pd,
-                    return: {
-                      ...returnData,
-                      tMinus1SentAt: timestamp
-                    }
-                  }
-                }
-              });
-              console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
-            } catch (updateError) {
-              console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
-            }
-          } else if (reminderType === 'TODAY') {
-            try {
-              await sdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...pd,
-                    return: {
-                      ...returnData,
-                      todayReminderSentAt: timestamp
-                    }
-                  }
-                }
-              });
-              console.log(`💾 Marked TODAY reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
-            } catch (updateError) {
-              console.error(`❌ Failed to mark TODAY reminder as sent:`, updateError.message);
-            }
-          } else if (reminderType === 'TOMORROW_CHARGEABLE' || effectiveDeliveryEnd === tomorrow) {
-            // Mark "tomorrow" reminder as sent (works for both HYBRID and legacy calendar-based)
-            try {
-              await sdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...pd,
-                    return: {
-                      ...returnData,
-                      tomorrowReminderSentAt: timestamp
-                    }
-                  }
-                }
-              });
-              console.log(`💾 Marked TOMORROW reminder as sent for tx ${tx?.id?.uuid || '(no id)'} (firstChargeableLateDate=${firstChargeableLateDate})`);
-            } catch (updateError) {
-              console.error(`❌ Failed to mark TOMORROW reminder as sent:`, updateError.message);
-            }
+          // If no return label exists, log warning (label should have been created during accept transition)
+          if (!returnLabelUrl && !returnData.tMinus1SentAt) {
+            console.warn(`[RETURN-REMINDER-DEBUG] [return-reminders] ⚠️ No return label found for tx ${tx?.id?.uuid || '(no id)'} - label should have been created during accept transition - SKIPPING`);
+            // Note: Creating a real Shippo label here would require addresses, parcel info, etc.
+            // For now, skip sending T-1 reminder if no label exists (better than sending placeholder)
+            continue;
           }
           
-          sent++;
-        } else {
-          console.log(`[RETURN-REMINDER-DEBUG] ⏭️ SMS skipped (${smsResult.reason}) - NOT marking reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+          // Log whether we're using QR or label URL
+          const labelType = pd.returnQrUrl ? 'QR' : 'label';
+          const labelSource = pd.returnQrUrl ? 'returnQrUrl' : 
+                             pd.returnLabelUrl ? 'returnLabelUrl' : 
+                             returnData.label?.url ? 'returnData.label.url' : 'other';
+          console.log(`[return-reminders] Using ${labelType} URL from ${labelSource} for tx ${tx?.id?.uuid || '(no id)'}`);
+          
+          const shortUrl = await shortLink(returnLabelUrl);
+          console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+          const labelNoun = labelType === 'QR' ? 'QR code' : 'shipping label';
+          message = `📦 It's almost return time! Please ship your item back tomorrow using this ${labelNoun}: ${shortUrl}. Late fees are $15/day if it ships after the return date. Thanks for sharing style 💌`;
+          tag = 'return_tminus1_to_borrower';
+          
+        } else if (reminderType === 'TODAY') {
+          // Today: Ship back
+          // Idempotency check: skip if already sent
+          if (returnData.todayReminderSentAt) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TODAY reminder, already sent at ${returnData.todayReminderSentAt}`);
+            continue;
+          }
+          
+          // Check if package already scanned - skip reminder if so
+          if (
+            returnData.firstScanAt ||
+            returnData.status === 'accepted' ||
+            returnData.status === 'in_transit'
+          ) {
+            console.log(`[return-reminders] 🚚 Package already scanned for tx ${tx?.id?.uuid || '(no id)'} - skipping day-of reminder`);
+            continue;
+          }
+          
+          const returnLabelUrl = returnData.label?.url ||
+                                pd.returnLabelUrl || 
+                                pd.returnLabel || 
+                                pd.shippingLabelUrl || 
+                                pd.returnShippingLabel;
+
+          if (returnLabelUrl) {
+            const shortUrl = await shortLink(returnLabelUrl);
+            console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+            message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}`;
+            tag = 'return_reminder_today';
+          } else {
+            message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
+            tag = 'return_reminder_today_no_label';
+          }
+          
+        } else if (reminderType === 'TOMORROW_CHARGEABLE') {
+          // HYBRID: "Tomorrow" reminder fires on first chargeable late date
+          // Idempotency check: skip if already sent
+          if (returnData.tomorrowReminderSentAt) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TOMORROW reminder, already sent at ${returnData.tomorrowReminderSentAt}`);
+            continue;
+          }
+          
+          // Log detailed info for debugging
+          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${due} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today} → sending TOMORROW reminder`);
+          
+          message = `📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Please ship it back ASAP using your QR code or label. After 5 days late, you may be charged the full replacement value of the item. 💌`;
+          tag = 'return_reminder_tomorrow';
         }
-      } catch (e) {
-        console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
-        failed++;
+
+        if (VERBOSE) {
+          console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
+        }
+
+        try {
+          if (VERBOSE || DEBUG_SMS) {
+            console.log(`[RETURN-REMINDER][SEND] about to send tag=${tag} tx=${tx?.id?.uuid || '(no id)'} phone=${maskedPhone} type=${reminderType}`);
+          }
+          const smsResult = await sendSMS(borrowerPhone, message, { 
+            role: 'borrower', 
+            kind: 'return-reminder',
+            tag: tag,
+            meta: { transactionId: tx?.id?.uuid || tx?.id }
+          });
+          
+          // Only mark reminder as sent for idempotency if SMS was actually sent
+          if (!smsResult?.skipped) {
+            console.log(`[RETURN-REMINDER][SENT] tx=${tx?.id?.uuid || '(no id)'} phone=${maskedPhone}`);
+            if (VERBOSE || DEBUG_SMS) {
+              console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} SMS sent successfully - tag=${tag} sid=${smsResult?.sid || 'n/a'}`);
+            }
+            const timestamp = new Date().toISOString();
+            
+            if (reminderType === 'T-1') {
+              try {
+                await sdk.transactions.update({
+                  id: tx.id,
+                  attributes: {
+                    protectedData: {
+                      ...pd,
+                      return: {
+                        ...returnData,
+                        tMinus1SentAt: timestamp
+                      }
+                    }
+                  }
+                });
+                console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+              } catch (updateError) {
+                console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
+              }
+            } else if (reminderType === 'TODAY') {
+              try {
+                await sdk.transactions.update({
+                  id: tx.id,
+                  attributes: {
+                    protectedData: {
+                      ...pd,
+                      return: {
+                        ...returnData,
+                        todayReminderSentAt: timestamp
+                      }
+                    }
+                  }
+                });
+                console.log(`💾 Marked TODAY reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+              } catch (updateError) {
+                console.error(`❌ Failed to mark TODAY reminder as sent:`, updateError.message);
+              }
+            } else if (reminderType === 'TOMORROW_CHARGEABLE' || reminderType === 'TOMORROW') {
+              // Mark "tomorrow" reminder as sent (works for both HYBRID and legacy calendar-based)
+              try {
+                await sdk.transactions.update({
+                  id: tx.id,
+                  attributes: {
+                    protectedData: {
+                      ...pd,
+                      return: {
+                        ...returnData,
+                        tomorrowReminderSentAt: timestamp
+                      }
+                    }
+                  }
+                });
+                console.log(`💾 Marked TOMORROW reminder as sent for tx ${tx?.id?.uuid || '(no id)'} (firstChargeableLateDate=${firstChargeableLateDate})`);
+              } catch (updateError) {
+                console.error(`❌ Failed to mark TOMORROW as sent:`, updateError.message);
+              }
+            }
+            
+            sent++;
+          } else {
+            console.log(`[RETURN-REMINDER-DEBUG] ⏭️ SMS skipped (${smsResult.reason}) - NOT marking reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
+          }
+        } catch (e) {
+          console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
+          failed++;
+        }
+
+        if (LIMIT && sent >= LIMIT) {
+          console.log(`⏹️ Limit reached (${LIMIT}). Stopping.`);
+          stopProcessing = true;
+          break;
+        }
       }
 
-      if (LIMIT && sent >= LIMIT) {
-        console.log(`⏹️ Limit reached (${LIMIT}). Stopping.`);
-        break;
-      }
+      hasNext = !!meta.next_page;
+      page += 1;
     }
 
+    console.log(`📊 Found ${totalCandidates} candidate transactions across ${page - 1} page(s)`);
     console.log(`\n📊 Done. Sent=${sent} Failed=${failed} Processed=${processed}`);
     if (DRY) console.log('🧪 DRY-RUN mode: no real SMS were sent.');
     
@@ -456,16 +463,27 @@ if (require.main === module) {
   if (argv.includes('--daemon')) {
     // Run as daemon with internal scheduling
     console.log('🔄 Starting return reminders daemon (every 15 minutes)');
-    setInterval(async () => {
+    let isRunning = false;
+    const runOnceSafely = async () => {
+      if (isRunning) {
+        console.log('⏳ Previous run still in progress, skipping this tick');
+        return;
+      }
+      isRunning = true;
       try {
         await sendReturnReminders();
       } catch (error) {
         console.error('❌ Daemon error:', error.message);
+      } finally {
+        isRunning = false;
       }
-    }, 15 * 60 * 1000); // 15 minutes
-    
+    };
+
+    // Schedule future runs
+    setInterval(runOnceSafely, 15 * 60 * 1000); // 15 minutes
+
     // Run immediately
-    sendReturnReminders();
+    runOnceSafely();
   } else {
     sendReturnReminders()
       .then(() => {
