@@ -168,11 +168,13 @@ async function sendReturnReminders() {
         }
 
         const tMinus1ForTx = dayjs(due).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
-        const firstChargeableLateDate = getFirstChargeableLateDate(due);
+        const firstChargeableLateDate =
+          typeof getFirstChargeableLateDate === 'function' ? getFirstChargeableLateDate(due) : null;
         
         const matchesTMinus1 = today === tMinus1ForTx;
         const matchesToday = today === due;
-        const matchesFirstChargeableLateDate = firstChargeableLateDate === today;
+        const matchesFirstChargeableLateDate =
+          firstChargeableLateDate ? firstChargeableLateDate === today : false;
         
         const matchesWindow = matchesTMinus1 || matchesToday || matchesFirstChargeableLateDate;
         
@@ -246,6 +248,12 @@ async function sendReturnReminders() {
         console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} effectiveReminderDate=${effectiveReminderDate} reminderType=${reminderType}`);
         
         if (reminderType === 'T-1') {
+          // Idempotency: skip if T-1 already sent
+          if (returnData.tMinus1SentAt) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${txId || '(no id)'} skipping T-1 reminder, already sent at ${returnData.tMinus1SentAt}`);
+            continue;
+          }
+
           // T-1 day: Send QR/label (use real label if available)
           // Check for return label in priority order: QR URL (preferred), then label URL
           let returnLabelUrl = pd.returnQrUrl ||  // Preferred: USPS QR code URL
