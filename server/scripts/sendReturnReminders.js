@@ -52,6 +52,13 @@ const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { getFirstChargeableLateDate } = require('../lib/businessDays');
 
+// In-memory guards to avoid repeat sends within the same daemon process
+// if Flex protectedData updates fail. Keys are txId → local date string.
+const sentTodayByTx = new Map(); // due-today per-day guard
+const lateSentTodayByTx = new Map(); // late per-day guard
+let dueTodayUpdateFailures = 0;
+let lateUpdateFailures = 0;
+
 // Pacific Time date handling (mirrors server/lib/businessDays.js pattern)
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
@@ -117,6 +124,7 @@ async function sendReturnReminders() {
     };
 
     const ONLY_TX = process.env.ONLY_TX;
+  const onlyTxId = ONLY_TX && ONLY_TX.includes('-') ? { uuid: ONLY_TX } : ONLY_TX;
 
     let sent = 0, failed = 0, processed = 0;
     let totalCandidates = 0;
@@ -124,13 +132,13 @@ async function sendReturnReminders() {
     let hasNext = true;
     let stopProcessing = false;
 
-    while (hasNext && !stopProcessing) {
-      const res = await sdk.transactions.query({ ...baseQuery, page });
+    const processTxPage = async (res, { pageLabel } = {}) => {
       const txs = res?.data?.data || [];
       const meta = res?.data?.meta || {};
       totalCandidates += txs.length;
 
-      console.log(`[RETURN-REMINDER] page=${page} count=${txs.length} next_page=${meta.next_page}`);
+      const pageDisplay = pageLabel ?? page;
+      console.log(`[RETURN-REMINDER] page=${pageDisplay} count=${txs.length} next_page=${meta.next_page}`);
 
       const included = new Map();
       for (const inc of res?.data?.included || []) {
@@ -156,30 +164,50 @@ async function sendReturnReminders() {
         const bookingKey = bookingRef ? `${bookingRef.type}/${bookingRef.id?.uuid || bookingRef.id}` : null;
         const booking = bookingKey ? included.get(bookingKey) : null;
         const bookingEndRaw = booking?.attributes?.end || null;
-        const bookingEndNormalized = bookingEndRaw ? dayjs(bookingEndRaw).tz(TZ).format('YYYY-MM-DD') : null;
+        const bookingEndPT = bookingEndRaw ? dayjs(bookingEndRaw).tz(TZ) : null;
+        const endsAtMidnight =
+          bookingEndPT && bookingEndPT.format('HH:mm:ss') === '00:00:00';
+
+        const dueLocalDate = bookingEndPT
+          ? (endsAtMidnight ? bookingEndPT.subtract(1, 'day') : bookingEndPT).format('YYYY-MM-DD')
+          : null;
+
+        const lateStartLocalDate = bookingEndPT ? bookingEndPT.format('YYYY-MM-DD') : null;
         
         // [RETURN-REMINDER-DEBUG] Log transaction details for debugging
-        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || tx?.id || '(no id)'} bookingEndRaw=${bookingEndRaw} bookingEndNormalized=${bookingEndNormalized} deliveryEndRaw=${deliveryEndRaw} deliveryEndNormalized=${deliveryEndNormalized} today=${today} tomorrow=${tomorrow}`);
+        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || tx?.id || '(no id)'} bookingEndRaw=${bookingEndRaw} bookingEndPT=${bookingEndPT ? bookingEndPT.format() : null} endsAtMidnight=${endsAtMidnight} dueLocalDate=${dueLocalDate} deliveryEndRaw=${deliveryEndRaw} deliveryEndNormalized=${deliveryEndNormalized} today=${today} tomorrow=${tomorrow} lateStartLocalDate=${lateStartLocalDate}`);
         
-        const due = bookingEndNormalized;
-        if (!due) {
+        if (!dueLocalDate) {
           console.log(`[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=missing booking end bookingKey=${bookingKey} bookingEndRaw=${bookingEndRaw}`);
           continue;
         }
 
-        const tMinus1ForTx = dayjs(due).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
+        const tMinus1ForTx = dayjs(dueLocalDate).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
         const firstChargeableLateDate =
-          typeof getFirstChargeableLateDate === 'function' ? getFirstChargeableLateDate(due) : null;
-        
+          typeof getFirstChargeableLateDate === 'function' ? getFirstChargeableLateDate(dueLocalDate) : null;
+
+        const pd = tx?.attributes?.protectedData || {};
+        const returnData = pd.return || {};
+        const returnSms = pd.returnSms || {};
+
         const matchesTMinus1 = today === tMinus1ForTx;
-        const matchesToday = today === due;
-        const matchesFirstChargeableLateDate =
-          firstChargeableLateDate ? firstChargeableLateDate === today : false;
-        
-        const matchesWindow = matchesTMinus1 || matchesToday || matchesFirstChargeableLateDate;
+        const matchesToday = today === dueLocalDate;
+
+        const isScannedOrInTransit =
+          returnData.firstScanAt ||
+          returnData.status === 'accepted' ||
+          returnData.status === 'in_transit';
+
+        // Policy: late fees (and late messaging) begin on booking end local date (no extra grace)
+        const inLateWindow =
+          bookingEndPT &&
+          !isScannedOrInTransit &&
+          (nowPT.isAfter(bookingEndPT) || today === lateStartLocalDate);
+
+        const matchesWindow = matchesTMinus1 || matchesToday || inLateWindow;
         
         if (!matchesWindow) {
-          console.log(`[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=not return day window due=${due} bookingEndRaw=${bookingEndRaw} window=T-1:${tMinus1ForTx}|TODAY:${due}|firstChargeableLateDate:${firstChargeableLateDate}`);
+          console.log(`[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=not return day window due=${dueLocalDate} bookingEndRaw=${bookingEndRaw} window=T-1:${tMinus1ForTx}|TODAY:${dueLocalDate}|LATE>=${lateStartLocalDate}`);
           continue;
         }
         
@@ -189,11 +217,15 @@ async function sendReturnReminders() {
           reminderType = 'T-1';
         } else if (matchesToday) {
           reminderType = 'TODAY';
-        } else if (matchesFirstChargeableLateDate) {
-          reminderType = 'TOMORROW_CHARGEABLE';
+        } else if (inLateWindow) {
+          reminderType = 'LATE';
         }
 
-        console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} MATCHES window - reminderType=${reminderType} due=${due} tMinus1ForTx=${tMinus1ForTx} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today}`);
+        console.log(
+          `[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} MATCHES window - reminderType=${reminderType} ` +
+          `policy=late-starts-at-due-date lateStartLocalDate=${lateStartLocalDate} inLateWindow=${inLateWindow} ` +
+          `due=${dueLocalDate} tMinus1ForTx=${tMinus1ForTx} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today} bookingEndPT=${bookingEndPT ? bookingEndPT.format() : null} endsAtMidnight=${endsAtMidnight} matchesTMinus1=${matchesTMinus1} matchesToday=${matchesToday}`
+        );
 
         // resolve customer from included
         const custRef = tx?.relationships?.customer?.data;
@@ -241,12 +273,27 @@ async function sendReturnReminders() {
         // choose message based on due date derived from booking end
         let message;
         let tag;
-        const pd = tx?.attributes?.protectedData || {};
-        const returnData = pd.return || {};
         
-        const effectiveReminderDate = reminderType === 'TOMORROW_CHARGEABLE' ? firstChargeableLateDate : due;
+        const effectiveReminderDate = reminderType === 'LATE' ? lateStartLocalDate : dueLocalDate;
         console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} effectiveReminderDate=${effectiveReminderDate} reminderType=${reminderType}`);
+
+        // Targeted diagnostics for known spam case
+        const targetTxId = '693c9fee-ac5a-4077-af79-60c0c25f00af';
+        if (txId === targetTxId) {
+          console.log(
+            `[RETURN-REMINDER-TARGET] nowPT=${nowPT.format()} due=${dueLocalDate} firstChargeableLateDate=${firstChargeableLateDate} reminderType=${reminderType} ` +
+            `matchesToday=${matchesToday} matchesLate=${inLateWindow} ` +
+            `todayReminderSentAt=${returnData.todayReminderSentAt || 'null'} ` +
+            `tomorrowReminderSentAt=${returnData.tomorrowReminderSentAt || 'null'} ` +
+            `tMinus1SentAt=${returnData.tMinus1SentAt || 'null'} ` +
+            `dueTodayLastSentLocalDate=${returnSms.dueTodayLastSentLocalDate || 'null'} ` +
+            `lateLastSentLocalDate=${returnSms.lateLastSentLocalDate || 'null'}`
+          );
+        }
         
+        // Local date string in PT for idempotency (per calendar day)
+        const todayLocalDate = nowPT.format('YYYY-MM-DD');
+
         if (reminderType === 'T-1') {
           // Idempotency: skip if T-1 already sent
           if (returnData.tMinus1SentAt) {
@@ -291,6 +338,16 @@ async function sendReturnReminders() {
             console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TODAY reminder, already sent at ${returnData.todayReminderSentAt}`);
             continue;
           }
+          // Durable per-day idempotency (PT calendar day)
+          if (returnSms.dueTodayLastSentLocalDate === todayLocalDate) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TODAY reminder, already sent for local day ${todayLocalDate} (returnSms.dueTodayLastSentLocalDate)`);
+            continue;
+          }
+          // In-memory guard if last update failed this process
+          if (sentTodayByTx.get(txId) === todayLocalDate) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TODAY reminder due to in-memory guard for local day ${todayLocalDate} (protectedData update previously failed)`);
+            continue;
+          }
           
           // Check if package already scanned - skip reminder if so
           if (
@@ -302,8 +359,9 @@ async function sendReturnReminders() {
             continue;
           }
           
-          const returnLabelUrl = returnData.label?.url ||
+          const returnLabelUrl = pd.returnQrUrl || // Preferred: USPS QR code URL
                                 pd.returnLabelUrl || 
+                                returnData.label?.url || 
                                 pd.returnLabel || 
                                 pd.shippingLabelUrl || 
                                 pd.returnShippingLabel;
@@ -311,26 +369,31 @@ async function sendReturnReminders() {
           if (returnLabelUrl) {
             const shortUrl = await shortLink(returnLabelUrl);
             console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-            message = `📦 Today's the day! Ship your Sherbrt item back. Return label: ${shortUrl}`;
+            message = `Sherbrt 🍧: 📦 Today's the day! Ship your Sherbrt item back: ${shortUrl}`;
             tag = 'return_reminder_today';
           } else {
-            message = `📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
+            message = `Sherbrt 🍧: 📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
             tag = 'return_reminder_today_no_label';
           }
           
-        } else if (reminderType === 'TOMORROW_CHARGEABLE') {
-          // HYBRID: "Tomorrow" reminder fires on first chargeable late date
-          // Idempotency check: skip if already sent
-          if (returnData.tomorrowReminderSentAt) {
-            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping TOMORROW reminder, already sent at ${returnData.tomorrowReminderSentAt}`);
+        } else if (reminderType === 'LATE') {
+          // Late window: send once per PT day until scanned
+          // Durable per-day idempotency (PT calendar day) for late reminders
+          if (returnSms.lateLastSentLocalDate === todayLocalDate) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping LATE reminder, already sent for local day ${todayLocalDate} (returnSms.lateLastSentLocalDate)`);
+            continue;
+          }
+          // In-memory guard if last update failed this process
+          if (lateSentTodayByTx.get(txId) === todayLocalDate) {
+            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping LATE reminder due to in-memory guard for local day ${todayLocalDate} (protectedData update previously failed)`);
             continue;
           }
           
           // Log detailed info for debugging
-          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${due} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today} → sending TOMORROW reminder`);
+          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${dueLocalDate} lateStartLocalDate=${lateStartLocalDate} todayPT=${today} → sending LATE reminder`);
           
           message = `📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Please ship it back ASAP using your QR code or label. After 5 days late, you may be charged the full replacement value of the item. 💌`;
-          tag = 'return_reminder_tomorrow';
+          tag = 'return_reminder_late';
         }
 
         if (VERBOSE) {
@@ -384,6 +447,10 @@ async function sendReturnReminders() {
                       return: {
                         ...returnData,
                         todayReminderSentAt: timestamp
+                      },
+                      returnSms: {
+                        ...returnSms,
+                        dueTodayLastSentLocalDate: todayLocalDate
                       }
                     }
                   }
@@ -391,9 +458,13 @@ async function sendReturnReminders() {
                 console.log(`💾 Marked TODAY reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
               } catch (updateError) {
                 console.error(`❌ Failed to mark TODAY reminder as sent:`, updateError.message);
+                // Prevent spam in this daemon cycle if Flex update fails
+                sentTodayByTx.set(txId, todayLocalDate);
+                dueTodayUpdateFailures += 1;
+                console.warn(`[RETURN-REMINDER-DEBUG] Applied in-memory TODAY guard for tx=${txId} localDay=${todayLocalDate} (dueTodayUpdateFailures=${dueTodayUpdateFailures})`);
               }
-            } else if (reminderType === 'TOMORROW_CHARGEABLE' || reminderType === 'TOMORROW') {
-              // Mark "tomorrow" reminder as sent (works for both HYBRID and legacy calendar-based)
+            } else if (reminderType === 'LATE') {
+              // Mark late reminder as sent (once per PT day)
               try {
                 await sdk.transactions.update({
                   id: tx.id,
@@ -403,13 +474,21 @@ async function sendReturnReminders() {
                       return: {
                         ...returnData,
                         tomorrowReminderSentAt: timestamp
+                      },
+                      returnSms: {
+                        ...returnSms,
+                        lateLastSentLocalDate: todayLocalDate
                       }
                     }
                   }
                 });
-                console.log(`💾 Marked TOMORROW reminder as sent for tx ${tx?.id?.uuid || '(no id)'} (firstChargeableLateDate=${firstChargeableLateDate})`);
+                console.log(`💾 Marked LATE reminder as sent for tx ${tx?.id?.uuid || '(no id)'} (lateStartLocalDate=${lateStartLocalDate})`);
               } catch (updateError) {
-                console.error(`❌ Failed to mark TOMORROW as sent:`, updateError.message);
+                console.error(`❌ Failed to mark LATE as sent:`, updateError.message);
+                // Prevent spam in this daemon cycle if Flex update fails
+                lateSentTodayByTx.set(txId, todayLocalDate);
+                lateUpdateFailures += 1;
+                console.warn(`[RETURN-REMINDER-DEBUG] Applied in-memory LATE guard for tx=${txId} localDay=${todayLocalDate} (lateUpdateFailures=${lateUpdateFailures})`);
               }
             }
             
@@ -429,11 +508,42 @@ async function sendReturnReminders() {
         }
       }
 
-      hasNext = !!meta.next_page;
+      return meta.next_page;
+    };
+
+    if (ONLY_TX) {
+      console.log(`[RETURN-REMINDER-DEBUG] ONLY_TX=${ONLY_TX} → fetching single transaction via show()`);
+      if (VERBOSE) console.log('[RETURN-REMINDER-DEBUG] ONLY_TX request id shape:', onlyTxId);
+      try {
+        const res = await sdk.transactions.show({
+          id: onlyTxId,
+          include: ['customer', 'listing', 'booking', 'provider'],
+        });
+        await processTxPage(res, { pageLabel: 'ONLY_TX' });
+      } catch (err) {
+        console.error(`[RETURN-REMINDER-DEBUG] show() failed for ONLY_TX=${ONLY_TX}:`, err?.message || err);
+        if (err?.response) {
+          console.error('[RETURN-REMINDER-DEBUG] show() status:', err.response.status);
+          console.error('[RETURN-REMINDER-DEBUG] show() data:', err.response.data);
+        }
+        throw err;
+      }
+
+      console.log(`📊 Found ${totalCandidates} candidate transactions across 1 page(s)`);
+      console.log(`\n📊 Done. Sent=${sent} Failed=${failed} Processed=${processed}`);
+      if (DRY) console.log('🧪 DRY-RUN mode: no real SMS were sent.');
+      return;
+    }
+
+    while (hasNext && !stopProcessing) {
+      const res = await sdk.transactions.query({ ...baseQuery, page });
+      const nextPage = await processTxPage(res, { pageLabel: page });
+      hasNext = !!nextPage;
       page += 1;
     }
 
-    console.log(`📊 Found ${totalCandidates} candidate transactions across ${page - 1} page(s)`);
+    const pagesProcessed = page - 1;
+    console.log(`📊 Found ${totalCandidates} candidate transactions across ${pagesProcessed} page(s)`);
     console.log(`\n📊 Done. Sent=${sent} Failed=${failed} Processed=${processed}`);
     if (DRY) console.log('🧪 DRY-RUN mode: no real SMS were sent.');
     
