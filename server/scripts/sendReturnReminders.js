@@ -80,7 +80,12 @@ const getOpt = (name, def) => {
 const DRY = has('--dry-run') || process.env.SMS_DRY_RUN === '1';
 const VERBOSE = has('--verbose') || process.env.VERBOSE === '1';
 const DEBUG_SMS = process.env.DEBUG_SMS === '1';
-const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
+const DEFAULT_LIMIT = process.env.NODE_ENV === 'production' ? 25 : 0;
+const parsedLimit = parseInt(getOpt('--limit', process.env.LIMIT ?? DEFAULT_LIMIT), 10);
+const LIMIT = Number.isFinite(parsedLimit) ? parsedLimit : DEFAULT_LIMIT;
+const DEFAULT_MAX_LATE_AGE_DAYS = process.env.NODE_ENV === 'production' ? 14 : 0;
+const parsedMaxLateAge = parseInt(process.env.MAX_LATE_AGE_DAYS ?? DEFAULT_MAX_LATE_AGE_DAYS, 10);
+const MAX_LATE_AGE_DAYS = Number.isFinite(parsedMaxLateAge) ? parsedMaxLateAge : DEFAULT_MAX_LATE_AGE_DAYS;
 const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
 
 if (DRY) {
@@ -231,6 +236,7 @@ async function sendReturnReminders(allowExitOnError = true) {
   }
 
   console.log('🚀 Starting return reminder SMS script...');
+  console.log(`[RETURN-REMINDER] limiting sends to LIMIT=${LIMIT || 'unlimited'}`);
   
   try {
     // Initialize SDK using centralized helper (same pattern as shipping/overdue scripts)
@@ -308,6 +314,11 @@ async function sendReturnReminders(allowExitOnError = true) {
       }
 
       for (const tx of txs) {
+        if (LIMIT && sent >= LIMIT) {
+          stopProcessing = true;
+          break;
+        }
+
         processed++;
 
         const txId = tx?.id?.uuid || tx?.id?.uuid?.uuid || tx?.id?.toString?.() || tx?.id;
@@ -390,6 +401,17 @@ async function sendReturnReminders(allowExitOnError = true) {
           `policy=late-starts-at-due-date lateStartLocalDate=${lateStartLocalDate} inLateWindow=${inLateWindow} ` +
           `due=${dueLocalDate} tMinus1ForTx=${tMinus1ForTx} firstChargeableLateDate=${firstChargeableLateDate} todayPT=${today} bookingEndPT=${bookingEndPT ? bookingEndPT.format() : null} endsAtMidnight=${endsAtMidnight} matchesTMinus1=${matchesTMinus1} matchesToday=${matchesToday}`
         );
+
+        if (reminderType === 'LATE' && MAX_LATE_AGE_DAYS > 0 && lateStartLocalDate) {
+          const lateStartDate = dayjs(lateStartLocalDate).tz(TZ).startOf('day');
+          const lateAgeDays = nowPT.startOf('day').diff(lateStartDate, 'day');
+          if (lateAgeDays > MAX_LATE_AGE_DAYS) {
+            console.log(
+              `[RETURN-REMINDER][SKIP] tx=${tx?.id?.uuid || '(no id)'} reason=late-too-old ageDays=${lateAgeDays} max=${MAX_LATE_AGE_DAYS}`
+            );
+            continue;
+          }
+        }
 
         // resolve customer from included
         const custRef = tx?.relationships?.customer?.data;
