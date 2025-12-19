@@ -51,6 +51,7 @@ try {
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { getFirstChargeableLateDate } = require('../lib/businessDays');
+const { getRedis } = require('../redis');
 
 // In-memory guards to avoid repeat sends within the same daemon process
 // if Flex protectedData updates fail. Keys are txId → local date string.
@@ -58,6 +59,8 @@ const sentTodayByTx = new Map(); // due-today per-day guard
 const lateSentTodayByTx = new Map(); // late per-day guard
 let dueTodayUpdateFailures = 0;
 let lateUpdateFailures = 0;
+const redis = getRedis();
+const redisLockFallbackStore = new Map();
 
 // Pacific Time date handling (mirrors server/lib/businessDays.js pattern)
 const dayjs = require('dayjs');
@@ -97,7 +100,76 @@ function yyyymmdd(d) {
   return dayjs(d).tz(TZ).format('YYYY-MM-DD');
 }
 
-async function sendReturnReminders() {
+const DISABLE_RETURN_REMINDERS = process.env.DISABLE_RETURN_REMINDERS === '1';
+const DISABLE_RETURN_REMINDERS_FOR_TX =
+  process.env.DISABLE_RETURN_REMINDERS_FOR_TX &&
+  process.env.DISABLE_RETURN_REMINDERS_FOR_TX.trim();
+
+function safeStringify(data, maxLen) {
+  try {
+    const s = JSON.stringify(data);
+    if (maxLen && s.length > maxLen) return `${s.slice(0, maxLen)}...<truncated>`;
+    return s;
+  } catch (e) {
+    return '[unstringifiable]';
+  }
+}
+
+function logAxios(err, context) {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  const url = err?.config?.url || err?.response?.config?.url;
+  console.error(
+    `[RETURN-REMINDER-AXIOS] context=${context || 'unknown'} status=${status || 'n/a'} url=${url || 'n/a'} message=${err?.message || err}`
+  );
+  if (data !== undefined) {
+    console.error(`[RETURN-REMINDER-AXIOS] data=${safeStringify(data, 2000)}`);
+  }
+}
+
+async function acquireRedisLock(key, ttlSeconds, { context } = {}) {
+  const status = redis?.status;
+  if (!redis || status === 'end') {
+    const prod = process.env.NODE_ENV === 'production';
+    if (prod) {
+      console.error(`[RETURN-REMINDER-REDIS] Redis unavailable in prod; skipping sends to prevent SMS spam (status=${status || 'none'}) context=${context || 'unknown'}`);
+      return { acquired: false, degraded: true };
+    }
+    console.error(`[RETURN-REMINDER-REDIS] unavailable (status=${status || 'none'}) context=${context || 'unknown'} — falling back to protectedData guards (non-prod)`);
+    return { acquired: true, degraded: true };
+  }
+
+  if (status === 'mock') {
+    const existing = redisLockFallbackStore.get(key);
+    const now = Date.now();
+    if (existing && existing > now) {
+      return { acquired: false, mock: true };
+    }
+    const expiresAt = now + ttlSeconds * 1000;
+    redisLockFallbackStore.set(key, expiresAt);
+    setTimeout(() => redisLockFallbackStore.delete(key), ttlSeconds * 1000).unref();
+    return { acquired: true, mock: true };
+  }
+
+  try {
+    const res = await redis.set(key, '1', 'NX', 'EX', ttlSeconds);
+    if (res !== 'OK') {
+      console.log(`[RETURN-REMINDER-REDIS] lock already held key=${key} context=${context || 'unknown'}`);
+      return { acquired: false };
+    }
+    return { acquired: true };
+  } catch (e) {
+    console.error(`[RETURN-REMINDER-REDIS] lock error key=${key} context=${context || 'unknown'} message=${e?.message || e}`);
+    return { acquired: true, degraded: true };
+  }
+}
+
+async function sendReturnReminders(allowExitOnError = true) {
+  if (DISABLE_RETURN_REMINDERS) {
+    console.log(`[RETURN-REMINDERS] disabled via env (pid=${process.pid})`);
+    return;
+  }
+
   console.log('🚀 Starting return reminder SMS script...');
   
   try {
@@ -117,11 +189,36 @@ async function sendReturnReminders() {
     console.log(`[RETURN-REMINDER-DEBUG] 📅 Window: today=${today}, tomorrow=${tomorrow}`);
 
     // Query transactions for T-1, today, and tomorrow (with pagination)
+    const ONLY_STATE = process.env.ONLY_STATE;
+    const PAGE_SIZE = parseInt(process.env.ONLY_PAGE_SIZE || process.env.PER_PAGE || '5', 10) || 5;
+
     const baseQuery = {
-      state: 'delivered',
+      state: ONLY_STATE || 'delivered',
       include: ['customer', 'listing', 'booking', 'provider'],
-      per_page: parseInt(process.env.PER_PAGE || '100', 10), // allow override for pagination testing
+      per_page: PAGE_SIZE, // narrow default; env overrides above
     };
+
+    // Self-test mode: validate Flex access without sending SMS
+    if (process.env.RETURN_REMINDERS_FLEX_SELFTEST === '1') {
+      try {
+        console.log('[RETURN-REMINDER-SELFTEST] running minimal Flex access check');
+        const selfTestQuery = {
+          state: ONLY_STATE || 'delivered',
+          include: [],
+          per_page: 1,
+          page: 1,
+        };
+        console.log('[RETURN-REMINDER-QUERY]', safeStringify(selfTestQuery, 2000));
+        const res = await sdk.transactions.query(selfTestQuery);
+        const first = res?.data?.data?.[0]?.id?.uuid || res?.data?.data?.[0]?.id || null;
+        console.log(`[RETURN-REMINDER-SELFTEST] success firstTx=${first || 'none'}`);
+        return;
+      } catch (err) {
+        logAxios(err, `sdk.transactions.query selftest state=${ONLY_STATE || 'delivered'}`);
+        if (allowExitOnError) process.exit(1);
+        return;
+      }
+    }
 
     const ONLY_TX = process.env.ONLY_TX;
   const onlyTxId = ONLY_TX && ONLY_TX.includes('-') ? { uuid: ONLY_TX } : ONLY_TX;
@@ -151,6 +248,10 @@ async function sendReturnReminders() {
         processed++;
 
         const txId = tx?.id?.uuid || tx?.id?.uuid?.uuid || tx?.id?.toString?.() || tx?.id;
+        if (DISABLE_RETURN_REMINDERS_FOR_TX && txId === DISABLE_RETURN_REMINDERS_FOR_TX) {
+          console.log(`[RETURN-REMINDERS] disabled for tx=${txId} via env (pid=${process.pid})`);
+          continue;
+        }
         if (ONLY_TX && txId !== ONLY_TX) {
           if (VERBOSE) console.log(`[RETURN-REMINDER-DEBUG] skipping non-target tx=${txId || '(no id)'} ONLY_TX=${ONLY_TX}`);
           continue;
@@ -391,9 +492,44 @@ async function sendReturnReminders() {
           
           // Log detailed info for debugging
           console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${dueLocalDate} lateStartLocalDate=${lateStartLocalDate} todayPT=${today} → sending LATE reminder`);
-          
-          message = `📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Please ship it back ASAP using your QR code or label. After 5 days late, you may be charged the full replacement value of the item. 💌`;
+          const returnLabelUrl = pd.returnQrUrl ||
+                                pd.returnLabelUrl || 
+                                returnData.label?.url || 
+                                pd.returnLabel || 
+                                pd.shippingLabelUrl || 
+                                pd.returnShippingLabel;
+          let shortUrl = null;
+          if (returnLabelUrl) {
+            shortUrl = await shortLink(returnLabelUrl);
+            console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+          }
+          if (shortUrl) {
+            message = `Sherbrt 🍧: 📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Ship it back: ${shortUrl}`;
+          } else {
+            message = `Sherbrt 🍧: 📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Please ship it back ASAP using your QR code or label. After 5 days late, you may be charged the full replacement value of the item. 💌`;
+          }
           tag = 'return_reminder_late';
+        }
+
+        // If no message was generated, skip before locking to avoid burning locks
+        if (!message) {
+          console.warn(`[RETURN-REMINDER-DEBUG] tx=${txId} reminderType=${reminderType} has no message; skipping without lock`);
+          continue;
+        }
+
+        // Per-tx per-day per-type Redis lock to prevent duplicates
+        const perTxLockKey = `return-reminders:${reminderType}:${txId}:${todayLocalDate}`;
+        const perTxLock = await acquireRedisLock(perTxLockKey, 60 * 60 * 24, {
+          context: `tx:${txId}:${reminderType}`,
+        });
+        if (!perTxLock.acquired) {
+          console.log(`[RETURN-REMINDER-REDIS] lock hit; skipping tx=${txId} type=${reminderType} day=${todayLocalDate}`);
+          continue;
+        }
+        if (perTxLock.degraded) {
+          console.warn('[RETURN-REMINDER-REDIS] proceeding without reliable lock (degraded)');
+        } else if (perTxLock.mock) {
+          console.warn('[RETURN-REMINDER-REDIS] using in-memory mock lock (non-prod fallback)');
         }
 
         if (VERBOSE) {
@@ -435,6 +571,7 @@ async function sendReturnReminders() {
                 });
                 console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
               } catch (updateError) {
+                logAxios(updateError, `sdk.transactions.update T-1 tx=${txId} day=${todayLocalDate}`);
                 console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
               }
             } else if (reminderType === 'TODAY') {
@@ -457,6 +594,7 @@ async function sendReturnReminders() {
                 });
                 console.log(`💾 Marked TODAY reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
               } catch (updateError) {
+                logAxios(updateError, `sdk.transactions.update TODAY tx=${txId} day=${todayLocalDate}`);
                 console.error(`❌ Failed to mark TODAY reminder as sent:`, updateError.message);
                 // Prevent spam in this daemon cycle if Flex update fails
                 sentTodayByTx.set(txId, todayLocalDate);
@@ -484,6 +622,7 @@ async function sendReturnReminders() {
                 });
                 console.log(`💾 Marked LATE reminder as sent for tx ${tx?.id?.uuid || '(no id)'} (lateStartLocalDate=${lateStartLocalDate})`);
               } catch (updateError) {
+                logAxios(updateError, `sdk.transactions.update LATE tx=${txId} day=${todayLocalDate}`);
                 console.error(`❌ Failed to mark LATE as sent:`, updateError.message);
                 // Prevent spam in this daemon cycle if Flex update fails
                 lateSentTodayByTx.set(txId, todayLocalDate);
@@ -521,11 +660,7 @@ async function sendReturnReminders() {
         });
         await processTxPage(res, { pageLabel: 'ONLY_TX' });
       } catch (err) {
-        console.error(`[RETURN-REMINDER-DEBUG] show() failed for ONLY_TX=${ONLY_TX}:`, err?.message || err);
-        if (err?.response) {
-          console.error('[RETURN-REMINDER-DEBUG] show() status:', err.response.status);
-          console.error('[RETURN-REMINDER-DEBUG] show() data:', err.response.data);
-        }
+        logAxios(err, `sdk.transactions.show ONLY_TX=${ONLY_TX} idShape=${safeStringify(onlyTxId, 200)}`);
         throw err;
       }
 
@@ -536,7 +671,15 @@ async function sendReturnReminders() {
     }
 
     while (hasNext && !stopProcessing) {
-      const res = await sdk.transactions.query({ ...baseQuery, page });
+      let res;
+      try {
+        const queryPayload = { ...baseQuery, page };
+        console.log('[RETURN-REMINDER-QUERY]', safeStringify(queryPayload, 2000));
+        res = await sdk.transactions.query(queryPayload);
+      } catch (err) {
+        logAxios(err, `sdk.transactions.query page=${page} base=${safeStringify(baseQuery, 500)}`);
+        throw err;
+      }
       const nextPage = await processTxPage(res, { pageLabel: page });
       hasNext = !!nextPage;
       page += 1;
@@ -556,7 +699,9 @@ async function sendReturnReminders() {
     if (err.stack) {
       console.error('🔎 Stack trace:', err.stack);
     }
-    process.exit(1);
+    if (allowExitOnError) {
+      process.exit(1);
+    }
   }
 }
 
@@ -583,15 +728,38 @@ if (require.main === module) {
     console.log('🔄 Starting return reminders daemon (every 15 minutes)');
     let isRunning = false;
     const runOnceSafely = async () => {
+      if (DISABLE_RETURN_REMINDERS) {
+        console.log(`[RETURN-REMINDERS] disabled via env (pid=${process.pid})`);
+        return;
+      }
       if (isRunning) {
         console.log('⏳ Previous run still in progress, skipping this tick');
         return;
       }
+      const tickLock = await acquireRedisLock('return-reminders:tick-lock', 1200, {
+        context: 'tick',
+      });
+      if (!tickLock.acquired) {
+        console.log('[RETURN-REMINDER-REDIS] tick lock already held; skipping this tick');
+        return;
+      }
+      if (tickLock.degraded) {
+        console.warn('[RETURN-REMINDER-REDIS] proceeding without reliable tick lock (degraded)');
+      } else if (tickLock.mock) {
+        console.warn('[RETURN-REMINDER-REDIS] using in-memory mock tick lock (non-prod fallback)');
+      }
       isRunning = true;
       try {
-        await sendReturnReminders();
-      } catch (error) {
-        console.error('❌ Daemon error:', error.message);
+          await sendReturnReminders(false);
+        } catch (error) {
+          console.error('❌ Daemon error:', error?.message || error);
+          if (error?.response) {
+            console.error('🔎 Flex API response status:', error.response.status);
+            console.error('🔎 Flex API response data:', JSON.stringify(error.response.data, null, 2));
+          }
+          if (error?.stack) {
+            console.error('🔎 Stack trace:', error.stack);
+          }
       } finally {
         isRunning = false;
       }
