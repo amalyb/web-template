@@ -597,15 +597,15 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       console.log(`[SHIPPO DELIVERY DEBUG] ✅ Entering ${isDelivery ? 'DELIVERED' : 'FIRST_SCAN'} branch`);
       console.log(`✅ Status is ${upperStatus} - processing ${isDelivery ? 'delivery' : 'first scan'} webhook`);
     
-    // Find transaction
+    // Find transaction using sessionless Integration SDK only (no cookies)
     let transaction = null;
     let matchStrategy = 'unknown';
+    const integrationSdk = getIntegrationSdk();
     
     // Method 1: Try to find by transaction ID from metadata (supports both transactionId and txId)
     if (txIdStr) {
       console.log(`🔍 Looking up transaction by metadata transaction ID: ${txIdStr}`);
       try {
-        const integrationSdk = getIntegrationSdk();
         const response = await integrationSdk.transactions.show({ id: txIdStr });
         transaction = response.data.data;
         matchStrategy = metadata.transactionId ? 'metadata.transactionId' : 'metadata.txId';
@@ -657,7 +657,6 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     if (!transaction && trackingNumber) {
       console.log(`🔍 Falling back to search by tracking number: ${trackingNumber}`);
       try {
-        const integrationSdk = getIntegrationSdk();
         transaction = await findTransactionByTrackingNumber({
           sdk: integrationSdk,
           trackingNumber,
@@ -1198,6 +1197,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         
         if (isFirstScan) {
           console.log(`✅ [STEP-4] Borrower SMS sent for tracking ${trackingNumber}, txId=${transaction.id}`);
+          console.log('[SHIPPO-WEBHOOK][FIRST_SCAN_SMS_SENT]', {
+            txId: transaction.id,
+            trackingNumber,
+            tag: SMS_TAGS.ITEM_SHIPPED_TO_BORROWER,
+            status: trackingStatus
+          });
         } else {
           console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
         }
