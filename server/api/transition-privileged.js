@@ -545,6 +545,7 @@ async function createShippingLabels({
       label_file_type: 'PNG',
       metadata: JSON.stringify({ 
         transactionId: txId,
+        txId,
         direction: 'outbound'
       }) // Include transaction ID and direction for webhook lookup
     };
@@ -1023,6 +1024,7 @@ async function createShippingLabels({
             label_file_type: 'PNG',
             metadata: JSON.stringify({ 
               transactionId: txId,
+              txId,
               direction: 'return'
             }) // Include transaction ID and direction for webhook lookup
           };
