@@ -69,6 +69,8 @@ const timezone = require('dayjs/plugin/timezone');
 dayjs.extend(utc);
 dayjs.extend(timezone);
 const TZ = 'America/Los_Angeles';
+const SEND_HOUR_PT = 8;
+const SEND_MINUTE_PT = 0;
 
 // ---- CLI flags / env guards ----
 const argv = process.argv.slice(2);
@@ -542,6 +544,26 @@ async function sendReturnReminders(allowExitOnError = true) {
             returnData.status === 'in_transit'
           ) {
             console.log(`[return-reminders] 🚚 Package already scanned for tx ${tx?.id?.uuid || '(no id)'} - skipping day-of reminder`);
+            continue;
+          }
+
+          const returnDayLocalDate = bookingEndPT ? bookingEndPT.format('YYYY-MM-DD') : null;
+          const sendAtPT = returnDayLocalDate
+            ? dayjs.tz(
+                `${returnDayLocalDate} ${String(SEND_HOUR_PT).padStart(2, '0')}:${String(SEND_MINUTE_PT).padStart(2, '0')}:00`,
+                TZ
+              )
+            : null;
+          const isReturnDay = returnDayLocalDate && nowPT.format('YYYY-MM-DD') === returnDayLocalDate;
+          const isDueToSend = isReturnDay && sendAtPT && (nowPT.isSame(sendAtPT) || nowPT.isAfter(sendAtPT));
+          if (!isDueToSend) {
+            if (ONLY_TX && txId === ONLY_TX) {
+              console.log(`[RETURN-DUE-TODAY][NOT-DUE-YET]`, {
+                txId,
+                nowPT: nowPT.format(),
+                sendAtPT: sendAtPT ? sendAtPT.format() : 'n/a',
+              });
+            }
             continue;
           }
           
