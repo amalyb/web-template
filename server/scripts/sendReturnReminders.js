@@ -71,6 +71,8 @@ dayjs.extend(timezone);
 const TZ = 'America/Los_Angeles';
 const SEND_HOUR_PT = 8;
 const SEND_MINUTE_PT = 0;
+const DEFAULT_ACCEPT_HOUR_PT = 9;
+const DEFAULT_ACCEPT_MINUTE_PT = 0;
 
 // ---- CLI flags / env guards ----
 const argv = process.argv.slice(2);
@@ -105,6 +107,25 @@ if (DRY) {
 function yyyymmdd(d) {
   // Convert date to Pacific Time and format as YYYY-MM-DD
   return dayjs(d).tz(TZ).format('YYYY-MM-DD');
+}
+
+function resolveAcceptAtPT(protectedData, bookingEndPT, nowPT, txId) {
+  const acceptedAtRaw = protectedData?.outbound?.acceptedAt;
+  let acceptAtPT = acceptedAtRaw ? dayjs(acceptedAtRaw).tz(TZ) : null;
+  const hasValidAcceptAt = acceptAtPT?.isValid?.();
+
+  if (!hasValidAcceptAt) {
+    console.warn('[RETURN-LATE][MISSING_ACCEPTED_AT]', { txId });
+    const base = bookingEndPT?.isValid?.() ? bookingEndPT : nowPT;
+    acceptAtPT = base
+      .clone()
+      .hour(DEFAULT_ACCEPT_HOUR_PT)
+      .minute(DEFAULT_ACCEPT_MINUTE_PT)
+      .second(0)
+      .millisecond(0);
+  }
+
+  return acceptAtPT;
 }
 
 const DISABLE_RETURN_REMINDERS = process.env.DISABLE_RETURN_REMINDERS === '1';
@@ -461,6 +482,9 @@ async function sendReturnReminders(allowExitOnError = true) {
         // choose message based on due date derived from booking end
         let message;
         let tag;
+        let lateSendAtPT = null;
+        let acceptAtPT = null;
+        let lateStartDatePT = lateStartLocalDate;
         
         const effectiveReminderDate = reminderType === 'LATE' ? lateStartLocalDate : dueLocalDate;
         console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} effectiveReminderDate=${effectiveReminderDate} reminderType=${reminderType}`);
@@ -596,7 +620,27 @@ async function sendReturnReminders(allowExitOnError = true) {
             console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping LATE reminder due to in-memory guard for local day ${todayLocalDate} (protectedData update previously failed)`);
             continue;
           }
-          
+          lateStartDatePT = lateStartLocalDate;
+          acceptAtPT = resolveAcceptAtPT(protectedData, bookingEndPT, nowPT, txId);
+          const lateAcceptTime = acceptAtPT.format('HH:mm:ss');
+          lateSendAtPT = lateStartDatePT
+            ? dayjs.tz(`${lateStartDatePT} ${lateAcceptTime}`, TZ)
+            : null;
+          const isLateSendDue =
+            lateSendAtPT && (nowPT.isSame(lateSendAtPT) || nowPT.isAfter(lateSendAtPT));
+          if (!isLateSendDue) {
+            if (ONLY_TX && txId === ONLY_TX) {
+              console.log('[RETURN-LATE-SMS-NOT-DUE]', {
+                txId,
+                nowPT: nowPT.format(),
+                lateSendAtPT: lateSendAtPT ? lateSendAtPT.format() : null,
+                acceptAtPT: acceptAtPT ? acceptAtPT.format() : null,
+                bookingEndPT: bookingEndPT ? bookingEndPT.format() : null,
+              });
+            }
+            continue;
+          }
+
           // Log detailed info for debugging
           console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${dueLocalDate} lateStartLocalDate=${lateStartLocalDate} todayPT=${today} → sending LATE reminder`);
           const returnLabelUrl = pd.returnQrUrl ||
@@ -711,6 +755,14 @@ async function sendReturnReminders(allowExitOnError = true) {
                 console.warn(`[RETURN-REMINDER-DEBUG] Applied in-memory TODAY guard for tx=${txId} localDay=${todayLocalDate} (dueTodayUpdateFailures=${dueTodayUpdateFailures})`);
               }
             } else if (reminderType === 'LATE') {
+              console.log('[RETURN-LATE-SMS-SENT]', {
+                txId,
+                nowPT: nowPT.format(),
+                lateSendAtPT: lateSendAtPT ? lateSendAtPT.format() : null,
+                acceptAtPT: acceptAtPT ? acceptAtPT.format() : null,
+                bookingEndPT: bookingEndPT ? bookingEndPT.format() : null,
+                tag,
+              });
               // Mark late reminder as sent (once per PT day)
               try {
                 await updateTransactionProtectedData(
