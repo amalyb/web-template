@@ -64,11 +64,15 @@ const DRY_RUN = process.env.DRY_RUN === '1' || process.env.SMS_DRY_RUN === '1' |
 const VERBOSE = has('--verbose') || process.env.VERBOSE === '1';
 const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE; // e.g. +15551234567 for targeted test
+const ONLY_TX = process.env.ONLY_TX;      // e.g. specific transaction UUID for targeted test
 const FORCE_NOW = process.env.FORCE_NOW ? new Date(process.env.FORCE_NOW) : null;
 
 if (FORCE_NOW) {
   console.log(`⏰ FORCE_NOW active: ${FORCE_NOW.toISOString()}`);
 }
+
+// Per-run guard to avoid duplicate sends if persistence fails mid-run
+const runNotificationGuard = new Map();
 
 // Wrapper for sendSMS that respects DRY_RUN mode
 let sendSMS;
@@ -205,8 +209,9 @@ async function sendOverdueReminders() {
       console.log('[DIAG] Base URL:', baseUrl);
     }
 
-    const today = process.env.FORCE_TODAY || ymd(new Date());
-    const todayDate = new Date();
+    const nowDate = FORCE_NOW || new Date();
+    const today = process.env.FORCE_TODAY || ymd(nowDate);
+    const todayDate = nowDate;
     
     console.log(`📅 Processing overdue reminders for: ${today}`);
 
@@ -364,6 +369,7 @@ async function sendOverdueReminders() {
     for (const tx of allTransactions) {
       processed++;
       
+      const txId = tx?.id?.uuid || tx?.id;
       const currentState = tx._state || tx?.attributes?.state;
       const included = tx._included || new Map();
       
@@ -472,6 +478,84 @@ async function sendOverdueReminders() {
         daysLate = typeof precomputedDaysLate === 'number' ? precomputedDaysLate : computeChargeableLateDays(todayDate, returnDate);
       }
       
+      // Apply charges (separate try/catch so charge failures don't block SMS)
+      // applyCharges() handles both Scenario A and Scenario B internally
+      try {
+        if (DRY_RUN) {
+          console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${txId || '(no id)'} (scenario: ${scenario})`);
+        } else {
+          const chargeResult = await applyCharges({
+            sdkInstance: integSdk,  // Use Integration SDK for privileged transition
+            txId: tx.id.uuid || tx.id,
+            now: FORCE_NOW || new Date()
+          });
+          
+          if (chargeResult.charged) {
+            console.log(`💳 [${scenario}] Charged ${chargeResult.items.join(' + ')} for tx ${txId || '(no id)'} (${chargeResult.lateDays || '?'} days late)`);
+            if (chargeResult.amounts) {
+              chargeResult.amounts.forEach(a => {
+                console.log(`   💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
+              });
+            }
+            charged++;
+            
+            // Trigger payout only after confirmed replacement charge
+            if (chargeResult.items.includes('replacement')) {
+              await triggerReplacementCompletionIfNeeded({
+                sdk: integSdk,
+                txId: tx.id.uuid || tx.id
+              });
+            }
+          } else {
+            console.log(`ℹ️ [${scenario}] No charge for tx ${txId || '(no id)'} (${chargeResult.reason || 'n/a'})`);
+          }
+        }
+      } catch (chargeError) {
+        logFlexError(`applyCharges (scenario=${scenario})`, chargeError, {
+          txId: txId || tx?.id?.uuid || tx?.id,
+          scenario: scenario,
+          state: currentState
+        });
+        
+        console.error(`❌ [${scenario}] Charge failed for tx ${txId || '(no id)'}: ${chargeError.message}`);
+        
+        // Check for permission errors and provide helpful guidance
+        const status = chargeError.response?.status || chargeError.status;
+        const data = chargeError.response?.data;
+        
+        if (status === 403 || status === 401 ||
+            chargeError.message?.includes('403') || chargeError.message?.includes('401') ||
+            chargeError.message?.includes('permission') || chargeError.message?.includes('forbidden')) {
+          console.error('');
+          console.error('⚠️  PERMISSION ERROR DETECTED:');
+          console.error('   The late-fee transitions require proper permissions.');
+          console.error('   Possible fixes:');
+          console.error('   1. In process.edn, ensure :actor.role/operator has access');
+          console.error('   2. Ensure your Integration app has operator-level privileges in Flex Console');
+          console.error('   3. Verify INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET');
+          console.error(`   4. Check that transition exists for scenario: ${scenario}`);
+          console.error('');
+        }
+        
+        if (status === 400) {
+          console.error('');
+          console.error('⚠️  400 BAD REQUEST - Possible causes:');
+          console.error('   1. Invalid transition parameters');
+          console.error(`   2. Transaction state doesn't allow this transition (scenario: ${scenario})`);
+          console.error('   3. Transition name mismatch with process.edn');
+          console.error(`   4. Expected transition: ${scenario === 'delivered-late' ? 'transition/privileged-apply-late-fees' : 'transition/privileged-apply-late-fees-non-return'}`);
+          console.error('');
+          if (data?.errors) {
+            console.error('   API Errors:');
+            data.errors.forEach((err, i) => {
+              console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
+            });
+          }
+        }
+        
+        chargesFailed++;
+      }
+      
       // SMS reminders: Only send for Scenario B (never returned)
       // Scenario A (returned late) doesn't need reminders - item already returned
       if (scenario === 'non-return') {
@@ -512,7 +596,16 @@ async function sendOverdueReminders() {
                                   protectedData.returnShippingLabel ||
                                   `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
             
-            const shortUrl = await shortLink(returnLabelUrl);
+            let shortUrl = returnLabelUrl;
+            try {
+              const maybeShort = await shortLink(returnLabelUrl);
+              if (maybeShort) shortUrl = maybeShort;
+            } catch (shortErr) {
+              console.warn('[SMS] shortlink generation failed, using fallback', {
+                txId,
+                error: shortErr?.message || shortErr
+              });
+            }
             console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
             
             // Check if we've already notified for this day
@@ -523,7 +616,13 @@ async function sendOverdueReminders() {
             const overdue = returnData.overdue || {};
             const lastNotifiedDay = overdue.lastNotifiedDay;
             
-            if (lastNotifiedDay !== daysLate) {
+            const runGuardDay = runNotificationGuard.get(txId);
+            if (daysLate > 6) {
+              if (!ONLY_TX || txId === ONLY_TX) {
+                console.log('[OVERDUE][DAY>6][HARD-STOP]', { txId, daysLate, lastNotifiedDay, runGuardDay });
+              }
+              continue; // Hard stop after day 6 — no SMS or persistence attempts
+            } else if (lastNotifiedDay !== daysLate && runGuardDay !== daysLate) {
               // Determine message based on days late
               let message;
               let tag;
@@ -540,14 +639,16 @@ async function sendOverdueReminders() {
               } else if (daysLate === 4) {
                 message = `⚠️ 4 days late. Ship immediately to prevent replacement charges.`;
                 tag = 'overdue_day4_to_borrower';
-              } else {
-                // Day 5+
+              } else if (daysLate === 5) {
                 message = [
-                  `🚫 5+ chargeable days late.`,
+                  `🚫 5 chargeable days late.`,
                   `Per Sherbrt policy, you may be charged the full replacement value set by the lender if the item is not returned.`,
                   `Please ship back your item as soon as possible: ${shortUrl}`
                 ].join(' ');
                 tag = 'overdue_day5_to_borrower';
+              } else if (daysLate === 6) {
+                message = `Sherbrt 🍧: 🚨 Your return is now 6 days late (excluding Sundays/USPS holidays). Your borrow is being investigated and the full replacement value of the item will be charged. Please ship it back ASAP using your QR code or label: ${shortUrl}. Reply to this text if you need help.`;
+                tag = 'overdue_day6_to_borrower';
               }
               
               if (VERBOSE) {
@@ -555,6 +656,16 @@ async function sendOverdueReminders() {
               }
               
               try {
+                // Guard this run even if persistence fails to avoid re-sending in-loop
+                runNotificationGuard.set(txId, daysLate);
+
+                if (daysLate === 6) {
+                  console.log('[OVERDUE][DAY6_SENT]', {
+                    txId: tx?.id?.uuid || tx?.id,
+                    daysLate,
+                    tag
+                  });
+                }
                 const smsResult = await sendSMS(borrowerPhone, message, {
                   role: 'borrower',
                   tag: tag,
@@ -578,23 +689,32 @@ async function sendOverdueReminders() {
                     }
                   };
                   
+                  const protectedPatch = { return: updatedReturnData };
+                  const overdueTransition =
+                    currentState === 'delivered'
+                      ? 'transition/privileged-set-overdue-notified-delivered'
+                      : 'transition/privileged-set-overdue-notified';
+                  
                   try {
-                    await readSdk.transactions.update({
-                      id: tx.id,
-                      attributes: {
-                        protectedData: {
-                          ...(protectedData || {}),
-                          return: updatedReturnData
-                        }
+                    await integSdk.transactions.transition({
+                      id: tx.id.uuid || tx.id,
+                      transition: overdueTransition,
+                      params: {
+                        protectedData: protectedPatch
                       }
                     });
-                    console.log(`💾 Updated transaction with SMS notification tracking for tx ${tx?.id?.uuid || '(no id)'}`);
+                    console.log(`💾 Persisted overdue notification via ${overdueTransition} for tx ${txId}`);
                   } catch (updateError) {
-                    logFlexError('transactions.update (SMS notification tracking)', updateError, {
+                    logFlexError(`${overdueTransition} (SMS notification tracking)`, updateError, {
                       txId: tx?.id?.uuid || tx?.id,
                       state: currentState
                     });
-                    console.error(`❌ Failed to update transaction:`, updateError.message);
+                    console.error(`❌ Failed to persist overdue notification via ${overdueTransition}:`, updateError.message);
+                    console.error('[OVERDUE][PERSISTENCE-FAILED][SKIP-RETRY-THIS-RUN]', {
+                      txId,
+                      daysLate,
+                      guarded: true
+                    });
                   }
                   
                   sent++;
@@ -615,84 +735,6 @@ async function sendOverdueReminders() {
       } else {
         // Scenario A: Item already returned, no SMS needed
         console.log(`ℹ️ [SCENARIO A] Item already returned - skipping SMS reminder`);
-      }
-      
-      // Apply charges (separate try/catch so charge failures don't block SMS)
-      // applyCharges() handles both Scenario A and Scenario B internally
-      try {
-        if (DRY_RUN) {
-          console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${tx?.id?.uuid || '(no id)'} (scenario: ${scenario})`);
-        } else {
-          const chargeResult = await applyCharges({
-            sdkInstance: integSdk,  // Use Integration SDK for privileged transition
-            txId: tx.id.uuid || tx.id,
-            now: FORCE_NOW || new Date()
-          });
-          
-          if (chargeResult.charged) {
-            console.log(`💳 [${scenario}] Charged ${chargeResult.items.join(' + ')} for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.lateDays || '?'} days late)`);
-            if (chargeResult.amounts) {
-              chargeResult.amounts.forEach(a => {
-                console.log(`   💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
-              });
-            }
-            charged++;
-            
-            // Trigger payout only after confirmed replacement charge
-            if (chargeResult.items.includes('replacement')) {
-              await triggerReplacementCompletionIfNeeded({
-                sdk: integSdk,
-                txId: tx.id.uuid || tx.id
-              });
-            }
-          } else {
-            console.log(`ℹ️ [${scenario}] No charge for tx ${tx?.id?.uuid || '(no id)'} (${chargeResult.reason || 'n/a'})`);
-          }
-        }
-      } catch (chargeError) {
-        logFlexError(`applyCharges (scenario=${scenario})`, chargeError, {
-          txId: tx?.id?.uuid || tx?.id,
-          scenario: scenario,
-          state: currentState
-        });
-        
-        console.error(`❌ [${scenario}] Charge failed for tx ${tx?.id?.uuid || '(no id)'}: ${chargeError.message}`);
-        
-        // Check for permission errors and provide helpful guidance
-        const status = chargeError.response?.status || chargeError.status;
-        const data = chargeError.response?.data;
-        
-        if (status === 403 || status === 401 ||
-            chargeError.message?.includes('403') || chargeError.message?.includes('401') ||
-            chargeError.message?.includes('permission') || chargeError.message?.includes('forbidden')) {
-          console.error('');
-          console.error('⚠️  PERMISSION ERROR DETECTED:');
-          console.error('   The late-fee transitions require proper permissions.');
-          console.error('   Possible fixes:');
-          console.error('   1. In process.edn, ensure :actor.role/operator has access');
-          console.error('   2. Ensure your Integration app has operator-level privileges in Flex Console');
-          console.error('   3. Verify INTEGRATION_CLIENT_ID and INTEGRATION_CLIENT_SECRET');
-          console.error(`   4. Check that transition exists for scenario: ${scenario}`);
-          console.error('');
-        }
-        
-        if (status === 400) {
-          console.error('');
-          console.error('⚠️  400 BAD REQUEST - Possible causes:');
-          console.error('   1. Invalid transition parameters');
-          console.error(`   2. Transaction state doesn't allow this transition (scenario: ${scenario})`);
-          console.error('   3. Transition name mismatch with process.edn');
-          console.error(`   4. Expected transition: ${scenario === 'delivered-late' ? 'transition/privileged-apply-late-fees' : 'transition/privileged-apply-late-fees-non-return'}`);
-          console.error('');
-          if (data?.errors) {
-            console.error('   API Errors:');
-            data.errors.forEach((err, i) => {
-              console.error(`   [${i}] ${err.title || err.detail || JSON.stringify(err)}`);
-            });
-          }
-        }
-        
-        chargesFailed++;
       }
       
       if (LIMIT && sent >= LIMIT) {
