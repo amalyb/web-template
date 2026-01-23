@@ -76,6 +76,22 @@ const maskTokenTail = (token) => {
   return `***${str.slice(-4)}`;
 };
 
+// Shippo metadata must be <= 100 chars; keep it minimal but still correlate webhooks
+const SHIPPO_METADATA_MAX = 100;
+function buildShippoMetadataString({ txId, direction }) {
+  const metadata = `tx=${txId || 'missing'}|dir=${direction || 'unknown'}`;
+  if (metadata.length > SHIPPO_METADATA_MAX) {
+    console.warn('[SHIPPO][METADATA][TRUNCATE]', {
+      len: metadata.length,
+      max: SHIPPO_METADATA_MAX,
+      direction,
+      txId,
+    });
+    return metadata.slice(0, SHIPPO_METADATA_MAX);
+  }
+  return metadata;
+}
+
 // Identify whether we are using a Shippo test or live token
 const detectShippoMode = (token) => {
   if (!token) return 'missing';
@@ -595,16 +611,14 @@ async function createShippingLabels({
     });
     
     // Build transaction payload - only request QR code for USPS
+    const outboundMetadata = buildShippoMetadataString({ txId, direction: 'outbound' });
+    console.log('[SHIPPO][TX][METADATA-LEN]', { direction: 'outbound', len: outboundMetadata.length });
     const transactionPayload = {
       // Defensive: prefer object_id, fall back to objectId if SDK shape differs
       rate: selectedRateId,
       async: false,
       label_file_type: 'PNG',
-      metadata: JSON.stringify({ 
-        transactionId: txId,
-        txId,
-        direction: 'outbound'
-      }) // Include transaction ID and direction for webhook lookup
+      metadata: outboundMetadata // Keep Shippo metadata short for 100-char limit
     };
     
     // Only request QR code for USPS (UPS doesn't support it)
@@ -1116,16 +1130,14 @@ async function createShippingLabels({
               estDays: returnSelectedRate?.estimated_days ?? returnSelectedRate?.duration_terms
             });
           
-            // Build return transaction payload - only request QR for USPS
+          // Build return transaction payload - only request QR for USPS
+          const returnMetadata = buildShippoMetadataString({ txId, direction: 'return' });
+          console.log('[SHIPPO][TX][METADATA-LEN]', { direction: 'return', len: returnMetadata.length });
           const returnTransactionPayload = {
             rate: returnSelectedRate.object_id,
             async: false,
             label_file_type: 'PNG',
-            metadata: JSON.stringify({ 
-              transactionId: txId,
-              txId,
-              direction: 'return'
-            }) // Include transaction ID and direction for webhook lookup
+            metadata: returnMetadata // Keep Shippo metadata short for 100-char limit
           };
           
           if (returnSelectedRate.provider.toUpperCase() === 'USPS') {

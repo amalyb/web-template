@@ -120,6 +120,7 @@ async function txUpdateProtectedData(txId, protectedPatch, opts = {}) {
   
   // Prune to only allowed keys to prevent 400 errors
   const pruned = pruneProtectedData(protectedPatch);
+  const prunedCount = Object.keys(protectedPatch || {}).length - Object.keys(pruned).length;
   const ctx = { txId, keys: Object.keys(pruned), source: opts.source };
   
   try {
@@ -128,14 +129,19 @@ async function txUpdateProtectedData(txId, protectedPatch, opts = {}) {
       method: 'POST',
       path: `/transactions/${txId}/update_metadata`,
       bodyKeys: Object.keys(pruned),
-      prunedCount: Object.keys(protectedPatch || {}).length - Object.keys(pruned).length,
+      prunedCount,
     });
 
-    // NOTE: Integration API method is updateMetadata, not update.
+    // NOTE: Integration API expects metadata wrapper for protectedData
+    const body = {
+      metadata: {
+        protectedData: pruned
+      }
+    };
+
     const res = await sdk.transactions.updateMetadata({
       id: txId,                 // string UUID, not SDK UUID object
-      protectedData: pruned,    // Use pruned data
-      // metadata: {}           // include if you also want to patch normal metadata
+      ...body
     });
 
     console.log('[INT][PD][OK]', ctx);
@@ -152,6 +158,10 @@ async function txUpdateProtectedData(txId, protectedPatch, opts = {}) {
       sentKeys: Object.keys(pruned),
       originalKeys: Object.keys(protectedPatch || {}),
     });
+    // Log raw Flex response body to diagnose field-level validation errors
+    if (e?.response?.data) {
+      console.error('[INT][PD][ERR][BODY]', e.response.data);
+    }
     throw e;
   }
 }
