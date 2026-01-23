@@ -69,6 +69,37 @@ const logTx = (tx) => ({
   qr_code_url: tx?.qr_code_url,
 });
 
+// Minimal masking for Shippo tokens to avoid leaking credentials in logs
+const maskTokenTail = (token) => {
+  if (!token) return null;
+  const str = String(token);
+  return `***${str.slice(-4)}`;
+};
+
+// Identify whether we are using a Shippo test or live token
+const detectShippoMode = (token) => {
+  if (!token) return 'missing';
+  const str = String(token);
+  if (str.includes('test')) return 'test';
+  if (str.includes('live')) return 'live';
+  return 'unknown';
+};
+
+let shippoEnvLogged = false;
+function logShippoEnvOnce() {
+  if (shippoEnvLogged) return;
+  shippoEnvLogged = true;
+  const token = process.env.SHIPPO_API_TOKEN || process.env.SHIPPO_TOKEN || '';
+  console.log('[SHIPPO][ENV][BOOT]', {
+    tokenVar: process.env.SHIPPO_API_TOKEN ? 'SHIPPO_API_TOKEN' : (process.env.SHIPPO_TOKEN ? 'SHIPPO_TOKEN' : 'missing'),
+    tokenSuffix: token ? token.slice(-4) : null,
+    mode: detectShippoMode(token),
+    hasToken: !!token,
+  });
+  // NOTE: Shippo test tokens surface labels in the Shippo test dashboard (Transactions tab).
+  // Live dashboards will not display purchases made with test tokens.
+}
+
 // Choose the best link to send in SMS according to business rules:
 // 1) UPS preferred: use QR if present, else label.
 // 2) If USPS fallback: use label (never QR).
@@ -267,6 +298,9 @@ async function createShippingLabels({
   // Check if recipient email suppression is enabled (to prevent UPS Quantum View emails)
   const suppress = String(process.env.SHIPPO_SUPPRESS_RECIPIENT_EMAIL || '').toLowerCase() === 'true';
   console.log('[SHIPPO] Recipient email suppression:', suppress ? 'ON' : 'OFF');
+  logShippoEnvOnce();
+  const shippoToken = process.env.SHIPPO_API_TOKEN || process.env.SHIPPO_TOKEN || '';
+  const shippoMode = detectShippoMode(shippoToken);
   
   // Extract raw address data from protectedData
   const rawProviderAddress = {
@@ -528,19 +562,42 @@ async function createShippingLabels({
       return { success: false, reason: 'no_suitable_rate' };
     }
     
+    const selectedRateId = selectedRate?.object_id || selectedRate?.objectId || selectedRate?.id;
     console.log('[RATE-SELECT][OUTBOUND]', {
       token: selectedRate?.servicelevel?.token || selectedRate?.service?.token,
       provider: selectedRate?.provider,
       amount: Number(selectedRate?.amount ?? selectedRate?.rate ?? 0),
-      estDays: selectedRate?.estimated_days ?? selectedRate?.duration_terms
+      estDays: selectedRate?.estimated_days ?? selectedRate?.duration_terms,
+      objectId: selectedRateId,
     });
+    if (!selectedRateId) {
+      console.warn('[SHIPPO][RATE][MISSING_OBJECT_ID] Selected rate missing object_id; logging raw rate for debugging', {
+        selectedRate,
+      });
+    }
     
     // Create the actual label by purchasing the transaction
     console.log('📦 [SHIPPO] Purchasing label for selected rate...');
+    console.log('[SHIPPO][TX][CONTEXT]', {
+      shipmentId: shipmentRes?.data?.object_id || null,
+      shippoMode,
+      tokenSuffix: maskTokenTail(shippoToken),
+      suppressRecipientEmail: suppress,
+      rateId: selectedRateId || null,
+    });
+    console.log('[SHIPPO][TX][SELECTED-RATE]', {
+      provider: selectedRate?.provider,
+      servicelevel: selectedRate?.servicelevel?.token || selectedRate?.service?.token,
+      serviceName: selectedRate?.servicelevel?.name || selectedRate?.service?.name,
+      amount: Number(selectedRate?.amount ?? selectedRate?.rate ?? 0),
+      estimated_days: selectedRate?.estimated_days ?? selectedRate?.duration_terms,
+      object_id: selectedRateId,
+    });
     
     // Build transaction payload - only request QR code for USPS
     const transactionPayload = {
-      rate: selectedRate.object_id,
+      // Defensive: prefer object_id, fall back to objectId if SDK shape differs
+      rate: selectedRateId,
       async: false,
       label_file_type: 'PNG',
       metadata: JSON.stringify({ 
@@ -558,20 +615,44 @@ async function createShippingLabels({
       console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
     }
     
+    // Log the payload (without auth headers) for debugging Shippo 400s
+    console.log('[SHIPPO][TX][REQUEST]', {
+      payload: transactionPayload,
+      shipmentId: shipmentRes?.data?.object_id || null,
+    });
+
     console.log('📦 [SHIPPO] Added metadata.transactionId to transaction payload for webhook lookup');
     
     // Purchase label with retry on UPS 10429
     const transactionRes = await withBackoff(
-      () => axios.post(
-        'https://api.goshippo.com/transactions/',
-        transactionPayload,
-        {
-          headers: {
-            'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
+      async () => {
+        try {
+          return await axios.post(
+            'https://api.goshippo.com/transactions/',
+            transactionPayload,
+            {
+              headers: {
+                'Authorization': `ShippoToken ${process.env.SHIPPO_API_TOKEN}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+        } catch (err) {
+          // Log full Shippo response body to debug 400s
+          console.error('[SHIPPO][TX][ERROR]', {
+            status: err?.response?.status,
+            statusText: err?.response?.statusText,
+            data: err?.response?.data,
+            headers: err?.response?.headers,
+            rateId: transactionPayload.rate,
+            shippoRequestId: err?.response?.headers?.['x-shippo-request-id'] || err?.response?.headers?.['x-request-id'],
+            mode: shippoMode,
+            tokenSuffix: maskTokenTail(shippoToken),
+            shipmentId: shipmentRes?.data?.object_id || null,
+          });
+          throw err;
         }
-      ),
+      },
       { retries: 2, baseMs: 600 }
     );
 
@@ -757,6 +838,13 @@ async function createShippingLabels({
         hasQrUrl: !!qrUrl,
         alreadySent: !!protectedData.lenderOutboundLabelEmailSent,
       });
+      console.log('[EMAIL][LABEL] gate check', {
+        txId: txId,
+        providerEmailPresent: !!providerEmail,
+        hasLabelUrl: !!labelUrl,
+        hasQrUrl: !!qrUrl,
+        outboundLabelLink: maskUrl(outboundLabelLink),
+      });
       
       if (providerEmail && outboundLabelLink) {
         // Check if we've already sent outbound label email (idempotency)
@@ -766,6 +854,13 @@ async function createShippingLabels({
           console.log(`[LENDER-OUTBOUND-EMAIL] Skipped (already sent) to ${providerEmail}`);
         } else {
           // Log before sending
+          console.log('[EMAIL][LABEL] sending lenderOutboundLabelEmail...', {
+            to: providerEmail,
+            txId: txId,
+            hasQr: !!qrUrl,
+            hasLabel: !!labelUrl,
+            outboundLabelLink: maskUrl(outboundLabelLink),
+          });
           console.log('[LENDER-OUTBOUND-EMAIL] sending', { to: providerEmail, txId: txId });
           
           // Create short link for email (same as SMS)
@@ -825,7 +920,11 @@ async function createShippingLabels({
           }
         }
       } else if (providerEmail && !outboundLabelLink) {
-        console.warn(`⚠️ [LENDER-OUTBOUND-EMAIL] Provider email found but no outbound label URL available - skipping email`);
+        console.warn('[EMAIL][LABEL] not sending — missing label_url because Shippo purchase failed or label URL unavailable', {
+          txId: txId,
+          providerEmail,
+          hasShippoTransaction: !!shippoTransactionId,
+        });
       } else if (!providerEmail) {
         console.log(`📧 [LENDER-OUTBOUND-EMAIL] Provider email not found - skipping outbound label email`);
       }
@@ -1407,7 +1506,9 @@ async function createShippingLabels({
         message: err?.message,
         status: err?.status || err?.response?.status,
         statusText: err?.statusText || err?.response?.statusText,
-        data: err?.response?.data ? safePick(err.response.data, ['error', 'message', 'code']) : undefined,
+        data: err?.response?.data || undefined,
+        headers: err?.response?.headers,
+        shippoRequestId: err?.response?.headers?.['x-shippo-request-id'] || err?.response?.headers?.['x-request-id'],
       };
       console.error('[SHIPPO] Label creation failed (Shippo API error)', details);
       return { success: false, reason: 'shippo_api_error', error: err.message };
