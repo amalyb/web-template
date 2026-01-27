@@ -609,57 +609,11 @@ async function sendReturnReminders(allowExitOnError = true) {
           }
           
         } else if (reminderType === 'LATE') {
-          // Late window: send once per PT day until scanned
-          // Durable per-day idempotency (PT calendar day) for late reminders
-          if (returnSms.lateLastSentLocalDate === todayLocalDate) {
-            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping LATE reminder, already sent for local day ${todayLocalDate} (returnSms.lateLastSentLocalDate)`);
-            continue;
-          }
-          // In-memory guard if last update failed this process
-          if (lateSentTodayByTx.get(txId) === todayLocalDate) {
-            console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} skipping LATE reminder due to in-memory guard for local day ${todayLocalDate} (protectedData update previously failed)`);
-            continue;
-          }
-          lateStartDatePT = lateStartLocalDate;
-          acceptAtPT = resolveAcceptAtPT(protectedData, bookingEndPT, nowPT, txId);
-          const lateAcceptTime = acceptAtPT.format('HH:mm:ss');
-          lateSendAtPT = lateStartDatePT
-            ? dayjs.tz(`${lateStartDatePT} ${lateAcceptTime}`, TZ)
-            : null;
-          const isLateSendDue =
-            lateSendAtPT && (nowPT.isSame(lateSendAtPT) || nowPT.isAfter(lateSendAtPT));
-          if (!isLateSendDue) {
-            if (ONLY_TX && txId === ONLY_TX) {
-              console.log('[RETURN-LATE-SMS-NOT-DUE]', {
-                txId,
-                nowPT: nowPT.format(),
-                lateSendAtPT: lateSendAtPT ? lateSendAtPT.format() : null,
-                acceptAtPT: acceptAtPT ? acceptAtPT.format() : null,
-                bookingEndPT: bookingEndPT ? bookingEndPT.format() : null,
-              });
-            }
-            continue;
-          }
-
-          // Log detailed info for debugging
-          console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || '(no id)'} due=${dueLocalDate} lateStartLocalDate=${lateStartLocalDate} todayPT=${today} → sending LATE reminder`);
-          const returnLabelUrl = pd.returnQrUrl ||
-                                pd.returnLabelUrl || 
-                                returnData.label?.url || 
-                                pd.returnLabel || 
-                                pd.shippingLabelUrl || 
-                                pd.returnShippingLabel;
-          let shortUrl = null;
-          if (returnLabelUrl) {
-            shortUrl = await shortLink(returnLabelUrl);
-            console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-          }
-          if (shortUrl) {
-            message = `Sherbrt 🍧: 📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Ship it back: ${shortUrl}`;
-          } else {
-            message = `Sherbrt 🍧: 📦 Your Sherbrt return is now late. A $15/day late fee is being charged until the carrier scans it. Please ship it back ASAP using your QR code or label. After 5 days late, you may be charged the full replacement value of the item. 💌`;
-          }
-          tag = 'return_reminder_late';
+          // OPTION A IMPLEMENTATION: Late reminders disabled in sendReturnReminders.js
+          // Only sendOverdueReminders.js sends late-day SMS (Day 1-6 with escalating messages + fee charging)
+          // This script now only handles pre-due reminders (T-1, TODAY)
+          console.log(`[SMS][LATE][SKIP] disabled in sendReturnReminders tx=${tx?.id?.uuid || tx?.id || '(no id)'} - late reminders handled by sendOverdueReminders.js`);
+          continue;
         }
 
         // If no message was generated, skip before locking to avoid burning locks
