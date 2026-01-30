@@ -8,33 +8,35 @@ const { shortLink } = require('../api-util/shortlink');
 const { SMS_TAGS } = require('../lib/sms/tags');
 const { toCarrierPhase, isShippedStatus, isDeliveredStatus } = require('../lib/statusMap');
 const { getPublicTrackingUrl } = require('../lib/trackingLinks');
+const { getTrackingIndex } = require('../lib/trackingIndex');
 
 const FLEX_TX_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TX_DIR_STRING_REGEX = /^tx=([0-9a-f-]{36})\|dir=(outbound|return)$/i;
 const ONLY_TX = process.env.ONLY_TX;
 
+// Best-effort only; never throws. Supports object, JSON string, or "tx=<uuid>|dir=<outbound|return>".
 function parseShippoMetadata(rawMetadata) {
-  if (!rawMetadata) return {};
-
-  if (typeof rawMetadata === 'string') {
-    try {
-      return JSON.parse(rawMetadata);
-    } catch (e) {
-      console.warn('[SHIPPO-WEBHOOK][METADATA-PARSE-ERROR]', e.message);
-      return {};
+  if (rawMetadata == null) return {};
+  if (typeof rawMetadata === 'object') return rawMetadata;
+  if (typeof rawMetadata !== 'string') return {};
+  try {
+    const parsed = JSON.parse(rawMetadata);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch (_) {
+    const trimmed = String(rawMetadata).trim();
+    const match = trimmed.match(TX_DIR_STRING_REGEX);
+    if (match) {
+      return { txId: match[1], direction: match[2].toLowerCase() };
     }
+    return {};
   }
-
-  if (typeof rawMetadata === 'object') {
-    return rawMetadata;
-  }
-
-  return {};
 }
 
 function getTransactionIdFromShippoMetadata(metadata = {}) {
   const raw =
     metadata.transactionId ||
     metadata.txId ||
+    metadata.tx ||
     metadata.transaction_id ||
     metadata.tx_id ||
     null;
@@ -600,10 +602,27 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     // Find transaction using sessionless Integration SDK only (no cookies)
     let transaction = null;
     let matchStrategy = 'unknown';
+    let trackingIndexHit = null; // when matchStrategy === 'tracking_index', direction comes from here
     const integrationSdk = getIntegrationSdk();
     
-    // Method 1: Try to find by transaction ID from metadata (supports both transactionId and txId)
-    if (txIdStr) {
+    // Method 0: Redis tracking index (deterministic) — before metadata or scan
+    if (trackingNumber) {
+      const hit = await getTrackingIndex(trackingNumber);
+      if (hit?.txId) {
+        try {
+          const response = await integrationSdk.transactions.show({ id: hit.txId });
+          transaction = response.data.data;
+          matchStrategy = 'tracking_index';
+          trackingIndexHit = hit;
+          console.log(`✅ Found transaction via tracking index: ${transaction.id}, direction=${hit.direction}`);
+        } catch (e) {
+          console.warn('[SHIPPO-WEBHOOK][TRACKING-INDEX] show failed', { txId: hit.txId, error: e?.message });
+        }
+      }
+    }
+    
+    // Method 1: Try to find by transaction ID from metadata (supports both transactionId and txId) — fallback only on MISS
+    if (!transaction && txIdStr) {
       console.log(`🔍 Looking up transaction by metadata transaction ID: ${txIdStr}`);
       try {
         const response = await integrationSdk.transactions.show({ id: txIdStr });
@@ -750,16 +769,17 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     const returnData = protectedData.return || {};
     
     // DIRECTION FILTER: Determine if this is a return scan (borrower → lender) or outbound scan (lender → borrower)
-    // We treat events with metadata.direction === 'return' as return scans.
-    // Also check if tracking number matches known return tracking number as fallback.
-    // IMPORTANT: Payout only triggers on return scans, never on outbound scans.
-    // For older labels without direction metadata, assume outbound if not explicitly return.
+    // When we resolved via tracking_index, use hit.direction (sanity-check against protectedData optional).
+    // Otherwise: metadata.direction, then tracking number match to return/outbound.
     const explicitDirection = metadata.direction;
-    const derivedDirection = deriveDirection({
-      metadataDirection: explicitDirection,
-      trackingNumber,
-      protectedData,
-    });
+    const derivedDirection =
+      matchStrategy === 'tracking_index' && trackingIndexHit
+        ? trackingIndexHit.direction
+        : deriveDirection({
+            metadataDirection: explicitDirection,
+            trackingNumber,
+            protectedData,
+          });
     const isReturnTracking = derivedDirection === 'return';
     
     // For older labels without direction metadata, assume outbound only when matched to outbound tracking

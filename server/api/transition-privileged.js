@@ -242,6 +242,7 @@ try {
 // QR delivery reliability: Redis cache for transaction QR data
 const { getRedis } = require('../redis');
 const redis = getRedis();
+const { setTrackingIndex } = require('../lib/trackingIndex');
 
 // Log cache mode on startup
 console.log('[qr-cache] mode:', redis.status === 'mock' ? 'in-memory' : 'redis');
@@ -728,6 +729,11 @@ async function createShippingLabels({
       rateId: shippoRateId,
     });
 
+    // Deterministic webhook resolution: index tracking number → tx (do not rely on Shippo metadata)
+    if (trackingNumber) {
+      await setTrackingIndex(trackingNumber, { txId, direction: 'outbound' });
+    }
+
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
@@ -1176,6 +1182,12 @@ async function createShippingLabels({
             
             console.log('📦 [SHIPPO] Return label purchased successfully!');
             console.log('📦 [SHIPPO] Return Transaction ID:', returnTransactionRes.data.object_id);
+            
+            // Deterministic webhook resolution: index return tracking number → tx (do not rely on Shippo metadata)
+            const returnTrackingNumber = returnTransactionRes.data.tracking_number || null;
+            if (returnTrackingNumber) {
+              await setTrackingIndex(returnTrackingNumber, { txId, direction: 'return' });
+            }
             
             // Persist return label details to Flex protectedData
             try {
