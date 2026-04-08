@@ -637,7 +637,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       const hit = await getTrackingIndex(trackingNumber);
       if (hit?.txId) {
         try {
-          const response = await integrationSdk.transactions.show({ id: hit.txId });
+          const response = await integrationSdk.transactions.show({ id: hit.txId, include: ['customer', 'provider', 'listing'] });
           transaction = response.data.data;
           matchStrategy = 'tracking_index';
           trackingIndexHit = hit;
@@ -652,7 +652,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
     if (!transaction && txIdStr) {
       console.log(`🔍 Looking up transaction by metadata transaction ID: ${txIdStr}`);
       try {
-        const response = await integrationSdk.transactions.show({ id: txIdStr });
+        const response = await integrationSdk.transactions.show({ id: txIdStr, include: ['customer', 'provider', 'listing'] });
         transaction = response.data.data;
         matchStrategy = metadata.transactionId ? 'metadata.transactionId' : 'metadata.txId';
         console.log(`✅ Found transaction by metadata transaction ID: ${transaction.id}`);
