@@ -314,38 +314,65 @@ async function findTransactionByTrackingNumber({ sdk, trackingNumber, carrier, s
   };
   console.log('[SHIPPO-WEBHOOK][TRACKING-SEARCH] start', searchCtx);
   
+  const MAX_PAGES = 10;
+  const PAGE_SIZE = 100;
+
   try {
-    // Query last 100 transactions to find matching tracking number
-    const query = {
-      limit: 100,
-      include: ['customer', 'listing']
-    };
-    
-    const response = await sdk.transactions.query(query);
-    const transactions = response.data.data;
-    
-    console.log(
-      '[SHIPPO-WEBHOOK][TRACKING-SEARCH] scanned',
-      { count: transactions.length, trackingNumber }
-    );
-    
-    // Look for transaction with matching tracking number
-    for (const transaction of transactions) {
-      const protectedData = transaction.attributes.protectedData || {};
-      
-      if (protectedData.outboundTrackingNumber === trackingNumber || 
-          protectedData.returnTrackingNumber === trackingNumber) {
-        console.log(
-          '[SHIPPO-WEBHOOK][TRACKING-SEARCH] found',
-          { transactionId: transaction.id, trackingNumber }
-        );
-        return transaction;
+    let page = 1;
+    let totalScanned = 0;
+
+    while (page <= MAX_PAGES) {
+      const query = {
+        limit: PAGE_SIZE,
+        page,
+        include: ['customer', 'listing']
+      };
+
+      const response = await sdk.transactions.query(query);
+      const transactions = response.data.data;
+
+      if (!transactions || transactions.length === 0) {
+        console.log('[SHIPPO-WEBHOOK][TRACKING-SEARCH] no more transactions', { page, totalScanned });
+        break;
       }
+
+      totalScanned += transactions.length;
+      console.log('[SHIPPO-WEBHOOK][TRACKING-SEARCH] scanning page', {
+        page,
+        count: transactions.length,
+        totalScanned,
+        trackingNumber
+      });
+
+      for (const transaction of transactions) {
+        const protectedData = transaction.attributes.protectedData || {};
+
+        if (
+          protectedData.outboundTrackingNumber === trackingNumber ||
+          protectedData.returnTrackingNumber === trackingNumber
+        ) {
+          console.log('[SHIPPO-WEBHOOK][TRACKING-SEARCH] found', {
+            transactionId: transaction.id,
+            trackingNumber,
+            page,
+            totalScanned
+          });
+          return transaction;
+        }
+      }
+
+      // If we got fewer results than PAGE_SIZE, we've reached the end
+      if (transactions.length < PAGE_SIZE) {
+        console.log('[SHIPPO-WEBHOOK][TRACKING-SEARCH] reached end of transactions', { page, totalScanned });
+        break;
+      }
+
+      page++;
     }
-    
+
     console.warn(
       '[SHIPPO-WEBHOOK][TRACKING-SEARCH] not_found',
-      { trackingNumber, carrier: carrier || 'unknown' }
+      { trackingNumber, carrier: carrier || 'unknown', totalScanned }
     );
     return null;
     
