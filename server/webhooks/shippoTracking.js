@@ -1104,8 +1104,8 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         };
       } else if (isFirstScan) {
         // Send first scan SMS (Step-4: borrower notification)
-        const carrier = protectedData.outboundCarrier;
-        const trackingNum = protectedData.outboundTrackingNumber;
+        const smsCarrier = protectedData.outboundCarrier || carrier;
+        const trackingNum = protectedData.outboundTrackingNumber || trackingNumber;
         
         if (!trackingNum) {
           console.warn('⚠️ [STEP-4] No tracking number found for first scan notification');
@@ -1113,7 +1113,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         }
         
         // Generate public carrier tracking URL (shorter than Shippo URLs)
-        const publicTrackingUrl = getPublicTrackingUrl(carrier, trackingNum);
+        const publicTrackingUrl = getPublicTrackingUrl(smsCarrier, trackingNum);
         console.log(`[TRACKINGLINK] Using short public link: ${publicTrackingUrl} (carrier: ${carrier || 'unknown'})`);
         
         // Get listing title for personalized message
