@@ -148,10 +148,10 @@ const UserCard = props => {
       <h3 className={css.measurementsTitle}>Details</h3>
       <ul className={css.measurementsList}>
         <li><strong>Height:</strong> {publicData.height || '—'}</li>
-        <li><strong>Bra Size:</strong> {publicData.braSize || '—'}</li>
-        <li><strong>Dress Size Number:</strong> {publicData.dressSizeNumber || '—'}</li>
-        <li><strong>Dress Size Letter:</strong> {publicData.dressSizeLetter || '—'}</li>
-        <li><strong>Waist:</strong> {publicData.waist || '—'}</li>
+        <li><strong>Bra Size:</strong> {publicData.bra_size || '—'}</li>
+        <li><strong>Dress Size Number:</strong> {publicData.dress_size_number || '—'}</li>
+        <li><strong>Dress Size Letter:</strong> {publicData.dress_letter_size || '—'}</li>
+        <li><strong>Jeans Size:</strong> {publicData.jeans_size || '—'}</li>
       </ul>
     </div>
   );
