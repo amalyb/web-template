@@ -1114,7 +1114,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.log(`[SHIPPO DELIVERY DEBUG]   direction: OUTBOUND`);
         
         // Send delivery SMS
-        message = "🎁 Your Sherbrt borrow has arrived! 🍧 Go slay & tag @shoponsherbrt ✨ Need anything? bestie@sherbrt.com";
+        message = "🎁 Your Sherbrt borrow has arrived! 🎉 Slay & tag @shoponsherbrt 🍧\nNeed anything? bestie@sherbrt.com";
         smsType = 'delivery';
         protectedDataUpdate = {
           ...(protectedData || {}),
@@ -1411,7 +1411,7 @@ if (process.env.TEST_ENDPOINTS) {
         
       } else if (isDelivered) {
         // Step-6 SMS: Item delivered to borrower
-        message = "🎁 Your Sherbrt borrow has arrived! 🍧 Go slay & tag @shoponsherbrt ✨ Need anything? bestie@sherbrt.com";
+        message = "🎁 Your Sherbrt borrow has arrived! 🎉 Slay & tag @shoponsherbrt 🍧\nNeed anything? bestie@sherbrt.com";
         tag = SMS_TAGS.DELIVERY_TO_BORROWER;
         
         console.log(`[SMS:OUT] tag=item_delivered_to_borrower to=${borrowerPhone} msg="${message}"`);
