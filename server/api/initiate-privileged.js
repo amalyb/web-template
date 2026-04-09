@@ -12,12 +12,9 @@ const { alreadySent } = require('../api-util/idempotency');
 const { attempt, sent, failed } = require('../api-util/metrics');
 const { normalizePhoneE164 } = require('../util/phone');
 const { calculateTotalForProvider } = require('../api-util/lineItemHelpers');
-const { getAmountAsDecimalJS, convertDecimalJSToNumber } = require('../api-util/currency');
-const { unitDivisor } = require('../api-util/currency');
+const { formatMoneyServerSide } = require('../api-util/lenderEarnings');
 const { shortLink } = require('../api-util/shortlink');
 const { orderUrl, saleUrl } = require('../util/url');
-const Decimal = require('decimal.js');
-
 // Helper to normalize listingId to string
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
@@ -33,42 +30,6 @@ try {
 }
 
 console.log('🚦 initiate-privileged endpoint is wired up');
-
-/**
- * Format Money object to currency string (server-side)
- * @param {Money} money - Money object from SDK
- * @returns {string} Formatted currency string (e.g., "$21.24")
- */
-function formatMoneyServerSide(money) {
-  if (!money || !money.amount || !money.currency) {
-    return null;
-  }
-  
-  try {
-    const amountDecimal = getAmountAsDecimalJS(money);
-    const divisor = unitDivisor(money.currency);
-    const divisorDecimal = new Decimal(divisor);
-    const majorUnitsDecimal = amountDecimal.dividedBy(divisorDecimal);
-    const majorUnits = convertDecimalJSToNumber(majorUnitsDecimal);
-    
-    // Format based on currency
-    const currencySymbols = {
-      USD: '$',
-      EUR: '€',
-      GBP: '£',
-      CAD: 'C$',
-      AUD: 'A$',
-    };
-    
-    const symbol = currencySymbols[money.currency] || money.currency + ' ';
-    const formatted = majorUnits.toFixed(2);
-    
-    return `${symbol}${formatted}`;
-  } catch (e) {
-    console.warn('[formatMoneyServerSide] Error formatting money:', e.message);
-    return null;
-  }
-}
 
 /**
  * Helper function to build lender SMS message with dynamic values
