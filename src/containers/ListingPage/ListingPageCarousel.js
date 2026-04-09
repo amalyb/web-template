@@ -386,7 +386,7 @@ const pendingIsApproved = isPendingApprovalVariant && isApproved;
           <li><strong>Height:</strong> {formatHeight(authorPublicData.height)}</li>
           <li><strong>Bra Size:</strong> {authorPublicData.bra_size || '—'}</li>
           <li><strong>Dress Size Number:</strong> {formatDressSizeNumber(authorPublicData.dress_size_number)}</li>
-          <li><strong>Dress Size Letter:</strong> {formatDressSizeLetter(authorPublicData.dress_letter_size)}</li>
+          <li><strong>Dress Size Letter:</strong> {formatDressSizeLetter(authorPublicData.dress_size_letter)}</li>
           <li><strong>Jeans Size:</strong> {authorPublicData.jeans_size || '—'}</li>
         </ul>
       </div>

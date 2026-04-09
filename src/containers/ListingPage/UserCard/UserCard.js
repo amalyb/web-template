@@ -150,7 +150,7 @@ const UserCard = props => {
         <li><strong>Height:</strong> {publicData.height || '—'}</li>
         <li><strong>Bra Size:</strong> {publicData.bra_size || '—'}</li>
         <li><strong>Dress Size Number:</strong> {publicData.dress_size_number || '—'}</li>
-        <li><strong>Dress Size Letter:</strong> {publicData.dress_letter_size || '—'}</li>
+        <li><strong>Dress Size Letter:</strong> {publicData.dress_size_letter || '—'}</li>
         <li><strong>Jeans Size:</strong> {publicData.jeans_size || '—'}</li>
       </ul>
     </div>
