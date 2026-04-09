@@ -134,7 +134,9 @@
     "test:shipping-reminders": "node server/scripts/sendShippingReminders.js --dry-run --verbose",
     "worker:shipping-reminders": "node server/scripts/sendShippingReminders.js",
     "debug:lender-shipping-query": "node server/scripts/debugLenderShippingQuery.js",
-    "worker:overdue-reminders": "node server/scripts/sendOverdueReminders.js"
+    "worker:overdue-reminders": "node server/scripts/sendOverdueReminders.js",
+    "worker:lender-request-reminders": "node server/scripts/sendLenderRequestReminders.js",
+    "test:lender-request-reminders": "node server/scripts/sendLenderRequestReminders.js --dry-run --verbose"
   },
   "browserslist": {
     "production": [
