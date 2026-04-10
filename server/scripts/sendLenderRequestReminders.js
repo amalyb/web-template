@@ -249,7 +249,9 @@ async function sendLenderRequestReminders() {
       // Re-check state & transition (query is a starting point, not a lock).
       // pending-payment: Stripe hasn't confirmed yet (rare at 60m, but possible).
       // preauthorized: Stripe confirmed, lender hasn't acted yet (the common case).
-      if ((state !== 'pending-payment' && state !== 'preauthorized') || !REQUEST_TRANSITIONS.has(lastTransition)) {
+      // Note: Integration SDK returns namespaced states (e.g. 'state/preauthorized')
+      const normalizedState = state?.replace(/^state\//, '') || '';
+      if ((normalizedState !== 'pending-payment' && normalizedState !== 'preauthorized') || !REQUEST_TRANSITIONS.has(lastTransition)) {
         if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — state=${state} lastTransition=${lastTransition}`);
         skipped++;
         continue;
