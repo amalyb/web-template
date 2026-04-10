@@ -12,6 +12,8 @@
  * never drift on the earnings amount shown to the lender.
  */
 const Decimal = require('decimal.js');
+const { types } = require('sharetribe-flex-sdk');
+const { Money } = types;
 const { calculateTotalForProvider } = require('./lineItemHelpers');
 const { getAmountAsDecimalJS, convertDecimalJSToNumber, unitDivisor } = require('./currency');
 
@@ -23,12 +25,27 @@ const { getAmountAsDecimalJS, convertDecimalJSToNumber, unitDivisor } = require(
  *   or freshly computed via transactionLineItems()).
  * @returns {Object|null} Money object ({ amount, currency }) or null.
  */
+function ensureMoney(value) {
+  if (value instanceof Money) return value;
+  if (value && typeof value.amount === 'number' && typeof value.currency === 'string') {
+    return new Money(value.amount, value.currency);
+  }
+  return value;
+}
+
 function calculateLenderPayoutTotal(lineItems) {
   try {
     if (!Array.isArray(lineItems) || lineItems.length === 0) {
       return null;
     }
-    return calculateTotalForProvider(lineItems);
+    // Integration SDK returns plain objects, not Money instances.
+    // Convert unitPrice and lineTotal so downstream helpers work.
+    const normalized = lineItems.map(li => ({
+      ...li,
+      unitPrice: ensureMoney(li.unitPrice),
+      lineTotal: ensureMoney(li.lineTotal),
+    }));
+    return calculateTotalForProvider(normalized);
   } catch (e) {
     console.warn('[lenderEarnings] Could not calculate payout:', e.message);
     return null;
