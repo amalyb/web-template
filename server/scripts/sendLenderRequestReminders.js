@@ -120,6 +120,10 @@ const INFLIGHT_STALE_MS = 10 * 60 * 1000; // 10 minutes
 const REQUEST_TRANSITIONS = new Set([
   'transition/request-payment',
   'transition/request-payment-after-inquiry',
+  // confirm-payment fires automatically (Stripe) within seconds of
+  // request-payment, so by the 60-min mark the lastTransition is almost
+  // always confirm-payment and the state is preauthorized.
+  'transition/confirm-payment',
 ]);
 
 if (DRY) {
@@ -177,7 +181,7 @@ async function sendLenderRequestReminders() {
 
     const query = {
       lastTransitions:
-        'transition/request-payment,transition/request-payment-after-inquiry',
+        'transition/request-payment,transition/request-payment-after-inquiry,transition/confirm-payment',
       include: ['listing', 'provider', 'customer'],
       'fields.listing': 'title',
       'fields.provider': 'profile',
@@ -218,7 +222,16 @@ async function sendLenderRequestReminders() {
       throw queryError;
     }
 
-    console.log(`[lender-request-reminder] Found ${transactions.length} preauthorized transactions`);
+    console.log(`[lender-request-reminder] Found ${transactions.length} eligible transactions`);
+    if (transactions.length > 0) {
+      // Log first few transactions for debugging state/transition visibility
+      for (const t of transactions.slice(0, 5)) {
+        const a = t?.attributes || {};
+        const ageMin = a.createdAt ? Math.round((Date.now() - new Date(a.createdAt).getTime()) / 60000) : '?';
+        console.log(`[lender-request-reminder]   tx=${t?.id?.uuid} state=${a.state} last=${a.lastTransition} ageMin=${ageMin}`);
+      }
+      if (transactions.length > 5) console.log(`[lender-request-reminder]   ... and ${transactions.length - 5} more`);
+    }
 
     const now = new Date();
     const nowMs = now.getTime();
@@ -233,8 +246,10 @@ async function sendLenderRequestReminders() {
       const lastTransition = attrs.lastTransition;
       const protectedData = attrs.protectedData || {};
 
-      // Re-check state & transition (query is a starting point, not a lock)
-      if (state !== 'preauthorized' || !REQUEST_TRANSITIONS.has(lastTransition)) {
+      // Re-check state & transition (query is a starting point, not a lock).
+      // pending-payment: Stripe hasn't confirmed yet (rare at 60m, but possible).
+      // preauthorized: Stripe confirmed, lender hasn't acted yet (the common case).
+      if ((state !== 'pending-payment' && state !== 'preauthorized') || !REQUEST_TRANSITIONS.has(lastTransition)) {
         if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — state=${state} lastTransition=${lastTransition}`);
         skipped++;
         continue;
