@@ -25,12 +25,24 @@ const { getAmountAsDecimalJS, convertDecimalJSToNumber, unitDivisor } = require(
  *   or freshly computed via transactionLineItems()).
  * @returns {Object|null} Money object ({ amount, currency }) or null.
  */
-function ensureMoney(value) {
-  if (value instanceof Money) return value;
-  if (value && typeof value.amount === 'number' && typeof value.currency === 'string') {
-    return new Money(value.amount, value.currency);
+/**
+ * Safely extract a numeric amount from a Money-like value.
+ * Handles: Money instances, plain { amount, currency } objects,
+ * and Sharetribe SDK Long objects ({ low_, high_ }).
+ */
+function toNumericAmount(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return value;
+  // goog.math.Long from the SDK transit layer
+  if (typeof value === 'object' && typeof value.low_ === 'number') {
+    // Long: (high_ * 2^32) + low_ (unsigned)
+    return (value.high_ || 0) * 4294967296 + (value.low_ >>> 0);
   }
-  return value;
+  if (typeof value.toString === 'function') {
+    const n = Number(value.toString());
+    if (!isNaN(n)) return n;
+  }
+  return null;
 }
 
 function calculateLenderPayoutTotal(lineItems) {
@@ -38,14 +50,45 @@ function calculateLenderPayoutTotal(lineItems) {
     if (!Array.isArray(lineItems) || lineItems.length === 0) {
       return null;
     }
-    // Integration SDK returns plain objects, not Money instances.
-    // Convert unitPrice and lineTotal so downstream helpers work.
-    const normalized = lineItems.map(li => ({
-      ...li,
-      unitPrice: ensureMoney(li.unitPrice),
-      lineTotal: ensureMoney(li.lineTotal),
-    }));
-    return calculateTotalForProvider(normalized);
+
+    // First try the standard path (works when lineItems have Money instances)
+    try {
+      return calculateTotalForProvider(lineItems);
+    } catch (_ignored) {
+      // Fall through to manual calculation
+    }
+
+    // Manual path for Integration SDK responses where amounts are plain
+    // objects or Long types instead of Money instances.
+    const providerItems = lineItems.filter(
+      li => Array.isArray(li.includeFor) && li.includeFor.includes('provider')
+    );
+    if (providerItems.length === 0) return null;
+
+    let totalAmount = 0;
+    let currency = null;
+
+    for (const li of providerItems) {
+      const lt = li.lineTotal;
+      if (!lt) continue;
+
+      const amt = toNumericAmount(lt.amount != null ? lt.amount : lt);
+      if (amt == null) {
+        console.warn('[lenderEarnings] Could not extract numeric amount from lineTotal:', lt);
+        continue;
+      }
+
+      // Grab currency from whichever field has it
+      if (!currency) {
+        currency = lt.currency || (li.unitPrice && li.unitPrice.currency) || null;
+      }
+
+      totalAmount += amt;
+    }
+
+    if (currency == null) return null;
+
+    return new Money(totalAmount, currency);
   } catch (e) {
     console.warn('[lenderEarnings] Could not calculate payout:', e.message);
     return null;
@@ -60,16 +103,17 @@ function calculateLenderPayoutTotal(lineItems) {
  * @returns {string|null}
  */
 function formatMoneyServerSide(money) {
-  if (!money || money.amount == null || !money.currency) {
+  if (!money || !money.currency) {
     return null;
   }
 
   try {
-    const amountDecimal = getAmountAsDecimalJS(money);
+    // Extract numeric amount, handling Money instances, plain objects, and Longs
+    let numericAmount = toNumericAmount(money.amount);
+    if (numericAmount == null) return null;
+
     const divisor = unitDivisor(money.currency);
-    const divisorDecimal = new Decimal(divisor);
-    const majorUnitsDecimal = amountDecimal.dividedBy(divisorDecimal);
-    const majorUnits = convertDecimalJSToNumber(majorUnitsDecimal);
+    const majorUnits = numericAmount / divisor;
 
     const currencySymbols = {
       USD: '$',
