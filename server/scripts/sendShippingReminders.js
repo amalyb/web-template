@@ -195,27 +195,28 @@ function formatDateForSMS(date) {
  */
 function isEndOfShipByDay(shipByDate) {
   if (!shipByDate) return false;
-  
+
   const now = new Date();
   const shipBy = new Date(shipByDate);
-  
-  // Normalize to UTC midnight
+
+  // Normalize to UTC midnight for date-only comparison
   shipBy.setUTCHours(0, 0, 0, 0);
   const today = new Date(now);
   today.setUTCHours(0, 0, 0, 0);
-  
-  // Check if same day
+
+  // Must be the ship-by date
   if (shipBy.getTime() !== today.getTime()) {
     return false;
   }
-  
-  // Check if it's late in the day (23:50 UTC or later)
-  // This ensures we catch it on any 15-minute cron run after 23:50
-  const hour = now.getUTCHours();
-  const minute = now.getUTCMinutes();
-  
-  // Consider end of day as 23:50 UTC or later (catches 23:50, 23:55, 00:00, etc.)
-  return hour >= 23 && minute >= 50;
+
+  // "End of day" window: 22:00 UTC onward on the ship-by date.
+  // - 22:00 UTC = 6pm EDT / 3pm PDT, late enough in a US workday that a
+  //   lender who hasn't scanned the label by now isn't likely to today.
+  // - Wide window (2+ hours) is cron-proof: with an hourly on-the-hour
+  //   cron, at least two ticks (22:00, 23:00) fall inside the window.
+  // - Redis :eod:sent idempotency guarantees only one SMS per tx per day
+  //   regardless of how many ticks hit the window.
+  return now.getUTCHours() >= 22;
 }
 
 /**
