@@ -29,6 +29,47 @@ try {
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
+const { getRedis } = require('../redis');
+
+// ──────────────────────────────────────────────────────────────────────────
+// Redis-backed idempotency (replaces protectedData.shippingReminders flags).
+// The Integration SDK does not expose sdk.transactions.update, so any write
+// to protectedData silently fails → same SMS re-sent on every cron tick.
+// Keys per transaction, per phase:
+//   shippingReminder:{txId}:24h:sent     (TTL 7 days)
+//   shippingReminder:{txId}:eod:sent     (TTL 7 days)
+//   shippingReminder:{txId}:cancel:sent  (TTL 7 days)
+//   shippingReminder:{txId}:{phase}:inFlight  (TTL 10 min)
+// ──────────────────────────────────────────────────────────────────────────
+const SENT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
+const INFLIGHT_TTL_SEC = 10 * 60; // 10 min — longer than any single send
+const redisKey = (txId, phase, suffix) => `shippingReminder:${txId}:${phase}:${suffix}`;
+
+async function isSent(redis, txId, phase) {
+  try { return !!(await redis.get(redisKey(txId, phase, 'sent'))); } catch { return false; }
+}
+async function isInFlight(redis, txId, phase) {
+  try { return !!(await redis.get(redisKey(txId, phase, 'inFlight'))); } catch { return false; }
+}
+async function markInFlight(redis, txId, phase) {
+  if (DRY) {
+    console.log(`[shipping-reminder] DRY-RUN: Would SET ${redisKey(txId, phase, 'inFlight')} (TTL ${INFLIGHT_TTL_SEC}s)`);
+    return;
+  }
+  await redis.set(redisKey(txId, phase, 'inFlight'), new Date().toISOString(), 'EX', INFLIGHT_TTL_SEC);
+}
+async function clearInFlight(redis, txId, phase) {
+  if (DRY) return;
+  try { await redis.del(redisKey(txId, phase, 'inFlight')); } catch {}
+}
+async function markSent(redis, txId, phase) {
+  if (DRY) {
+    console.log(`[shipping-reminder] DRY-RUN: Would SET ${redisKey(txId, phase, 'sent')} (TTL ${SENT_TTL_SEC}s)`);
+    return;
+  }
+  await redis.set(redisKey(txId, phase, 'sent'), new Date().toISOString(), 'EX', SENT_TTL_SEC);
+  try { await redis.del(redisKey(txId, phase, 'inFlight')); } catch {}
+}
 
 // ---- CLI flags / env guards ----
 const argv = process.argv.slice(2);
@@ -219,7 +260,8 @@ async function sendShippingReminders() {
     // Initialize SDK using centralized helper (same pattern as sendReturnReminders.js)
     // getFlexSdk() automatically uses Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
     const sdk = getFlexSdk();
-    
+    const redis = getRedis();
+
     // Log Integration SDK configuration (non-secret)
     const integrationClientId = process.env.INTEGRATION_CLIENT_ID || 'MISSING';
     const integrationBaseUrl =
@@ -332,10 +374,28 @@ async function sendShippingReminders() {
         }
         continue;
       }
-      
-      // Normalize shipBy to UTC midnight
+
+      // Anchor shipBy time-of-day to when the lender accepted.
+      // shipByDate from Sharetribe is typically a bare date at 00:00 UTC —
+      // using that directly makes the 24h reminder fire at midnight UTC
+      // (= late evening US time). Instead, use outbound.acceptedAt's hour/
+      // minute so the reminder goes out at the same time-of-day the lender
+      // first engaged. Falls back to 15:00 UTC (~11am ET / 8am PT) if
+      // acceptedAt is missing — a reasonable daytime default.
+      const acceptedAtRaw = outbound.acceptedAt || metadata.acceptedAt;
+      const acceptedAt = acceptedAtRaw ? new Date(acceptedAtRaw) : null;
       const shipBy = new Date(shipByDate);
-      shipBy.setUTCHours(0, 0, 0, 0);
+      if (acceptedAt && !Number.isNaN(+acceptedAt)) {
+        shipBy.setUTCHours(
+          acceptedAt.getUTCHours(),
+          acceptedAt.getUTCMinutes(),
+          0,
+          0
+        );
+      } else {
+        // Daytime default: 15:00 UTC = 11am EDT / 8am PDT
+        shipBy.setUTCHours(15, 0, 0, 0);
+      }
       
       // Get provider phone
       const providerRef = tx?.relationships?.provider?.data;
@@ -382,152 +442,123 @@ async function sendShippingReminders() {
       const hoursUntilShipBy = msUntilShipBy / (1000 * 60 * 60);
       const hoursAfterShipBy = -hoursUntilShipBy; // Negative if before, positive if after
       
-      // Check flags for duplicate prevention
-      const flags = protectedData.shippingReminders || {};
-      
       // 1. 24-hour before ship-by reminder
       // Send between (shipBy - 24h) and shipBy (i.e., within 24 hours before ship-by)
       // Use range check: hoursUntilShipBy > 0 (before shipBy) and hoursUntilShipBy <= 24
-      // This ensures we catch it on any 15-minute cron run in that window
-      if (hoursUntilShipBy > 0 && hoursUntilShipBy <= 24 && !flags.shippingReminderSent24h) {
-        console.log(`[shipping-reminder] Sending 24h reminder for tx ${txId}`);
-        
-        try {
-          const shortUrl = await shortLink(labelUrl);
-          const message = `Sherbrt 🍧 Reminder: Please ship your item by tomorrow (${shipByStr}). Shipping label: ${shortUrl}`;
-          
-          const smsResult = await sendSMS(providerPhone, message, {
-            role: 'lender',
-            tag: 'shipping_reminder_24h',
-            meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
-          });
-          
-          // Only mark as sent if SMS was actually sent
-          if (!smsResult?.skipped) {
-            try {
-              await sdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...protectedData,
-                    shippingReminders: {
-                      ...flags,
-                      shippingReminderSent24h: true
-                    }
-                  }
-                }
-              });
+      // With hourly cron + time-of-day-anchored shipBy, first tick in window
+      // fires at ~acceptedAt time-of-day one day before shipBy.
+      if (hoursUntilShipBy > 0 && hoursUntilShipBy <= 24) {
+        if (await isSent(redis, txId, '24h')) {
+          if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — already sent`);
+        } else if (await isInFlight(redis, txId, '24h')) {
+          if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — inFlight`);
+        } else {
+          console.log(`[shipping-reminder] Sending 24h reminder for tx ${txId}`);
+          try {
+            await markInFlight(redis, txId, '24h');
+            const shortUrl = await shortLink(labelUrl);
+            const message = `Sherbrt 🍧 Reminder: Please ship your item by tomorrow (${shipByStr}). Shipping label: ${shortUrl}`;
+
+            const smsResult = await sendSMS(providerPhone, message, {
+              role: 'lender',
+              tag: 'shipping_reminder_24h',
+              meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
+            });
+
+            if (!smsResult?.skipped) {
+              await markSent(redis, txId, '24h');
               console.log(`[shipping-reminder] Marked 24h reminder as sent for tx ${txId}`);
-            } catch (updateError) {
-              console.error(`[shipping-reminder] Failed to mark 24h reminder as sent:`, updateError.message);
+              sent24h++;
+            } else {
+              await clearInFlight(redis, txId, '24h');
+              console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking 24h reminder as sent for tx ${txId}`);
             }
-            
-            sent24h++;
-          } else {
-            console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking 24h reminder as sent for tx ${txId}`);
+          } catch (e) {
+            console.error(`[shipping-reminder] SMS failed for 24h reminder:`, e?.message || e);
+            await clearInFlight(redis, txId, '24h');
+            failed++;
           }
-        } catch (e) {
-          console.error(`[shipping-reminder] SMS failed for 24h reminder:`, e?.message || e);
-          failed++;
         }
       }
       
       // 2. End-of-ship-by-day "not scanned" alert
-      // Check if it's the ship-by date and it's late in the day
-      const isShipByDay = shipBy.getTime() === today.getTime();
-      if (isShipByDay && isEndOfShipByDay(shipByDate) && !flags.shippingReminderSentEndOfDay) {
-        console.log(`[shipping-reminder] Sending end-of-day reminder for tx ${txId}`);
-        
-        try {
-          const shortUrl = await shortLink(labelUrl);
-          const message = `Sherbrt 🍧: Your item hasn't been scanned yet. Please ship ASAP to receive your payment. Shipping label: ${shortUrl}`;
-          
-          const smsResult = await sendSMS(providerPhone, message, {
-            role: 'lender',
-            tag: 'shipping_reminder_end_of_day',
-            meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
-          });
-          
-          // Only mark as sent if SMS was actually sent
-          if (!smsResult?.skipped) {
-            try {
-              await sdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...protectedData,
-                    shippingReminders: {
-                      ...flags,
-                      shippingReminderSentEndOfDay: true
-                    }
-                  }
-                }
-              });
+      // Compare date-only (shipBy now has time-of-day from acceptedAt anchor)
+      const shipByDay = new Date(shipBy); shipByDay.setUTCHours(0, 0, 0, 0);
+      const isShipByDay = shipByDay.getTime() === today.getTime();
+      if (isShipByDay && isEndOfShipByDay(shipByDate)) {
+        if (await isSent(redis, txId, 'eod')) {
+          if (VERBOSE) console.log(`[shipping-reminder] Skip end-of-day for tx ${txId} — already sent`);
+        } else if (await isInFlight(redis, txId, 'eod')) {
+          if (VERBOSE) console.log(`[shipping-reminder] Skip end-of-day for tx ${txId} — inFlight`);
+        } else {
+          console.log(`[shipping-reminder] Sending end-of-day reminder for tx ${txId}`);
+          try {
+            await markInFlight(redis, txId, 'eod');
+            const shortUrl = await shortLink(labelUrl);
+            const message = `Sherbrt 🍧: Your item hasn't been scanned yet. Please ship ASAP to receive your payment. Shipping label: ${shortUrl}`;
+
+            const smsResult = await sendSMS(providerPhone, message, {
+              role: 'lender',
+              tag: 'shipping_reminder_end_of_day',
+              meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
+            });
+
+            if (!smsResult?.skipped) {
+              await markSent(redis, txId, 'eod');
               console.log(`[shipping-reminder] Marked end-of-day reminder as sent for tx ${txId}`);
-            } catch (updateError) {
-              console.error(`[shipping-reminder] Failed to mark end-of-day reminder as sent:`, updateError.message);
+              sentEndOfDay++;
+            } else {
+              await clearInFlight(redis, txId, 'eod');
+              console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking end-of-day reminder as sent for tx ${txId}`);
             }
-            
-            sentEndOfDay++;
-          } else {
-            console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking end-of-day reminder as sent for tx ${txId}`);
+          } catch (e) {
+            console.error(`[shipping-reminder] SMS failed for end-of-day reminder:`, e?.message || e);
+            await clearInFlight(redis, txId, 'eod');
+            failed++;
           }
-        } catch (e) {
-          console.error(`[shipping-reminder] SMS failed for end-of-day reminder:`, e?.message || e);
-          failed++;
         }
       }
       
       // 3. Auto-cancel after 48 hours past ship-by
       // Check if ship-by date has passed and we're 48-72 hours after
-      if (hoursAfterShipBy >= 48 && hoursAfterShipBy < 72 && !flags.shippingAutoCancelSent) {
-        console.log(`[shipping-reminder] Auto-cancel triggered for tx ${txId}`);
-        
-        // Cancel the transaction first
-        const cancelResult = await cancelTransaction(txId, sdk);
-        
-        if (cancelResult.success || cancelResult.error === 'invalid_state' || cancelResult.dryRun) {
-          // Send SMS after cancellation (or in dry-run mode)
-          try {
-            const message = `Sherbrt 🍧: Your item was not shipped out in time. This transaction has been canceled.`;
-            
-            const smsResult = await sendSMS(providerPhone, message, {
-              role: 'lender',
-              tag: 'shipping_auto_cancel',
-              meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
-            });
-            
-              // Only mark as sent if SMS was actually sent
+      if (hoursAfterShipBy >= 48 && hoursAfterShipBy < 72) {
+        if (await isSent(redis, txId, 'cancel')) {
+          if (VERBOSE) console.log(`[shipping-reminder] Skip auto-cancel for tx ${txId} — already sent`);
+        } else if (await isInFlight(redis, txId, 'cancel')) {
+          if (VERBOSE) console.log(`[shipping-reminder] Skip auto-cancel for tx ${txId} — inFlight`);
+        } else {
+          console.log(`[shipping-reminder] Auto-cancel triggered for tx ${txId}`);
+          await markInFlight(redis, txId, 'cancel');
+
+          const cancelResult = await cancelTransaction(txId, sdk);
+
+          if (cancelResult.success || cancelResult.error === 'invalid_state' || cancelResult.dryRun) {
+            try {
+              const message = `Sherbrt 🍧: Your item was not shipped out in time. This transaction has been canceled.`;
+              const smsResult = await sendSMS(providerPhone, message, {
+                role: 'lender',
+                tag: 'shipping_auto_cancel',
+                meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
+              });
+
               if (!smsResult?.skipped) {
-                try {
-                  await sdk.transactions.update({
-                    id: tx.id,
-                    attributes: {
-                      protectedData: {
-                        ...protectedData,
-                        shippingReminders: {
-                          ...flags,
-                          shippingAutoCancelSent: true
-                        }
-                      }
-                    }
-                  });
-                  console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
-                } catch (updateError) {
-                  console.error(`[shipping-reminder] Failed to mark auto-cancel as sent:`, updateError.message);
-                }
-              
-              sentCancel++;
-            } else {
-              console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking auto-cancel as sent for tx ${txId}`);
+                await markSent(redis, txId, 'cancel');
+                console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
+                sentCancel++;
+              } else {
+                await clearInFlight(redis, txId, 'cancel');
+                console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking auto-cancel as sent for tx ${txId}`);
+              }
+            } catch (e) {
+              console.error(`[shipping-reminder] SMS failed for auto-cancel:`, e?.message || e);
+              await clearInFlight(redis, txId, 'cancel');
+              failed++;
             }
-          } catch (e) {
-            console.error(`[shipping-reminder] SMS failed for auto-cancel:`, e?.message || e);
+          } else {
+            console.error(`[shipping-reminder] Failed to cancel transaction ${txId}, skipping SMS`);
+            await clearInFlight(redis, txId, 'cancel');
             failed++;
           }
-        } else {
-          console.error(`[shipping-reminder] Failed to cancel transaction ${txId}, skipping SMS`);
-          failed++;
         }
       }
       
