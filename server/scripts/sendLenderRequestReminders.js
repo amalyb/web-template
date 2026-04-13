@@ -39,39 +39,34 @@
  * real "send once" guarantee is the idempotency flag below.
  *
  * ──────────────────────────────────────────────────────────────────────────
- * IDEMPOTENCY CONTRACT (protectedData.lenderRequestReminder)
+ * IDEMPOTENCY CONTRACT (Redis-backed)
  * ──────────────────────────────────────────────────────────────────────────
- * We use a "flag-before-send with rollback" pattern to eliminate any
- * risk of double-texting a lender, at the (accepted) cost of very rarely
- * missing a reminder if a process crashes at exactly the wrong moment.
+ * We use a "flag-before-send" pattern backed by Redis to eliminate any
+ * risk of double-texting a lender. Redis (not protectedData) because the
+ * Integration SDK we run under doesn't expose transactions.update — and
+ * Redis is already used throughout the codebase (shortlinks, tracking,
+ * return reminders) for exactly this kind of ephemeral cross-run state.
  *
- * States of protectedData.lenderRequestReminder:
+ * Keys per transaction:
  *
- *   (unset)          → never attempted. Eligible to send.
- *   { inFlight, attemptedAt }
- *                    → another run (or this one) is mid-send.
- *                      - If attemptedAt is within the last 10 minutes,
- *                        skip (a concurrent run may be sending now).
- *                      - If attemptedAt is older than 10 minutes, we
- *                        assume the prior run sent the SMS but crashed
- *                        before writing sentAt. Treat as SENT. Skip.
- *                        (We'd rather miss a reminder than double-text.)
- *   { sentAt }       → already reminded. Skip forever.
- *   { failedAt, error, inFlight:false }
- *                    → prior send threw. Eligible to retry if still in
- *                      the 60–80m window.
+ *   lenderReminder:{txId}:sent     (TTL 7 days)  → SMS already sent
+ *   lenderReminder:{txId}:inFlight (TTL 10 min)  → a run is mid-send now
  *
  * Send sequence for each eligible tx:
  *
- *   1. Write { inFlight:true, attemptedAt: now }.
- *   2. Call sendSMS().
- *   3a. On success → write { sentAt: now } (clears inFlight).
- *   3b. On failure → write { inFlight:false, failedAt: now, error }.
- *       Next cron tick will retry if tx is still inside the window.
+ *   1. If :sent exists → skip.
+ *   2. If :inFlight exists → skip (another run — or a recently crashed
+ *      run — is/was mid-send; 10-min TTL auto-clears a true crash).
+ *   3. SET :inFlight with 10-min TTL.
+ *   4. Call sendSMS().
+ *   5a. On success → SET :sent (7-day TTL), DEL :inFlight.
+ *   5b. On failure → DEL :inFlight so next cron tick can retry if still
+ *       in the 60–80m window.
  *
- * If step 3 itself fails after a successful send, the inFlight flag
- * stays set. On the next run, the >10-minute staleness rule above
- * treats it as sent, so the lender is NOT re-texted.
+ * If step 5 itself fails after a successful send, the inFlight key stays
+ * until its 10-min TTL expires — by which point the tx has aged past the
+ * 80m upper bound of the send window and will no longer be picked up, so
+ * the lender is NOT re-texted.
  *
  * ──────────────────────────────────────────────────────────────────────────
  * CRON SCHEDULING (Render/Heroku)
@@ -96,6 +91,7 @@ try {
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { saleUrl } = require('../util/url');
+const { getRedis } = require('../redis');
 const {
   calculateLenderPayoutTotal,
   formatMoneyServerSide,
@@ -115,7 +111,10 @@ const ONLY_PHONE = process.env.ONLY_PHONE;
 
 const MIN_AGE_MS = 60 * 60 * 1000; // 60 minutes
 const MAX_AGE_MS = 80 * 60 * 1000; // 80 minutes (60 + one 15m cron tick + 5m slack)
-const INFLIGHT_STALE_MS = 10 * 60 * 1000; // 10 minutes
+const INFLIGHT_TTL_SEC = 10 * 60; // 10 minutes — longer than any one SMS send
+const SENT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days — comfortably outlasts 80m window
+
+const redisKey = (txId, suffix) => `lenderReminder:${txId}:${suffix}`;
 
 const REQUEST_TRANSITIONS = new Set([
   'transition/request-payment',
@@ -139,23 +138,31 @@ if (DRY) {
 }
 
 /**
- * Write protectedData.lenderRequestReminder for a tx.
- * No-op in DRY mode.
+ * Redis-backed idempotency helpers. No-op writes in DRY mode.
  */
-async function writeReminderFlag(sdk, tx, protectedData, patch) {
+async function markInFlight(redis, txId) {
   if (DRY) {
-    console.log('[lender-request-reminder] DRY-RUN: Would write lenderRequestReminder:', patch);
+    console.log(`[lender-request-reminder] DRY-RUN: Would SET ${redisKey(txId, 'inFlight')} (TTL ${INFLIGHT_TTL_SEC}s)`);
     return;
   }
-  await sdk.transactions.update({
-    id: tx.id,
-    attributes: {
-      protectedData: {
-        ...protectedData,
-        lenderRequestReminder: patch,
-      },
-    },
-  });
+  await redis.set(redisKey(txId, 'inFlight'), new Date().toISOString(), 'EX', INFLIGHT_TTL_SEC);
+}
+
+async function clearInFlight(redis, txId) {
+  if (DRY) {
+    console.log(`[lender-request-reminder] DRY-RUN: Would DEL ${redisKey(txId, 'inFlight')}`);
+    return;
+  }
+  await redis.del(redisKey(txId, 'inFlight'));
+}
+
+async function markSent(redis, txId) {
+  if (DRY) {
+    console.log(`[lender-request-reminder] DRY-RUN: Would SET ${redisKey(txId, 'sent')} (TTL ${SENT_TTL_SEC}s)`);
+    return;
+  }
+  await redis.set(redisKey(txId, 'sent'), new Date().toISOString(), 'EX', SENT_TTL_SEC);
+  await redis.del(redisKey(txId, 'inFlight'));
 }
 
 async function sendLenderRequestReminders() {
@@ -163,6 +170,7 @@ async function sendLenderRequestReminders() {
 
   try {
     const sdk = getFlexSdk();
+    const redis = getRedis();
 
     const integrationClientId = process.env.INTEGRATION_CLIENT_ID || 'MISSING';
     const integrationBaseUrl =
@@ -271,23 +279,24 @@ async function sendLenderRequestReminders() {
         continue;
       }
 
-      // Idempotency: inspect existing flag
-      const flag = protectedData.lenderRequestReminder || null;
-      if (flag?.sentAt) {
-        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — already sent at ${flag.sentAt}`);
+      // Idempotency: inspect Redis flags
+      let sentFlag = null;
+      let inFlightFlag = null;
+      try {
+        sentFlag = await redis.get(redisKey(txId, 'sent'));
+        inFlightFlag = await redis.get(redisKey(txId, 'inFlight'));
+      } catch (redisErr) {
+        console.error(`[lender-request-reminder] Redis read failed for tx ${txId}, skipping to be safe:`, redisErr.message);
         skipped++;
         continue;
       }
-      if (flag?.inFlight) {
-        const attemptedAtMs = flag.attemptedAt ? new Date(flag.attemptedAt).getTime() : 0;
-        const inFlightAge = nowMs - attemptedAtMs;
-        if (inFlightAge < INFLIGHT_STALE_MS) {
-          if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — inFlight (fresh, ${Math.round(inFlightAge / 1000)}s)`);
-          skipped++;
-          continue;
-        }
-        // Stale inFlight: treat as sent (rare-no-text > any-double-text)
-        console.log(`[lender-request-reminder] Skipping tx ${txId} — stale inFlight (${Math.round(inFlightAge / 60000)}m old), treating as sent`);
+      if (sentFlag) {
+        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — already sent at ${sentFlag}`);
+        skipped++;
+        continue;
+      }
+      if (inFlightFlag) {
+        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — inFlight since ${inFlightFlag}`);
         skipped++;
         continue;
       }
@@ -351,14 +360,10 @@ async function sendLenderRequestReminders() {
 
       const listingRef = tx?.relationships?.listing?.data;
       const listingId = listingRef?.id?.uuid || listingRef?.id || null;
-      const attemptedAtIso = new Date().toISOString();
 
-      // Step 1: flag inFlight BEFORE sending
+      // Step 1: flag inFlight BEFORE sending (10-min TTL auto-clears on crash)
       try {
-        await writeReminderFlag(sdk, tx, protectedData, {
-          inFlight: true,
-          attemptedAt: attemptedAtIso,
-        });
+        await markInFlight(redis, txId);
       } catch (flagErr) {
         console.error(`[lender-request-reminder] Failed to write inFlight flag for tx ${txId}, skipping:`, flagErr.message);
         failed++;
@@ -377,13 +382,9 @@ async function sendLenderRequestReminders() {
         console.error(`[lender-request-reminder] SMS failed for tx ${txId}:`, smsErr?.message || smsErr);
         // Rollback: clear inFlight so next cron tick can retry (if still in window)
         try {
-          await writeReminderFlag(sdk, tx, protectedData, {
-            inFlight: false,
-            failedAt: new Date().toISOString(),
-            error: String(smsErr?.message || smsErr).slice(0, 500),
-          });
+          await clearInFlight(redis, txId);
         } catch (rollbackErr) {
-          console.error(`[lender-request-reminder] Rollback write failed for tx ${txId}:`, rollbackErr.message);
+          console.error(`[lender-request-reminder] Rollback DEL failed for tx ${txId}:`, rollbackErr.message);
         }
         failed++;
         continue;
@@ -393,11 +394,7 @@ async function sendLenderRequestReminders() {
         // sendSMS decided not to send (e.g. suppression). Clear inFlight without marking sent.
         console.log(`[lender-request-reminder] SMS skipped by sendSMS (${smsResult.reason}) for tx ${txId}`);
         try {
-          await writeReminderFlag(sdk, tx, protectedData, {
-            inFlight: false,
-            skippedAt: new Date().toISOString(),
-            reason: smsResult.reason || 'unknown',
-          });
+          await clearInFlight(redis, txId);
         } catch (e) {
           console.error(`[lender-request-reminder] Failed to clear inFlight after sendSMS skip:`, e.message);
         }
@@ -405,16 +402,15 @@ async function sendLenderRequestReminders() {
         continue;
       }
 
-      // Step 3: mark sent. If this write fails, inFlight stays set → next
-      // run's staleness check (>10m) will treat it as sent. No double-text.
+      // Step 3: mark sent. If this write fails, inFlight stays set until its
+      // 10-min TTL expires — by then the tx has aged past the 80m window and
+      // won't be picked up again. No double-text.
       try {
-        await writeReminderFlag(sdk, tx, protectedData, {
-          sentAt: new Date().toISOString(),
-        });
+        await markSent(redis, txId);
         sent++;
         console.log(`[lender-request-reminder] Sent reminder for tx ${txId}`);
       } catch (postWriteErr) {
-        console.error(`[lender-request-reminder] SMS sent but post-write failed for tx ${txId} — inFlight will stale-expire as sent:`, postWriteErr.message);
+        console.error(`[lender-request-reminder] SMS sent but Redis SET :sent failed for tx ${txId} — inFlight will TTL-expire after 80m window:`, postWriteErr.message);
         sent++;
       }
 
@@ -426,7 +422,7 @@ async function sendLenderRequestReminders() {
 
     console.log(`\n[lender-request-reminder] Done. Sent=${sent} Skipped=${skipped} Failed=${failed} Processed=${processed}`);
     if (DRY) {
-      console.log('[lender-request-reminder] DRY-RUN mode: no real SMS were sent and no protectedData was updated.');
+      console.log('[lender-request-reminder] DRY-RUN mode: no real SMS were sent and no Redis keys were written.');
     }
   } catch (err) {
     console.error('[lender-request-reminder] Fatal:', {
