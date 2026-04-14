@@ -152,7 +152,7 @@ const LineItemBookingPeriod = props => {
       </div>
       {isSundayEndDate && showSundayEndDateNotice ? (
         <p className={css.sundayEndDateNotice}>
-          Sunday end date: carriers don't run Sundays — ship Monday to avoid a late fee.
+          Sunday end date: Carriers don't run - ship Monday to avoid a late fee.
         </p>
       ) : null}
       <hr className={css.totalDivider} />
