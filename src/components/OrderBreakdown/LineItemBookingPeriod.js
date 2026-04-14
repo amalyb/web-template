@@ -123,10 +123,22 @@ const LineItemBookingPeriod = props => {
   const localStartDate = displayStart || start;
   const localEndDateRaw = displayEnd || end;
 
-  const showInclusiveEndDate = [LINE_ITEM_DAY].includes(code);
-  const endDay = showInclusiveEndDate ? subtractTime(localEndDateRaw, 1, 'days') : localEndDateRaw;
+  // Day/night bookings are returned by Sharetribe with start/end normalized to UTC
+  // midnight regardless of listing timezone. Rendering them in the listing's local
+  // timezone (e.g. America/Los_Angeles) shifts the displayed date back by 1 day.
+  // For day-based bookings, always display in UTC so the date matches the booked day.
+  const isDayBased = [LINE_ITEM_DAY, LINE_ITEM_NIGHT].includes(code);
+  const displayTimeZone = isDayBased ? 'Etc/UTC' : timeZone;
 
-  const isSundayEndDate = endDay && new Date(endDay).getDay() === 0;
+  const showInclusiveEndDate = [LINE_ITEM_DAY].includes(code);
+  const endDay = showInclusiveEndDate
+    ? subtractTime(localEndDateRaw, 1, 'days', displayTimeZone)
+    : localEndDateRaw;
+
+  const isSundayEndDate =
+    endDay && (isDayBased
+      ? new Date(endDay).getUTCDay() === 0
+      : new Date(endDay).getDay() === 0);
 
   return (
     <>
@@ -135,7 +147,7 @@ const LineItemBookingPeriod = props => {
           startDate={localStartDate}
           endDate={endDay}
           dateType={dateType}
-          timeZone={timeZone}
+          timeZone={displayTimeZone}
         />
       </div>
       {isSundayEndDate ? (

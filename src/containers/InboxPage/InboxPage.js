@@ -10,6 +10,7 @@ import {
   propTypes,
   DATE_TYPE_DATE,
   DATE_TYPE_DATETIME,
+  LINE_ITEM_DAY,
   LINE_ITEM_NIGHT,
   LINE_ITEM_HOUR,
   LISTING_UNIT_TYPES,
@@ -99,15 +100,21 @@ const BookingTimeInfoMaybe = props => {
     ? DATE_TYPE_DATETIME
     : DATE_TYPE_DATE;
 
-  const timeZone = transaction?.listing?.attributes?.availabilityPlan?.timezone || 'Etc/UTC';
-  const { bookingStart, bookingEnd } = bookingData(transaction, lineItemUnitType, timeZone);
+  const listingTimeZone =
+    transaction?.listing?.attributes?.availabilityPlan?.timezone || 'Etc/UTC';
+  // Day/night bookings are stored as UTC-midnight boundaries by Sharetribe, so
+  // display them in UTC to avoid an off-by-one-day shift when the listing tz
+  // differs from UTC. Time-based (hour) bookings keep the listing timezone.
+  const isDayBased = [LINE_ITEM_DAY, LINE_ITEM_NIGHT].includes(lineItemUnitType);
+  const displayTimeZone = isDayBased ? 'Etc/UTC' : listingTimeZone;
+  const { bookingStart, bookingEnd } = bookingData(transaction, lineItemUnitType, displayTimeZone);
 
   return (
     <TimeRange
       startDate={bookingStart}
       endDate={bookingEnd}
       dateType={dateType}
-      timeZone={timeZone}
+      timeZone={displayTimeZone}
       {...rest}
     />
   );
