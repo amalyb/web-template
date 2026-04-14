@@ -45,4 +45,20 @@ services:
     nodeVersion: 20.10.0
     envVars:
       - key: NODE_ENV
-        value: production 
+        value: production
+
+  # Auto-cancel accepted-but-unshipped bookings.
+  # Start with AUTO_CANCEL_DRY_RUN=1 for at least a week before enabling live.
+  # Requires transition/auto-cancel-unshipped to be pushed to Sharetribe first.
+  - type: worker
+    name: auto-cancel-unshipped
+    env: node
+    plan: starter
+    buildCommand: yarn install && yarn run render-build
+    startCommand: node server/scripts/sendAutoCancelUnshipped.js --daemon
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTO_CANCEL_DRY_RUN
+        value: "1"

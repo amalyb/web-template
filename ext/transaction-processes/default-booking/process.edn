@@ -107,6 +107,20 @@
     {:name :action/cancel-booking}],
    :from :state/accepted,
    :to :state/cancelled}
+  ;; Fired by server/scripts/sendAutoCancelUnshipped.js when an accepted
+  ;; booking reaches its ship-by deadline (end of day 1 of booking, lender-
+  ;; local time; D+1 for Monday-start bookings) with no outbound carrier
+  ;; scan. Same actions as :transition/cancel but named separately for
+  ;; analytics (distinguish auto-cancels from manual operator cancels).
+  ;; Full refund includes rental + commission + shipping line items.
+  {:name :transition/auto-cancel-unshipped,
+   :actor :actor.role/operator,
+   :actions
+   [{:name :action/calculate-full-refund}
+    {:name :action/stripe-refund-payment}
+    {:name :action/cancel-booking}],
+   :from :state/accepted,
+   :to :state/cancelled}
   {:name :transition/review-1-by-provider,
    :actor :actor.role/provider,
    :actions [{:name :action/post-review-by-provider}],

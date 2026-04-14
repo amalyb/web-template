@@ -3,6 +3,7 @@ let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 const { shortLink } = require('../api-util/shortlink');
+const { hasOutboundScan } = require('../lib/txData');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -122,9 +123,11 @@ async function sendShipByReminders() {
       
       const protectedData = tx?.attributes?.protectedData || {};
       const outbound = protectedData.outbound || {};
-      
-      // Skip if already scanned
-      if (outbound.firstScanAt) {
+
+      // Skip if already scanned (checks outbound.firstScanAt,
+      // shippingNotification.firstScan.sent, and lastTrackingStatus — the
+      // three places a scan signal may land depending on webhook version).
+      if (hasOutboundScan(tx)) {
         continue;
       }
       

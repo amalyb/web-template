@@ -1166,6 +1166,13 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           shippingNotification: {
             ...(protectedData?.shippingNotification || {}),
             firstScan: { sent: true, sentAt: timestamp() } // ← respects FORCE_NOW
+          },
+          // Canonical outbound scan field (matches return.firstScanAt pattern).
+          // Consumed by hasOutboundScan() helper in server/lib/txData.js.
+          // Preserve earliest timestamp if the handler runs twice for same tx.
+          outbound: {
+            ...(protectedData?.outbound || {}),
+            firstScanAt: protectedData?.outbound?.firstScanAt || timestamp()
           }
         };
       }

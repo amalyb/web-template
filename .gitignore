@@ -20,3 +20,9 @@ yarn-error.log
 !.env.example
 yarn.lock
 .env.test
+
+# Local Claude tooling + scratch
+.claude/
+CLAUDE_CONTEXT.md
+drafts-3.2-auto-cancel/
+sherbrt_transaction_comms_v2.xlsx

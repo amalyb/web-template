@@ -72,10 +72,53 @@ async function readProtectedData(txId) {
   }
 }
 
-module.exports = { 
-  upsertProtectedData, 
+/**
+ * Returns true if the transaction's outbound package has had ANY carrier scan.
+ *
+ * Checks (in order):
+ *   1. Webhook's idempotency flag (primary, written at first-scan SMS time)
+ *   2. Canonical outbound.firstScanAt (written by webhook patch, 2026-04)
+ *   3. Last known tracking status (indicates physical movement)
+ *
+ * Used by ship-by reminders, overdue reminders, and the auto-cancel-unshipped
+ * cron job to decide whether a package is in motion.
+ */
+function hasOutboundScan(tx) {
+  const pd = tx?.attributes?.protectedData || {};
+
+  // Primary: webhook idempotency flag (set when first-scan SMS sends)
+  if (pd.shippingNotification?.firstScan?.sent === true) return true;
+
+  // Canonical field (written by shippoTracking.js on first-scan events)
+  if (pd.outbound?.firstScanAt) return true;
+
+  // Secondary: last tracking status indicates physical movement
+  const status = String(pd.lastTrackingStatus?.status || '').toUpperCase();
+  const movingStatuses = ['TRANSIT', 'IN_TRANSIT', 'ACCEPTED', 'OUT_FOR_DELIVERY', 'DELIVERED'];
+  if (movingStatuses.includes(status)) return true;
+
+  return false;
+}
+
+/**
+ * Returns ISO timestamp of first outbound scan, or null if not scanned.
+ */
+function getOutboundFirstScanAt(tx) {
+  const pd = tx?.attributes?.protectedData || {};
+  return (
+    pd.outbound?.firstScanAt ||
+    pd.shippingNotification?.firstScan?.sentAt ||
+    pd.lastTrackingStatus?.timestamp ||
+    null
+  );
+}
+
+module.exports = {
+  upsertProtectedData,
   fetchTx,
   readProtectedData,
-  deepMerge // Re-export for convenience
+  deepMerge, // Re-export for convenience
+  hasOutboundScan,
+  getOutboundFirstScanAt,
 };
 
