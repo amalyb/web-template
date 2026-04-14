@@ -110,7 +110,7 @@ const BookingPeriod = props => {
  * @returns {JSX.Element} line-item element for the order breakdown
  */
 const LineItemBookingPeriod = props => {
-  const { booking, code, dateType, timeZone } = props;
+  const { booking, code, dateType, timeZone, showSundayEndDateNotice = true } = props;
 
   if (!booking) {
     return null;
@@ -150,9 +150,9 @@ const LineItemBookingPeriod = props => {
           timeZone={displayTimeZone}
         />
       </div>
-      {isSundayEndDate ? (
+      {isSundayEndDate && showSundayEndDateNotice ? (
         <p className={css.sundayEndDateNotice}>
-          Sunday end date: ship your return Monday. You won't be charged late fees.
+          Sunday end date: carriers don't run Sundays — ship Monday to avoid a late fee.
         </p>
       ) : null}
       <hr className={css.totalDivider} />

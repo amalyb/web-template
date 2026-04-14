@@ -47,6 +47,7 @@ export const OrderBreakdownComponent = props => {
     currency,
     marketplaceName,
     intl,
+    showSundayEndDateNotice = true,
   } = props;
 
   const isCustomer = userRole === 'customer';
@@ -119,6 +120,7 @@ export const OrderBreakdownComponent = props => {
         code={lineItemUnitType}
         dateType={dateType}
         timeZone={timeZone}
+        showSundayEndDateNotice={showSundayEndDateNotice}
       />
 
       <LineItemBasePriceMaybe lineItems={lineItems} code={lineItemUnitType} intl={intl} />

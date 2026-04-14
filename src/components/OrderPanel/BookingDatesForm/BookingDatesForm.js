@@ -932,12 +932,6 @@ export const BookingDatesForm = props => {
 
             {errorMessage ? <p className={css.error}>{errorMessage}</p> : null}
 
-            {endDate && new Date(endDate).getDay() === 0 ? (
-              <p className={css.sundayEndDateNotice}>
-                Sunday end date: ship your return Monday. You won't be charged late fees.
-              </p>
-            ) : null}
-
             {seatsEnabled ? (
               <FieldSelect
                 name="seats"

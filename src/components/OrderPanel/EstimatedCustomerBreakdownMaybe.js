@@ -564,6 +564,7 @@ const EstimatedCustomerBreakdownMaybe = props => {
         currency={currency}
         marketplaceName={marketplaceName}
         processName={processName}
+        showSundayEndDateNotice={false}
       />
     );
   } catch (error) {
