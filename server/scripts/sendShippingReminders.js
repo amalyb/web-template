@@ -444,11 +444,17 @@ async function sendShippingReminders() {
       const hoursAfterShipBy = -hoursUntilShipBy; // Negative if before, positive if after
       
       // 1. 24-hour before ship-by reminder
-      // Send between (shipBy - 24h) and shipBy (i.e., within 24 hours before ship-by)
-      // Use range check: hoursUntilShipBy > 0 (before shipBy) and hoursUntilShipBy <= 24
-      // With hourly cron + time-of-day-anchored shipBy, first tick in window
-      // fires at ~acceptedAt time-of-day one day before shipBy.
-      if (hoursUntilShipBy > 0 && hoursUntilShipBy <= 24) {
+      // Normally the anchor is (shipBy - 24h). Mirror shipping.adjustIfSundayUTC:
+      // if that anchor lands on Sunday, roll back to Saturday same time-of-day
+      // so lenders aren't nudged on a day mail can't move. shipBy itself is
+      // already adjusted off Sunday upstream, so this branch only fires when
+      // shipBy is a Monday (→ natural anchor Sunday → shifted to Saturday).
+      let reminderAt = new Date(shipByMs - 24 * 60 * 60 * 1000);
+      if (reminderAt.getUTCDay() === 0) {
+        reminderAt = new Date(reminderAt.getTime() - 24 * 60 * 60 * 1000);
+      }
+      const isIn24hWindow = nowMs >= reminderAt.getTime() && nowMs < shipByMs;
+      if (isIn24hWindow) {
         if (await isSent(redis, txId, '24h')) {
           if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — already sent`);
         } else if (await isInFlight(redis, txId, '24h')) {
@@ -458,7 +464,7 @@ async function sendShippingReminders() {
           try {
             await markInFlight(redis, txId, '24h');
             const shortUrl = await shortLink(labelUrl);
-            const message = `Sherbrt 🍧 Reminder: Please ship your item by tomorrow (${shipByStr}). Shipping label: ${shortUrl}`;
+            const message = `Sherbrt 🍧 Reminder: Please ship your item by ${shipByStr}. Shipping label: ${shortUrl}`;
 
             const smsResult = await sendSMS(providerPhone, message, {
               role: 'lender',
@@ -529,12 +535,12 @@ async function sendShippingReminders() {
           if (VERBOSE) console.log(`[shipping-reminder] Skip auto-cancel for tx ${txId} — inFlight`);
         } else {
           console.log(`[shipping-reminder] Auto-cancel triggered for tx ${txId}`);
-          await markInFlight(redis, txId, 'cancel');
+          try {
+            await markInFlight(redis, txId, 'cancel');
 
-          const cancelResult = await cancelTransaction(txId, sdk);
+            const cancelResult = await cancelTransaction(txId, sdk);
 
-          if (cancelResult.success || cancelResult.error === 'invalid_state' || cancelResult.dryRun) {
-            try {
+            if (cancelResult.success || cancelResult.error === 'invalid_state' || cancelResult.dryRun) {
               const message = `Sherbrt 🍧: Your item was not shipped out in time. This transaction has been canceled.`;
               const smsResult = await sendSMS(providerPhone, message, {
                 role: 'lender',
@@ -550,13 +556,13 @@ async function sendShippingReminders() {
                 await clearInFlight(redis, txId, 'cancel');
                 console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking auto-cancel as sent for tx ${txId}`);
               }
-            } catch (e) {
-              console.error(`[shipping-reminder] SMS failed for auto-cancel:`, e?.message || e);
+            } else {
+              console.error(`[shipping-reminder] Failed to cancel transaction ${txId}, skipping SMS`);
               await clearInFlight(redis, txId, 'cancel');
               failed++;
             }
-          } else {
-            console.error(`[shipping-reminder] Failed to cancel transaction ${txId}, skipping SMS`);
+          } catch (e) {
+            console.error(`[shipping-reminder] Auto-cancel failed for tx ${txId}:`, e?.message || e);
             await clearInFlight(redis, txId, 'cancel');
             failed++;
           }

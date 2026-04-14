@@ -23,11 +23,16 @@ const TZ = 'America/Los_Angeles';
 const NON_CHARGEABLE_WEEKDAYS = [0]; // Sunday
 
 /**
- * USPS federal holidays (no mail delivery) for 2025 and 2026
- * Format: YYYY-MM-DD strings
- * 
- * TODO: Extend USPS_HOLIDAYS beyond 2026-12-25 before the 2027 calendar year.
+ * USPS federal holidays (no mail delivery) for 2025–2028
+ * Format: YYYY-MM-DD strings (observed dates)
+ *
+ * Maintenance: this list expires on USPS_HOLIDAYS_EXPIRES_AT below. A warning
+ * is logged at module load if we are within 90 days of expiration. Extend
+ * before that date by adding the next calendar year of observed holidays
+ * (source: https://about.usps.com/newsroom/events-calendar/).
  */
+const USPS_HOLIDAYS_EXPIRES_AT = '2028-12-25';
+
 const USPS_HOLIDAYS = new Set([
   // 2025
   '2025-01-01', // New Year's Day
@@ -47,13 +52,49 @@ const USPS_HOLIDAYS = new Set([
   '2026-02-16', // Presidents' Day / Washington's Birthday
   '2026-05-25', // Memorial Day
   '2026-06-19', // Juneteenth National Independence Day
-  '2026-07-03', // observed Independence Day
+  '2026-07-03', // observed Independence Day (Jul 4 is Sat)
   '2026-09-07', // Labor Day
   '2026-10-12', // Columbus Day / Indigenous Peoples' Day
   '2026-11-11', // Veterans Day
   '2026-11-26', // Thanksgiving Day
   '2026-12-25', // Christmas Day
+  // 2027
+  '2027-01-01', // New Year's Day
+  '2027-01-18', // Martin Luther King Jr. Day
+  '2027-02-15', // Presidents' Day / Washington's Birthday
+  '2027-05-31', // Memorial Day
+  '2027-06-18', // observed Juneteenth (Jun 19 is Sat)
+  '2027-07-05', // observed Independence Day (Jul 4 is Sun)
+  '2027-09-06', // Labor Day
+  '2027-10-11', // Columbus Day / Indigenous Peoples' Day
+  '2027-11-11', // Veterans Day
+  '2027-11-25', // Thanksgiving Day
+  '2027-12-24', // observed Christmas Day (Dec 25 is Sat)
+  '2027-12-31', // observed New Year's Day 2028 (Jan 1, 2028 is Sat)
+  // 2028
+  '2028-01-17', // Martin Luther King Jr. Day
+  '2028-02-21', // Presidents' Day / Washington's Birthday
+  '2028-05-29', // Memorial Day
+  '2028-06-19', // Juneteenth National Independence Day
+  '2028-07-04', // Independence Day
+  '2028-09-04', // Labor Day
+  '2028-10-09', // Columbus Day / Indigenous Peoples' Day
+  '2028-11-10', // observed Veterans Day (Nov 11 is Sat)
+  '2028-11-23', // Thanksgiving Day
+  '2028-12-25', // Christmas Day
 ]);
+
+// Warn if we're within 90 days of the holiday list expiring.
+try {
+  const expiresMs = new Date(`${USPS_HOLIDAYS_EXPIRES_AT}T00:00:00Z`).getTime();
+  const warnWindowMs = 90 * 24 * 60 * 60 * 1000;
+  if (Date.now() > expiresMs - warnWindowMs) {
+    console.warn(
+      `[businessDays] USPS_HOLIDAYS expires on ${USPS_HOLIDAYS_EXPIRES_AT}. ` +
+      `Extend the list with the next calendar year of observed federal holidays.`
+    );
+  }
+} catch (_) { /* non-fatal */ }
 
 /**
  * Check if a date is non-chargeable (Sunday or USPS holiday)
@@ -130,6 +171,7 @@ module.exports = {
   isNonChargeableDate,
   computeChargeableLateDays,
   USPS_HOLIDAYS,
+  USPS_HOLIDAYS_EXPIRES_AT,
   NON_CHARGEABLE_WEEKDAYS,
 };
 
