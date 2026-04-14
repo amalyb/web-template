@@ -107,6 +107,16 @@
   margin: 0 0 0 10px;
 }
 
+.sundayEndDateNotice {
+  composes: marketplaceSmallFontStyles from global;
+  background-color: var(--colorAttentionLight, #fff8e1);
+  border-left: 3px solid var(--colorAttention, #ffc107);
+  padding: 10px 14px;
+  margin: 8px 0 12px 0;
+  border-radius: 4px;
+  color: var(--colorGrey700);
+}
+
 .totalDivider {
   /* dimensions */
   width: 100%;

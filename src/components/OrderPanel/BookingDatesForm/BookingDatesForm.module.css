@@ -47,6 +47,16 @@
   display: inline-block;
 }
 
+.sundayEndDateNotice {
+  composes: marketplaceSmallFontStyles from global;
+  background-color: var(--colorAttentionLight, #fff8e1);
+  border-left: 3px solid var(--colorAttention, #ffc107);
+  padding: 12px 16px;
+  margin: 0 24px 16px 24px;
+  border-radius: 4px;
+  color: var(--colorGrey700);
+}
+
 .sideBarError {
   composes: h4 from global;
   color: var(--colorFail);

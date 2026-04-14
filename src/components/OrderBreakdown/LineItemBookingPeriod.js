@@ -126,6 +126,8 @@ const LineItemBookingPeriod = props => {
   const showInclusiveEndDate = [LINE_ITEM_DAY].includes(code);
   const endDay = showInclusiveEndDate ? subtractTime(localEndDateRaw, 1, 'days') : localEndDateRaw;
 
+  const isSundayEndDate = endDay && new Date(endDay).getDay() === 0;
+
   return (
     <>
       <div className={css.lineItem}>
@@ -136,6 +138,11 @@ const LineItemBookingPeriod = props => {
           timeZone={timeZone}
         />
       </div>
+      {isSundayEndDate ? (
+        <p className={css.sundayEndDateNotice}>
+          Sunday end date: ship your return Monday. You won't be charged late fees.
+        </p>
+      ) : null}
       <hr className={css.totalDivider} />
     </>
   );
