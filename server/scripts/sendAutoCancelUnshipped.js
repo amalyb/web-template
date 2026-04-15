@@ -132,6 +132,21 @@ async function processTransaction(tx, included, now, sdk) {
     return;
   }
 
+  // Process-version gate: transition/auto-cancel-unshipped only exists in
+  // default-booking v3 (pushed + aliased April 14, 2026). Transactions created
+  // under v1 or v2 can't accept this transition — firing it would return an
+  // "unknown transition" error. v1 txs can also have diverged booking/tx state
+  // (e.g., operator-declined booking while tx stays in accepted) because v1's
+  // state machine has no cancel-from-accepted path.
+  const processName = tx.attributes?.processName;
+  const processVersion = tx.attributes?.processVersion;
+  if (processName !== TX_PROCESS || processVersion !== 3) {
+    console.log(
+      `${logPrefix} not on ${TX_PROCESS} v3 (process=${processName} v${processVersion}), skipping`
+    );
+    return;
+  }
+
   const pd = tx.attributes?.protectedData || {};
 
   // Resolve included resources
@@ -139,6 +154,16 @@ async function processTransaction(tx, included, now, sdk) {
   const listing = findIncluded(included, tx.relationships?.listing);
   const customer = findIncluded(included, tx.relationships?.customer);
   const provider = findIncluded(included, tx.relationships?.provider);
+
+  // Booking-status gate: Sharetribe's booking.status is independent of
+  // transaction state. Operator-decline in Console on v1 txs marks the booking
+  // "declined" but leaves the tx state at accepted. Respect the booking-level
+  // signal so we never re-cancel an already-declined booking.
+  const bookingStatus = booking?.attributes?.state || booking?.attributes?.status;
+  if (bookingStatus && bookingStatus !== 'accepted' && bookingStatus !== 'proposed') {
+    console.log(`${logPrefix} booking.status=${bookingStatus} — not active, skipping`);
+    return;
+  }
 
   // Lender timezone from listing availability plan (set at listing creation),
   // fall back to PT.
