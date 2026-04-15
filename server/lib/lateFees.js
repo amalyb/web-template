@@ -24,7 +24,29 @@ const {
 } = require('./businessDays');
 
 // Configuration
-const LATE_FEE_CENTS = 1500; // $15/day
+// LATE_FEE_CENTS defaults to $15/day. Can be overridden in staging via
+// env var (e.g. LATE_FEE_CENTS_OVERRIDE=50 for $0.50 dry-runs).
+const LATE_FEE_CENTS = process.env.LATE_FEE_CENTS_OVERRIDE
+  ? parseInt(process.env.LATE_FEE_CENTS_OVERRIDE, 10)
+  : 1500;
+
+// Master kill switch for automatic overdue fee charging in applyCharges().
+// Default OFF. Flip to 'true' in the Render environment to enable.
+// SMS reminders in sendOverdueReminders.js are NOT gated by this flag.
+const OVERDUE_FEES_CHARGING_ENABLED =
+  String(process.env.OVERDUE_FEES_CHARGING_ENABLED || 'false').toLowerCase() === 'true';
+
+// Process-version floor for late-fee charging. Current live process is v3.
+// After pushing the privileged-apply-late-fees{,-non-return} transitions
+// via flex-cli (scope 9.0 PR-2) and flipping the alias, confirm the new
+// version number in the Sharetribe Console and bump this constant in the
+// same PR that flips the alias.
+const MIN_PROCESS_VERSION_FOR_LATE_FEES = 3;
+
+// Hard cap on chargeable days. Defense-in-depth alongside the day-6
+// SMS hard-stop in sendOverdueReminders.js.
+const MAX_CHARGEABLE_DAYS = 6;
+
 // Feature flag: gate automatic replacement charges (Day 5+) while keeping daily late fees
 const AUTO_REPLACEMENT_ENABLED = false;
 
@@ -151,7 +173,23 @@ async function applyCharges({ sdkInstance, txId, now }) {
     const tx = response.data.data;
     const included = response.data.included || [];
     const currentState = tx.attributes?.state;
-    
+
+    // ============================================================================
+    // GATE 1: Process-version floor.
+    // Late-fee privileged transitions only exist on v>=MIN_PROCESS_VERSION.
+    // Older txs skip cleanly with a structured reason. No throw.
+    // ============================================================================
+    const processVersion = tx.attributes?.processVersion;
+    if (!processVersion || processVersion < MIN_PROCESS_VERSION_FOR_LATE_FEES) {
+      console.log(`[lateFees] SKIP tx=${txId} reason=processVersion-too-old processVersion=${processVersion || 'null'} min=${MIN_PROCESS_VERSION_FOR_LATE_FEES}`);
+      return {
+        charged: false,
+        reason: 'processVersion-too-old',
+        processVersion: processVersion || null,
+        minRequired: MIN_PROCESS_VERSION_FOR_LATE_FEES,
+      };
+    }
+
     // Extract listing
     const listingRef = tx.relationships?.listing?.data;
     const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
@@ -267,11 +305,28 @@ async function applyCharges({ sdkInstance, txId, now }) {
     
     if (lateDays < 1) {
       console.log(`[lateFees] Not yet overdue - no charges apply`);
-      return { 
-        charged: false, 
-        reason: 'not-overdue', 
+      return {
+        charged: false,
+        reason: 'not-overdue',
         lateDays,
         scenario
+      };
+    }
+
+    // ============================================================================
+    // GATE 2: Day-6 hard cap.
+    // The cron already hard-stops SMS at Day 6. We mirror that cap here
+    // inside applyCharges() so an out-of-band caller can't accidentally
+    // bill past the policy ceiling.
+    // ============================================================================
+    if (lateDays > MAX_CHARGEABLE_DAYS) {
+      console.log(`[lateFees] SKIP tx=${txId} reason=exceeded-max-chargeable-days lateDays=${lateDays} max=${MAX_CHARGEABLE_DAYS}`);
+      return {
+        charged: false,
+        reason: 'exceeded-max-chargeable-days',
+        lateDays,
+        maxChargeableDays: MAX_CHARGEABLE_DAYS,
+        scenario,
       };
     }
     
@@ -339,8 +394,30 @@ async function applyCharges({ sdkInstance, txId, now }) {
       };
     }
     
+    // ============================================================================
+    // GATE 3: Feature flag.
+    // Master kill switch. Ships defaulted OFF. Until flipped to true in the
+    // Render env, every call here short-circuits with a structured reason
+    // and a `wouldCharge` summary so we can verify amounts in dry-run logs
+    // before enabling real billing in prod.
+    // ============================================================================
+    if (!OVERDUE_FEES_CHARGING_ENABLED) {
+      const wouldCharge = newLineItems.map(i => ({
+        code: i.code,
+        cents: i.unitPrice.amount,
+      }));
+      console.log(`[lateFees] SKIP tx=${txId} reason=feature-flag-disabled wouldCharge=${JSON.stringify(wouldCharge)} lateDays=${lateDays} scenario=${scenario}`);
+      return {
+        charged: false,
+        reason: 'feature-flag-disabled',
+        wouldCharge,
+        lateDays,
+        scenario,
+      };
+    }
+
     console.log(`[lateFees] Calling ${transitionName} with ${newLineItems.length} line items...`);
-    
+
     // Call privileged transition to apply charges
     // Provide both 'ctx/new-line-items' and 'lineItems' for compatibility
     await sdkInstance.transactions.transition({
