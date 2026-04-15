@@ -872,7 +872,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.log(`[TRACKINGLINK] Using short public link for return: ${publicTrackingUrl} (carrier: ${returnCarrier || 'unknown'})`);
         
         const shortTrackingUrl = await shortLink(publicTrackingUrl);
-        const message = `📬 Return in transit: "${listingTitle}". Track: ${shortTrackingUrl}`;
+        const message = `📬 Sherbrt 🍧: "${listingTitle}" is on its way back to you! Track the return here: ${shortTrackingUrl}.`;
         
         const smsResult = await sendSMS(lenderPhone, message, {
           role: 'lender',
@@ -1037,14 +1037,88 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.error(`❌ [PAYOUT] Stack:`, payoutError.stack);
       }
       
-      return res.status(200).json({ 
-        success: true, 
-        message: alreadyHasScan 
+      return res.status(200).json({
+        success: true,
+        message: alreadyHasScan
           ? 'Return scan already recorded; payout guard evaluated'
           : 'Return first scan recorded; payout guard evaluated',
         transactionId: transaction.id
       });
     }
+
+    // Step 11: Return delivered → lender
+    // Fires when a return tracking event reports DELIVERED. Idempotent via
+    // protectedData.return.deliveredNotificationSentAt.
+    if (isReturnTracking && isDelivery) {
+      const returnPdAtDelivery = protectedData.return || {};
+      const alreadyNotifiedDelivered = !!returnPdAtDelivery.deliveredNotificationSentAt;
+
+      if (alreadyNotifiedDelivered) {
+        console.log(`[SHIPPO-WEBHOOK][RETURN-DELIVERED] already notified at ${returnPdAtDelivery.deliveredNotificationSentAt} — skipping`);
+        return res.status(200).json({
+          success: true,
+          message: 'Return delivered SMS already sent',
+          transactionId: transaction.id,
+        });
+      }
+
+      const lenderPhone = getLenderPhone(transaction);
+      if (!lenderPhone) {
+        console.warn('⚠️ [RETURN-DELIVERED] No lender phone — cannot send return-delivered SMS');
+        return res.status(200).json({
+          success: false,
+          message: 'No lender phone number found',
+          transactionId: transaction.id,
+        });
+      }
+
+      const rawTitle = transaction.attributes.listing?.title || 'your item';
+      const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
+      const message = `📦 Sherbrt 🍧: "${listingTitle}" is back home! Thanks for sharing your style! 🫶🏽 Just in case: bestie@sherbrt.com 💌`;
+
+      try {
+        const smsResult = await sendSMS(lenderPhone, message, {
+          role: 'lender',
+          transactionId: transaction.id,
+          transition: 'webhook/shippo-return-delivered',
+          tag: SMS_TAGS.RETURN_DELIVERED_TO_LENDER,
+          meta: {
+            listingId: transaction.attributes.listing?.id?.uuid || transaction.attributes.listing?.id,
+            trackingNumber,
+          },
+        });
+
+        if (smsResult && smsResult.skipped) {
+          console.log(`⚠️ [RETURN-DELIVERED] SMS skipped: ${smsResult.reason} — NOT recording deliveredNotificationSentAt`);
+          return res.status(200).json({
+            success: false,
+            message: `Return delivered SMS skipped: ${smsResult.reason}`,
+            skipped: true,
+            reason: smsResult.reason,
+          });
+        }
+
+        const txId = transaction.id.uuid || transaction.id;
+        await upsertProtectedData(txId, {
+          return: {
+            ...(returnPdAtDelivery || {}),
+            deliveredAt: returnPdAtDelivery.deliveredAt || timestamp(),
+            deliveredNotificationSentAt: timestamp(),
+          },
+        }, { source: 'webhook' });
+
+        console.log(`✅ [RETURN-DELIVERED] step-11 SMS sent to lender for tx ${txId}`);
+        return res.status(200).json({
+          success: true,
+          message: 'Return delivered SMS sent to lender',
+          transactionId: transaction.id,
+        });
+      } catch (err) {
+        console.error('❌ [RETURN-DELIVERED] Failed to send SMS:', err.message);
+        return res.status(500).json({ error: 'Failed to send return-delivered SMS' });
+      }
+    }
+
     // Check if SMS already sent (idempotency) based on event type for outbound
     if (!isReturnTracking) {
       // [SHIPPO DELIVERY DEBUG] Log idempotency check for delivered

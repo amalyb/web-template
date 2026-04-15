@@ -440,6 +440,12 @@ async function sendReturnReminders(allowExitOnError = true) {
         const custRef = tx?.relationships?.customer?.data;
         const custKey = custRef ? `${custRef.type}/${custRef.id?.uuid || custRef.id}` : null;
         const customer = custKey ? included.get(custKey) : null;
+
+        // resolve listing from included (for item title in SMS copy)
+        const listingRef = tx?.relationships?.listing?.data;
+        const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
+        const listing = listingKey ? included.get(listingKey) : null;
+        const itemTitle = listing?.attributes?.title || 'your item';
         
         // Prefer checkout-entered phone stored on the transaction, then fall back to profile phone
         const protectedData = tx?.attributes?.protectedData || {};
@@ -514,33 +520,24 @@ async function sendReturnReminders(allowExitOnError = true) {
           }
 
           // T-1 day: Send QR/label (use real label if available)
-          // Check for return label in priority order: QR URL (preferred), then label URL
-          let returnLabelUrl = pd.returnQrUrl ||  // Preferred: USPS QR code URL
-                              pd.returnLabelUrl || // Fallback: PDF label URL
-                              returnData.label?.url || 
-                              pd.returnLabel || 
-                              pd.shippingLabelUrl || 
-                              pd.returnShippingLabel;
-          
-          // If no return label exists, log warning (label should have been created during accept transition)
-          if (!returnLabelUrl && !returnData.tMinus1SentAt) {
-            console.warn(`[RETURN-REMINDER-DEBUG] [return-reminders] ⚠️ No return label found for tx ${tx?.id?.uuid || '(no id)'} - label should have been created during accept transition - SKIPPING`);
-            // Note: Creating a real Shippo label here would require addresses, parcel info, etc.
-            // For now, skip sending T-1 reminder if no label exists (better than sending placeholder)
+          // Canonical fields only: pd.returnQrUrl (preferred) / pd.returnLabelUrl (fallback).
+          // These are written atomically at the accept transition — if both are missing,
+          // skip this pass and let the next cron cycle or LATE reminder pick it up.
+          const returnLabelUrl = pd.returnQrUrl || pd.returnLabelUrl;
+
+          if (!returnLabelUrl) {
+            console.warn(`[RETURN-REMINDER][NO-LABEL] tx=${tx?.id?.uuid || '(no id)'} — no pd.returnQrUrl or pd.returnLabelUrl. Skipping this pass.`);
             continue;
           }
-          
+
           // Log whether we're using QR or label URL
           const labelType = pd.returnQrUrl ? 'QR' : 'label';
-          const labelSource = pd.returnQrUrl ? 'returnQrUrl' : 
-                             pd.returnLabelUrl ? 'returnLabelUrl' : 
-                             returnData.label?.url ? 'returnData.label.url' : 'other';
+          const labelSource = pd.returnQrUrl ? 'returnQrUrl' : 'returnLabelUrl';
           console.log(`[return-reminders] Using ${labelType} URL from ${labelSource} for tx ${tx?.id?.uuid || '(no id)'}`);
           
           const shortUrl = await shortLink(returnLabelUrl);
           console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-          const labelNoun = labelType === 'QR' ? 'QR code' : 'shipping label';
-          message = `📦 It's almost return time! Please ship your item back tomorrow using this ${labelNoun}: ${shortUrl}. Late fees are $15/day if it ships after the return date. Thanks for sharing style 💌`;
+          message = `📦 Sherbrt 🍧: It's almost return time! Use your QR/label to ship "${itemTitle}" back tomorrow: ${shortUrl}.`;
           tag = 'return_tminus1_to_borrower';
           
         } else if (reminderType === 'TODAY') {
@@ -591,20 +588,16 @@ async function sendReturnReminders(allowExitOnError = true) {
             continue;
           }
           
-          const returnLabelUrl = pd.returnQrUrl || // Preferred: USPS QR code URL
-                                pd.returnLabelUrl || 
-                                returnData.label?.url || 
-                                pd.returnLabel || 
-                                pd.shippingLabelUrl || 
-                                pd.returnShippingLabel;
+          // Canonical fields only — matches T-1 branch.
+          const returnLabelUrl = pd.returnQrUrl || pd.returnLabelUrl;
 
           if (returnLabelUrl) {
             const shortUrl = await shortLink(returnLabelUrl);
             console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-            message = `Sherbrt 🍧: 📦 Today's the day! Ship your Sherbrt item back: ${shortUrl}`;
+            message = `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Use your QR/label to ship back: ${shortUrl}.`;
             tag = 'return_reminder_today';
           } else {
-            message = `Sherbrt 🍧: 📦 Today's the day! Ship your Sherbrt item back. Check your dashboard for return instructions.`;
+            message = `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Check your dashboard for return instructions.`;
             tag = 'return_reminder_today_no_label';
           }
           
