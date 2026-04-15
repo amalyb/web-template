@@ -21,7 +21,7 @@
 // ⚠️  Without steps 2+3, the transition call will error with "unknown transition".
 
 const moment = require('moment-timezone');
-const sharetribeSdk = require('sharetribe-flex-sdk');
+const getFlexSdk = require('../util/getFlexSdk');
 const { upsertProtectedData, hasOutboundScan } = require('../lib/txData');
 const { voidShippoLabel } = require('../lib/shippo');
 let { sendSMS } = require('../api-util/sendSMS');
@@ -35,33 +35,15 @@ const DEFAULT_LENDER_TZ = 'America/Los_Angeles';
 // ============================================================
 // SDK
 // ============================================================
-
-// Trusted SDK for querying transactions (matches sendShipByReminders.js pattern).
-async function getScriptSdk() {
-  const CLIENT_ID = process.env.REACT_APP_SHARETRIBE_SDK_CLIENT_ID;
-  const CLIENT_SECRET = process.env.SHARETRIBE_SDK_CLIENT_SECRET;
-  const BASE_URL = process.env.REACT_APP_SHARETRIBE_SDK_BASE_URL;
-
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error('Missing Sharetribe credentials: REACT_APP_SHARETRIBE_SDK_CLIENT_ID and SHARETRIBE_SDK_CLIENT_SECRET required');
-  }
-
-  const sdk = sharetribeSdk.createInstance({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    baseUrl: BASE_URL,
-  });
-
-  const response = await sdk.exchangeToken();
-  const trustedToken = response.data;
-
-  return sharetribeSdk.createInstance({
-    clientId: CLIENT_ID,
-    clientSecret: CLIENT_SECRET,
-    baseUrl: BASE_URL,
-    tokenStore: sharetribeSdk.tokenStore.memoryStore(trustedToken),
-  });
-}
+//
+// Unified on the Integration SDK (via getFlexSdk()) so both the listing/booking
+// query AND the operator-actor transition use the same auth path as every
+// other cron in this project (sendShippingReminders, sendReturnReminders,
+// sendOverdueReminders, etc.). Requires:
+//   - INTEGRATION_CLIENT_ID
+//   - INTEGRATION_CLIENT_SECRET
+// in the cron's env vars. No exchangeToken() call, so no marketplace user-app
+// credential coupling.
 
 // ============================================================
 // TIME HELPERS
@@ -95,9 +77,9 @@ function isPastCancelDeadline(now, bookingStartUtc, lenderTz) {
 // ============================================================
 
 // Resolve an included resource given a relationship ref. Handles both
-// shapes:
-//  - trusted SDK: `included` is a Map keyed "type/id"
-//  - integration/raw: `included` is an Array of resources
+// shapes, so this is safe even if we ever switch SDKs again:
+//  - marketplace SDK: `included` is a Map keyed "type/id"
+//  - integration SDK: `included` is an Array of resources
 function findIncluded(included, ref) {
   if (!ref || !included) return null;
   const data = ref.data || ref;
@@ -140,7 +122,7 @@ async function fetchAcceptedBookings(sdk) {
   };
 }
 
-async function processTransaction(tx, included, now) {
+async function processTransaction(tx, included, now, sdk) {
   const txId = tx.id?.uuid || tx.id;
   const logPrefix = `[auto-cancel-unshipped][${txId}]`;
 
@@ -206,9 +188,7 @@ async function processTransaction(tx, included, now) {
 
   // 1) Fire transition via Integration SDK (operator transition).
   //    Full refund happens via process.edn actions.
-  const { getIntegrationSdk } = require('../api-util/integrationSdk');
-  const iSdk = getIntegrationSdk();
-  await iSdk.transactions.transition({
+  await sdk.transactions.transition({
     id: txId,
     transition: TRANSITION,
     params: {},
@@ -298,13 +278,13 @@ async function runOnce() {
   console.log(`[auto-cancel-unshipped] run @ ${now.toISOString()} dry=${DRY_RUN}`);
 
   try {
-    const sdk = await getScriptSdk();
+    const sdk = getFlexSdk();
     const { txs, included } = await fetchAcceptedBookings(sdk);
     console.log(`[auto-cancel-unshipped] ${txs.length} accepted tx(s)`);
 
     for (const tx of txs) {
       try {
-        await processTransaction(tx, included, now);
+        await processTransaction(tx, included, now, sdk);
       } catch (err) {
         console.error(`[auto-cancel-unshipped] tx ${tx.id?.uuid || tx.id} failed:`, err);
       }
@@ -346,8 +326,8 @@ module.exports = {
 // [ ] 1. process.edn pushed to Sharetribe via flex-cli and alias flipped
 // [x] 2. voidShippoLabel() helper (server/lib/shippo.js) — implemented
 // [x] 3. Lender timezone: uses listing.attributes.availabilityPlan.timezone
-// [x] 4. SDK query matches sendShipByReminders.js pattern (trusted SDK,
-//        `included` as Map, `state: 'accepted'`, per_page 100)
+// [x] 4. SDK unified on Integration SDK via getFlexSdk() to match every other
+//        cron (sendShippingReminders, sendReturnReminders, sendOverdueReminders)
 // [x] 5. sendSMS called with positional signature (to, message, opts)
 // [x] 6. bookingStart read from included booking resource, not tx.booking
 // [ ] 7. Test with AUTO_CANCEL_DRY_RUN=1 for at least a week before

@@ -21,7 +21,7 @@ async function getScriptSdk() {
     clientSecret: CLIENT_SECRET,
     baseUrl: BASE_URL,
   });
-  
+
   // Exchange token to get trusted access
   const response = await sdk.exchangeToken();
   const trustedToken = response.data;
