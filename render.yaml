@@ -48,14 +48,22 @@ services:
         value: production
 
   # Auto-cancel accepted-but-unshipped bookings.
+  # NOTE: This file is NOT auto-synced to Render in this project — the service
+  # was created manually as a Cron Job in the Render UI. This block is kept as
+  # documentation of intended config. Matches live service:
+  #   schedule: hourly (0 * * * *)
+  #   command: --once (cron restarts the process each run)
   # Start with AUTO_CANCEL_DRY_RUN=1 for at least a week before enabling live.
   # Requires transition/auto-cancel-unshipped to be pushed to Sharetribe first.
-  - type: worker
+  # Integration SDK credentials (INTEGRATION_CLIENT_ID/SECRET) must be present
+  # in the Render env — same values as the lender-shipping-reminders cron.
+  - type: cron
     name: auto-cancel-unshipped
     env: node
     plan: starter
+    schedule: "0 * * * *"
     buildCommand: yarn install && yarn run render-build
-    startCommand: node server/scripts/sendAutoCancelUnshipped.js --daemon
+    startCommand: node server/scripts/sendAutoCancelUnshipped.js --once
     nodeVersion: 20.10.0
     envVars:
       - key: NODE_ENV
