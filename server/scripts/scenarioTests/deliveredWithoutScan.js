@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 /**
  * Scenario: Delivered state without return scan.
- * Verifies it is treated as non-return overdue and never auto-payouts.
+ *
+ * Policy (post-PR-2): once a transaction reaches :state/delivered, the item
+ * is considered returned and late fees stop regardless of scan data. This
+ * covers data anomalies (missed webhook, operator move) and — in the future —
+ * non-scan return paths like hand-courier delivery.
+ *
+ * Verifies applyCharges() returns { charged: false, reason: 'delivered-without-scan' }
+ * and that the transaction never auto-payouts.
  */
 require('dotenv').config();
 
@@ -74,9 +81,9 @@ async function main() {
   assertions.push(
     assertInvariant({
       tag: TAG,
-      condition: lateResult.scenario === 'non-return',
-      success: `Classified as non-return (lateDays=${lateResult.lateDays ?? 'n/a'})`,
-      failure: `Unexpected scenario classification: ${lateResult.scenario}`,
+      condition: lateResult.charged === false && lateResult.reason === 'delivered-without-scan',
+      success: `Skipped with reason 'delivered-without-scan' (no charge attempted)`,
+      failure: `Unexpected result: charged=${lateResult.charged} reason=${lateResult.reason}`,
     })
   );
 
@@ -89,6 +96,11 @@ async function main() {
     })
   );
 
+  // Post-PR-2: the delivered-without-scan branch returns early without
+  // computing lateDays, so this block is effectively unreachable. Left in
+  // place as a guard — if policy ever changes to resume charging in this
+  // state, we want the replacement-at-day-5 invariant re-activated
+  // automatically rather than silently dropped.
   if (typeof lateResult.lateDays === 'number' && lateResult.lateDays >= 5) {
     assertions.push(
       assertInvariant({

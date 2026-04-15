@@ -398,19 +398,18 @@ async function sendOverdueReminders() {
       
       const returnDate = new Date(returnDueAt);
       const hasScan = !!returnData.firstScanAt;
-      const isDeliveredWithoutScan = currentState === 'delivered' && !hasScan;
-      
+
       // Determine scenario and check if transaction qualifies
       let scenario;
       let shouldProcess = false;
       let precomputedDaysLate;
-      
+
       if (currentState === 'delivered' && hasScan) {
         // SCENARIO A: Returned late (has scan, in delivered state)
         // Check if scan date is after return due date (using chargeable late days)
         const scanDate = new Date(returnData.firstScanAt);
         const daysLate = computeChargeableLateDays(scanDate, returnDate);
-        
+
         if (daysLate >= 1) {
           scenario = 'delivered-late';
           shouldProcess = true;
@@ -418,41 +417,35 @@ async function sendOverdueReminders() {
         } else {
           if (VERBOSE) console.log(`✅ Returned on time for tx ${tx?.id?.uuid || '(no id)'} - no late fees`);
         }
-      } else if ((currentState === 'accepted' || currentState === 'delivered') && !hasScan) {
-        // SCENARIO B: Never returned (no scan, accepted OR delivered state)
+      } else if (currentState === 'delivered' && !hasScan) {
+        // POLICY SKIP (post-PR-2): once a tx reaches :state/delivered, the
+        // item is considered returned; SMS + charging both stop, regardless
+        // of scan data. Mirrors the skip in server/lib/lateFees.js. Covers
+        // missed webhooks, operator moves, and future non-scan return paths
+        // (e.g. hand-courier delivery). WARN so data anomalies still surface.
+        console.warn(`[OVERDUE] SKIP tx=${tx?.id?.uuid || '(no id)'} reason=delivered-without-scan state=${currentState} — review tx for data anomaly or non-scan return path`);
+        continue;
+      } else if (currentState === 'accepted' && !hasScan) {
+        // SCENARIO B: Never returned (no scan, still in accepted state)
         // Check if today is past return due date (using chargeable late days)
         const daysLate = computeChargeableLateDays(todayDate, returnDate);
         precomputedDaysLate = daysLate;
-        
+
         if (daysLate >= 1) {
           scenario = 'non-return';
           shouldProcess = true;
-          const baseLog = `[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} chargeable days late (due: ${ymd(returnDate)}, today: ${today}, state: ${currentState})`;
-          console.log(baseLog);
-          if (isDeliveredWithoutScan) {
-            console.log('[OVERDUE][DELIVERED-WITHOUT-SCAN][PROCESSING]', {
-              txId: tx?.id?.uuid || tx?.id,
-              state: currentState,
-              returnDue: ymd(returnDate),
-              today,
-            });
-          }
+          console.log(`[LATE FEES] SCENARIO B: Never returned - tx ${tx?.id?.uuid || '(no id)'}, ${daysLate} chargeable days late (due: ${ymd(returnDate)}, today: ${today}, state: ${currentState})`);
         } else {
-          if (isDeliveredWithoutScan) {
-            console.log('[OVERDUE][DELIVERED-WITHOUT-SCAN][SKIP]', {
-              txId: tx?.id?.uuid || tx?.id,
-              state: currentState,
-              reason: 'not yet past due',
-              returnDue: ymd(returnDate),
-              today,
-            });
-          } else if (VERBOSE) {
-            console.log(`⏭️ Not yet overdue for tx ${tx?.id?.uuid || '(no id)'}`);
-          }
+          if (VERBOSE) console.log(`⏭️ Not yet overdue for tx ${tx?.id?.uuid || '(no id)'}`);
         }
       } else {
-        // Skip unexpected combinations
-        if (VERBOSE) {
+        // Remaining case: accepted + hasScan (borrower shipped; carrier in
+        // transit; complete-return hasn't fired yet). Matches the
+        // 'borrower-shipped-in-transit' skip in server/lib/lateFees.js.
+        // Normal multi-day transit window, not an error.
+        if (currentState === 'accepted' && hasScan) {
+          console.log(`[OVERDUE] SKIP tx=${tx?.id?.uuid || '(no id)'} reason=borrower-shipped-in-transit state=${currentState} firstScanAt=${returnData.firstScanAt || 'unknown'}`);
+        } else if (VERBOSE) {
           console.log(`⏭️ Skipping tx ${tx?.id?.uuid || '(no id)'} - state=${currentState}, hasScan=${hasScan} (unexpected combination)`);
         }
         continue;
@@ -690,6 +683,18 @@ async function sendOverdueReminders() {
                   };
                   
                   const protectedPatch = { return: updatedReturnData };
+                  // TODO(PR-follow-up, 9.x): neither transition below exists in
+                  // the live default-booking process.edn (nor in the backup).
+                  // Every SMS send today silently fails this transition call;
+                  // the error is caught + logged and SMS still dispatches, but
+                  // `lastNotifiedDay` never persists to Flex. Dedupe relies on
+                  // the in-memory `runNotificationGuard`, which means a cron
+                  // restart mid-run can re-send the same day's SMS. Options:
+                  //   (a) add these two transitions to process.edn (mirror of
+                  //       privileged-apply-late-fees shape, no Stripe actions)
+                  //   (b) migrate to Redis idempotency like lender/shipping
+                  //       reminders did in April 2026 (pattern in CLAUDE_CONTEXT)
+                  // Not touched in PR-2 to keep scope tight. Flagged by CC review.
                   const overdueTransition =
                     currentState === 'delivered'
                       ? 'transition/privileged-set-overdue-notified-delivered'

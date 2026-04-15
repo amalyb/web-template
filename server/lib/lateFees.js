@@ -36,12 +36,11 @@ const LATE_FEE_CENTS = process.env.LATE_FEE_CENTS_OVERRIDE
 const OVERDUE_FEES_CHARGING_ENABLED =
   String(process.env.OVERDUE_FEES_CHARGING_ENABLED || 'false').toLowerCase() === 'true';
 
-// Process-version floor for late-fee charging. Current live process is v3.
-// After pushing the privileged-apply-late-fees{,-non-return} transitions
-// via flex-cli (scope 9.0 PR-2) and flipping the alias, confirm the new
-// version number in the Sharetribe Console and bump this constant in the
-// same PR that flips the alias.
-const MIN_PROCESS_VERSION_FOR_LATE_FEES = 3;
+// Process-version floor for late-fee charging. Bumped to v4 alongside the
+// 9.0 PR-2 push that added transition/privileged-apply-late-fees{,-non-return}.
+// Earlier-version transactions predate the late-fee transitions and are
+// skipped cleanly with reason 'processVersion-too-old'.
+const MIN_PROCESS_VERSION_FOR_LATE_FEES = 4;
 
 // Hard cap on chargeable days. Defense-in-depth alongside the day-6
 // SMS hard-stop in sendOverdueReminders.js.
@@ -219,8 +218,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
     // Detect scenario based on state and firstScanAt
     const hasScan = isScanned(returnData);
     const scanDate = returnData.firstScanAt ? dayjs(returnData.firstScanAt) : null;
-    const isDeliveredWithoutScan = currentState === 'delivered' && !hasScan;
-    
+
     let scenario, lateDays, transitionName, effectiveDate;
     
     // ============================================================================
@@ -259,47 +257,63 @@ async function applyCharges({ sdkInstance, txId, now }) {
       console.log(`[lateFees] State: ${currentState}, Scan date: ${ymd(scanDate)}, Return due: ${ymd(returnDueAt)}`);
       console.log(`[lateFees] Days late (based on scan): ${lateDays}`);
       
-    } else if ((currentState === 'accepted' || currentState === 'delivered') && !hasScan) {
-      // SCENARIO B: Never returned (no scan, accepted OR delivered state)
+    } else if (currentState === 'accepted' && !hasScan) {
+      // SCENARIO B: Never returned (no scan, still in accepted state)
       scenario = 'non-return';
       effectiveDate = dayjs(now);
-      
+
       // When no scan exists, lateDays is calculated using today vs due date.
       // This tracks ongoing lateness for items that haven't been returned yet.
       // Calculate late days based on today (how many days past due)
       lateDays = computeChargeableLateDays(now, returnDueAt);
-      
+
       transitionName = 'transition/privileged-apply-late-fees-non-return';
-      
+
       console.log(`[lateFees] SCENARIO B: Never returned (state=${currentState})`);
       console.log(`[lateFees] No scan, Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}`);
       console.log(`[lateFees] Days late (based on today): ${lateDays}`);
-      if (isDeliveredWithoutScan) {
-        console.log('[lateFees][DELIVERED-WITHOUT-SCAN][PROCESSING]', {
-          state: currentState,
-          txId,
-          returnDue: ymd(returnDueAt),
-          today: ymd(now),
-        });
-      }
-      
-    } else {
-      // Unexpected state/scenario combination
-      const reason = currentState === 'delivered' && !hasScan
-        ? 'delivered-without-scan (unexpected)'
-        : currentState === 'accepted' && hasScan
-        ? 'accepted-with-scan (should be delivered)'
-        : `state-${currentState}-unhandled`;
-      
-      console.log(`[lateFees] ⚠️ Unexpected scenario: state=${currentState}, hasScan=${hasScan}`);
-      console.log(`[lateFees] Skipping transaction (reason: ${reason})`);
-      
+
+    } else if (currentState === 'accepted' && hasScan) {
+      // POLICY SKIP: Borrower has shipped the return (first scan recorded) but
+      // the package is still in transit — complete-return hasn't fired yet.
+      // The late fee clock stops at first scan; we do not penalize borrowers
+      // for carrier transit time. Normal multi-day window, not an error.
+      // Log the raw ISO firstScanAt (not just the YMD date) so future
+      // staleness investigations can grep for scans older than N days.
+      console.log(`[lateFees] SKIP tx=${txId} reason=borrower-shipped-in-transit state=${currentState} firstScanAt=${returnData.firstScanAt || 'unknown'}`);
       return {
         charged: false,
-        reason: reason,
-        scenario: 'unexpected',
+        reason: 'borrower-shipped-in-transit',
         state: currentState,
-        hasScan
+        hasScan: true,
+        firstScanAt: returnData.firstScanAt || null,
+        scanDate: scanDate ? ymd(scanDate) : null,
+      };
+
+    } else if (currentState === 'delivered' && !hasScan) {
+      // POLICY SKIP: Transaction reached :state/delivered without a scan on
+      // record. Possible causes: operator move, missed webhook, or (future)
+      // a non-scan return path such as hand-courier delivery. Policy: once
+      // state is delivered, the item is considered returned and late fees
+      // stop regardless of scan data. Logged at WARN so data anomalies still
+      // surface for investigation until non-scan return paths are formalized.
+      console.warn(`[lateFees] SKIP tx=${txId} reason=delivered-without-scan state=${currentState} — review tx for data anomaly or non-scan return path`);
+      return {
+        charged: false,
+        reason: 'delivered-without-scan',
+        state: currentState,
+        hasScan: false,
+      };
+
+    } else {
+      // Genuine unexpected state (e.g. preauthorized, cancelled, expired).
+      // Shouldn't happen inside the overdue cron's query, but guard anyway.
+      console.log(`[lateFees] SKIP tx=${txId} reason=state-${currentState}-unhandled hasScan=${hasScan}`);
+      return {
+        charged: false,
+        reason: `state-${currentState}-unhandled`,
+        state: currentState,
+        hasScan,
       };
     }
     
@@ -418,13 +432,13 @@ async function applyCharges({ sdkInstance, txId, now }) {
 
     console.log(`[lateFees] Calling ${transitionName} with ${newLineItems.length} line items...`);
 
-    // Call privileged transition to apply charges
-    // Provide both 'ctx/new-line-items' and 'lineItems' for compatibility
+    // Call privileged transition to apply charges.
+    // :action/privileged-set-line-items reads from params.lineItems; no other
+    // key is documented or consumed by any Flex action.
     await sdkInstance.transactions.transition({
       id: txId,
       transition: transitionName,
       params: {
-        'ctx/new-line-items': newLineItems,
         lineItems: newLineItems,
         protectedData: {
           ...protectedData,
