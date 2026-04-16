@@ -299,12 +299,14 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 **Flag status unchanged:** `OVERDUE_FEES_CHARGING_ENABLED` still defaults `false`. No charges will land in Stripe until the flag is flipped in Render (PR-5). PR-2 is purely "the charging path now has real transitions behind it and the skip-reasons are symmetric between cron and lib."
 
-**PR-3 backlog (queued during PR-2 review):**
-- Add missing `transition/privileged-set-overdue-notified` (from `:state/accepted`) and `transition/privileged-set-overdue-notified-delivered` (from `:state/delivered`) to `process.edn` — mirror of `privileged-apply-late-fees` shape minus the Stripe action. Fixes the silent-fail on `lastNotifiedDay` persistence that forces dedupe onto in-memory guard. Alternative: migrate to Redis idempotency like the shipping/lender reminders did.
-- Scenario A per-day charging fix: currently `effectiveYmd = ymd(scanDate)` is pinned, so the `lastLateFeeDayCharged !== effectiveYmd` idempotency check blocks re-charging after the first tick. A borrower who scans 3 business days late gets $15 once, not $45. Policy intent per amalia April 15: "each day late = $15", so fix is `quantity: lateDays` in the line-item build with a one-shot guard after scan.
-- Day-6 email alert: fire-and-forget `sendEmail(amalyb@gmail.com, ...)` next to the existing `[OVERDUE][DAY6_SENT]` console.log in `sendOverdueReminders.js`. Needed because the day-6 SMS commits "replacement will be charged" — email gives operator a reliable cue for manual replacement action. Uses existing SendGrid wiring.
-- Daily digest email for any late-fee charges: once-per-day email listing every tx that was charged that day (`"Today: 3 charges fired — tx abc123 day 2, tx def456 day 4, tx ghi789 day 1"`). Separate cron from the per-SMS day-6 alert.
-- Comment cleanup in `lateFees.js` so "$15/day" framing consistently applies to both scenarios once the Scenario A fix lands.
+**PR-3 backlog (queued during PR-2 review, now fully scoped in `docs/9.0_pr3_operational_cleanup.md`):**
+All items below have been resolved in the PR-3 scope doc (committed `70399793a`). See the "Remaining pending work" section for current status.
+- ✅ SMS dedupe: migrated to Redis (`overdueNotified:*` keys) — chose Redis over adding transitions to process.edn (matches shipping/lender pattern, avoids v5 push).
+- ✅ Scenario A charging fix: eliminated lump-sum entirely. Unified daily $15 model, `hasScan` stops charging. Dead Scenario A branch to be deleted.
+- ✅ Day-6 email alert: fire-and-forget with `.catch()` (hard requirement), `DRY_RUN` respected.
+- ✅ Daily digest email: in-cron collection with `charged` / `day6_hard_stop` / `skipped_*` buckets.
+- ✅ Comment cleanup: PR-3c sub-PR.
+- ✅ Additional items from CC reviews: `daysLate <= 1` scan-lag-grace guard, `'daily-overdue'` scenario value, vestigial transition documented, lenderRequest quiet-hours = Pattern B (delay to 8 AM), day 6 copy softened to "may be charged", `withinSendWindow()` testability via `FORCE_NOW`/`getNow()`.
 
 **Deploy steps performed (for reference on future transition pushes):**
 1. `flex-cli process push --process default-booking --path ext/transaction-processes/default-booking -m sherbrt` → `Version 4 successfully saved`
@@ -342,15 +344,15 @@ Three shipped commits and two new scope docs. All work on return-side reminders 
 
 **Remaining pending work (not yet shipped):**
 - PR-2 ✅ shipped April 15, 2026 (commit `a1d808579`, process v4 live). See the "9.0 PR-2" section above for full details.
-- PR-3 scope doc v2 written (`docs/9.0_pr3_operational_cleanup.md`, rewritten April 15 2026). Major policy changes from v1: no lump-sum Scenario A (unified daily $15 charging), 5 charges / $75 cap (was 6 / $90), 24h scan-lag rule (charge for day N-1 on day N's cron), 17:00 UTC cron time (from 09:00 UTC / 1 AM PT), quiet-hours gate (8 AM – 11 PM PT) across all four SMS daemons. Three sub-PRs:
-  - **PR-3a** (blocks flag flip): Redis migration for `overdueNotified:*` keys (replaces dead `set-overdue-notified` transitions with `SET NX EX` pattern), unified daily charging with `hasScan` stop-check, count-based cap (`chargeHistory.filter().length >= 5`), cron time to 17:00 UTC, `diagnose-overdue.js` Redis migration.
-  - **PR-3b**: Day-6 fire-and-forget email (`.catch()` wrapper, `DRY_RUN` respected), daily digest with buckets (`charged` / `day6_hard_stop` / `skipped_*`), `withinSendWindow()` quiet-hours helper in `server/util/time.js`, applied to all four SMS daemons (Pattern A wide-window auto-defer for return/shipping/shipby, Pattern B expanded upper bound for lenderRequest's narrow 60-80 min window).
+- PR-3 scope doc v2 written + CC v2 feedback folded in (`docs/9.0_pr3_operational_cleanup.md`, committed `70399793a` April 15 2026). Major policy changes from v1: no lump-sum Scenario A (unified daily $15 charging), 5 charges / $75 cap (was 6 / $90), 24h scan-lag rule (charge for day N-1 on day N's cron), 17:00 UTC cron time (from 09:00 UTC / 1 AM PT), quiet-hours gate (8 AM – 11 PM PT) across all four SMS daemons. Three sub-PRs:
+  - **PR-3a** (blocks flag flip): Redis migration for `overdueNotified:*` keys (replaces dead `set-overdue-notified` transitions with `SET NX EX` pattern), unified daily charging with `hasScan` stop-check, explicit `daysLate <= 1` scan-lag-grace guard, count-based cap (`chargeHistory.filter().length >= 5`), `'daily-overdue'` scenario value for new chargeHistory entries (backward-compat: cap filter uses `code === 'late-fee'` not scenario), cron time to 17:00 UTC, `diagnose-overdue.js` Redis migration. Vestigial `transition/privileged-apply-late-fees` from `:state/delivered` documented in code comment (not removed from process.edn). Dead Scenario A branch in lateFees.js:246-260 to be deleted entirely.
+  - **PR-3b**: Day-6 fire-and-forget email (`.catch()` wrapper — hard acceptance requirement on ALL un-awaited `sendTransactionalEmail()` calls, `DRY_RUN` respected), daily digest with buckets (`charged` / `day6_hard_stop` / `skipped_*`), `withinSendWindow()` quiet-hours helper in `server/util/time.js` (must respect `FORCE_NOW`/`getNow()` for testability), applied to all four SMS daemons (Pattern A wide-window auto-defer for return/shipping/shipby, Pattern B expanded-upper-bound delay-to-8AM for lenderRequest's narrow 60-80 min window — nudge still fires, just late).
   - **PR-3c**: Comment cleanup in `lateFees.js` to describe unified model.
-  - CC v2 review requested; awaiting feedback before PR-3a implementation begins.
+  - **CC v2 review feedback fully incorporated** (6 items accepted + 2 policy decisions made). Doc committed and on disk. **Next step: share updated doc with CC for final sign-off, then begin PR-3a implementation.**
 - PR-4: staging dry-run with `OVERDUE_FEES_CHARGING_ENABLED=true` + `LATE_FEE_CENTS_OVERRIDE=50`, verify $0.50 payment intent captures in Stripe and `chargeHistory` advances.
 - PR-5: wrap `applyCharges()` calls in `sendOverdueReminders.js` with structured JSON logging (`overdue.charge` / `overdue.charge.error`).
 - PR-6: flip `OVERDUE_FEES_CHARGING_ENABLED=true` in Render console after PR-3a lands in prod ≥24h.
-- 9.1 copy refactor (blocked on 9.0 completing). Day-1 copy softened to "may apply" (scan-lag rule means we can't confirm lateness on day 1). Days 4-5 tightened ("$15/day late fee continues"). Message-map JS updated to match. See `docs/9.1_overdue_copy_refactor.md`.
+- 9.1 copy refactor (blocked on 9.0 completing). Day-1 copy softened to "may apply" (scan-lag rule means we can't confirm lateness on day 1). Days 4-5 tightened ("$15/day late fee continues"). Day-6 softened to "may be charged" (not "will be charged" — matches days 4-5 framing, legally safer since replacement is operator-discretionary). Message-map JS updated to match. See `docs/9.1_overdue_copy_refactor.md` (committed `70399793a`).
 
 ### Step 3.2 — Auto-Cancel Unshipped Bookings (April 14, 2026)
 
