@@ -92,6 +92,7 @@ const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { saleUrl } = require('../util/url');
 const { getRedis } = require('../redis');
+const { withinSendWindow, getNow } = require('../util/time');
 const {
   calculateLenderPayoutTotal,
   formatMoneyServerSide,
@@ -110,9 +111,12 @@ const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE;
 
 const MIN_AGE_MS = 60 * 60 * 1000; // 60 minutes
-const MAX_AGE_MS = 80 * 60 * 1000; // 80 minutes (60 + one 15m cron tick + 5m slack)
+// Wide upper bound: 13 hours covers any quiet-hours gap (11 PM → 8 AM = 9h,
+// plus margin). Txs older than 13h are genuinely stale. Previously 80 min;
+// widened for Pattern B quiet-hours support (see PR-3b spec §3b.3).
+const MAX_AGE_MS = 13 * 60 * 60 * 1000; // 13 hours (780 minutes)
 const INFLIGHT_TTL_SEC = 10 * 60; // 10 minutes — longer than any one SMS send
-const SENT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days — comfortably outlasts 80m window
+const SENT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days — comfortably outlasts 13h window
 
 const redisKey = (txId, suffix) => `lenderReminder:${txId}:${suffix}`;
 
@@ -362,6 +366,12 @@ async function sendLenderRequestReminders() {
       const listingId = listingRef?.id?.uuid || listingRef?.id || null;
 
       // Step 1: flag inFlight BEFORE sending (10-min TTL auto-clears on crash)
+      // Quiet-hours gate: 8 AM – 11 PM PT (Pattern B — wide upper bound defers, not skips)
+      if (!withinSendWindow(getNow())) {
+        console.log(`[lender-request-reminder][QUIET-HOURS] tx=${txId} age=${Math.round(ageMs / 60000)}m — deferred`);
+        continue;
+      }
+
       try {
         await markInFlight(redis, txId);
       } catch (flagErr) {

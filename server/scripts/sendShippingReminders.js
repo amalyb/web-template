@@ -28,6 +28,7 @@ try {
 // getFlexSdk() automatically uses Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
+const { withinSendWindow } = require('../util/time');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 const { getRedis } = require('../redis');
 
@@ -461,6 +462,11 @@ async function sendShippingReminders() {
           if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — inFlight`);
         } else {
           console.log(`[shipping-reminder] Sending 24h reminder for tx ${txId}`);
+          // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
+          if (!withinSendWindow()) {
+            console.log(`[shipping-reminder][QUIET-HOURS] tx=${txId} 24h — deferred to next poll`);
+            continue;
+          }
           try {
             await markInFlight(redis, txId, '24h');
             const shortUrl = await shortLink(labelUrl);
@@ -499,6 +505,11 @@ async function sendShippingReminders() {
           if (VERBOSE) console.log(`[shipping-reminder] Skip end-of-day for tx ${txId} — inFlight`);
         } else {
           console.log(`[shipping-reminder] Sending end-of-day reminder for tx ${txId}`);
+          // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
+          if (!withinSendWindow()) {
+            console.log(`[shipping-reminder][QUIET-HOURS] tx=${txId} eod — deferred to next poll`);
+            continue;
+          }
           try {
             await markInFlight(redis, txId, 'eod');
             const shortUrl = await shortLink(labelUrl);
@@ -535,6 +546,11 @@ async function sendShippingReminders() {
           if (VERBOSE) console.log(`[shipping-reminder] Skip auto-cancel for tx ${txId} — inFlight`);
         } else {
           console.log(`[shipping-reminder] Auto-cancel triggered for tx ${txId}`);
+          // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
+          if (!withinSendWindow()) {
+            console.log(`[shipping-reminder][QUIET-HOURS] tx=${txId} cancel — deferred to next poll`);
+            continue;
+          }
           try {
             await markInFlight(redis, txId, 'cancel');
 

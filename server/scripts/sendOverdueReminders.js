@@ -51,10 +51,12 @@ const {
   ymd,
   computeChargeableLateDays,
 } = require('../lib/businessDays');
+const { sendTransactionalEmail } = require('../email/emailClient');
 
 // Redis SMS dedupe constants (mirrors sendShippingReminders.js pattern)
 const SENT_TTL_SEC     = 7 * 24 * 60 * 60; // 7 days
 const INFLIGHT_TTL_SEC = 10 * 60;           // 10 min
+const LATE_FEE_CENTS   = 1500;              // $15 per charge (digest)
 
 // Parse command line arguments
 const argv = process.argv.slice(2);
@@ -184,6 +186,42 @@ async function evaluateReplacementCharge(tx) {
     timestamp: new Date().toISOString(),
     deprecated: true
   };
+}
+
+/**
+ * Send daily late-fee digest email (§3b.2)
+ * Summarizes all charges and skips from the current run.
+ */
+async function sendLateFeeDigest(events) {
+  const ymdToday = ymd(new Date());
+  const chargedEvents = events.filter(e => e.bucket === 'charged');
+  const skippedEvents = events.filter(e => e.bucket.startsWith('skipped_'));
+  const totalCents = chargedEvents.reduce((s, e) => s + e.totalCents, 0);
+  const totalDollars = (totalCents / 100).toFixed(2);
+
+  const lines = [
+    `Sherbrt late-fee digest for ${ymdToday}`,
+    ``,
+    `Charged: $${totalDollars} across ${chargedEvents.length} tx(s)`,
+    ...chargedEvents.map(e =>
+      `  tx ${e.txId?.slice(0, 8)} — "${e.listingTitle}" (${e.borrowerName}) — day ${e.daysLate} — $${(e.totalCents / 100).toFixed(2)}`
+    ),
+    ``,
+    `Skipped: ${skippedEvents.length}`,
+    ``,
+    `Flag: ${process.env.OVERDUE_FEES_CHARGING_ENABLED === 'true' ? 'LIVE' : 'DISABLED (dry-run)'}`,
+  ];
+
+  try {
+    await sendTransactionalEmail({
+      to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+      subject: `[Sherbrt] Late-fee digest ${ymdToday} — $${totalDollars} (${chargedEvents.length} charged)`,
+      text: lines.join('\n'),
+    });
+    console.log('[OVERDUE][DIGEST_SENT]', { ymd: ymdToday, charged: chargedEvents.length, totalCents });
+  } catch (err) {
+    console.error('[OVERDUE][DIGEST_FAILED]', { error: err.message });
+  }
 }
 
 async function sendOverdueReminders() {
@@ -365,6 +403,7 @@ async function sendOverdueReminders() {
 
     let sent = 0, failed = 0, processed = 0;
     let charged = 0, chargesFailed = 0;
+    const chargeDigest = []; // collect charge events for end-of-run digest email (§3b.2)
 
     // Overdue rules summary:
     // - If past expected return date AND no return scan AND no replacement charge:
@@ -459,7 +498,21 @@ async function sendOverdueReminders() {
       if (!shouldProcess) {
         continue;
       }
-      
+
+      // Resolve listing + customer from included data (needed for digest + day-6 email)
+      const listingRef = tx?.relationships?.listing?.data;
+      const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
+      const listing = listingKey ? included.get(listingKey) : null;
+
+      const customerRef = tx?.relationships?.customer?.data;
+      const customerKey = customerRef ? `${customerRef.type}/${customerRef.id?.uuid || customerRef.id}` : null;
+      const customer = customerKey ? included.get(customerKey) : null;
+
+      const customerName =
+        customer?.attributes?.profile?.displayName ||
+        customer?.attributes?.profile?.firstName ||
+        'unknown';
+
       // Calculate days late for this transaction (chargeable late days)
       // NOTE: This calculation matches the logic in lib/lateFees.js:
       // - When firstScanAt exists: use scan date (locks lateness to when item was shipped)
@@ -478,11 +531,12 @@ async function sendOverdueReminders() {
       
       // Apply charges (separate try/catch so charge failures don't block SMS)
       // applyCharges() handles both Scenario A and Scenario B internally
+      let chargeResult = null;
       try {
         if (DRY_RUN) {
           console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${txId || '(no id)'} (scenario: ${scenario})`);
         } else {
-          const chargeResult = await applyCharges({
+          chargeResult = await applyCharges({
             sdkInstance: integSdk,  // Use Integration SDK for privileged transition
             txId: tx.id.uuid || tx.id,
             now: FORCE_NOW || new Date()
@@ -553,17 +607,35 @@ async function sendOverdueReminders() {
         
         chargesFailed++;
       }
-      
+
+      // Digest accumulation (§3b.2) — runs for both scenario A and B
+      if (chargeResult) {
+        if (chargeResult.charged === true) {
+          chargeDigest.push({
+            bucket: 'charged',
+            txId: tx?.id?.uuid,
+            listingTitle: listing?.attributes?.title || 'unknown',
+            borrowerName: customerName,
+            daysLate: chargeResult.lateDays,
+            totalCents: LATE_FEE_CENTS,
+          });
+        } else if (chargeResult.charged === false && chargeResult.reason) {
+          chargeDigest.push({
+            bucket: `skipped_${chargeResult.reason}`,
+            txId: tx?.id?.uuid,
+            daysLate: chargeResult.lateDays || daysLate,
+            totalCents: 0,
+          });
+        }
+      }
+
       // SMS reminders: Only send for Scenario B (never returned)
       // Scenario A (returned late) doesn't need reminders - item already returned
       if (scenario === 'non-return') {
         // Get borrower phone
         // First try transaction protectedData (checkout-entered phone - preferred)
         // Then fall back to customer profile protectedData
-        const customerRef = tx?.relationships?.customer?.data;
-        const customerKey = customerRef ? `${customerRef.type}/${customerRef.id?.uuid || customerRef.id}` : null;
-        const customer = customerKey ? included.get(customerKey) : null;
-        
+
         // Check transaction protectedData first (checkout-entered, E.164 normalized)
         const txPhone = protectedData?.customerPhone || 
                        protectedData?.phone || 
@@ -581,11 +653,6 @@ async function sendOverdueReminders() {
           if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
             if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
           } else {
-            // Get listing info
-            const listingRef = tx?.relationships?.listing?.data;
-            const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
-            const listing = listingKey ? included.get(listingKey) : null;
-            
             // Canonical return-label URL (9.1 spec: two fields only)
             const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl;
 
@@ -723,6 +790,34 @@ async function sendOverdueReminders() {
                 await redis.set(sentKey, String(daysLate), 'NX', 'EX', SENT_TTL_SEC);
                 await redis.del(inFlightKey);
                 sent++;
+
+                // §3b.1 — Day-6 fire-and-forget operator alert email
+                if (daysLate === 6) {
+                  const emailBody = [
+                    `Day-6 SMS just fired to borrower — replacement charge commitment is now in effect.`,
+                    ``,
+                    `Tx: ${tx?.id?.uuid || 'unknown'}`,
+                    `Listing: ${listing?.attributes?.title || 'unknown'} (${listing?.id?.uuid || 'unknown'})`,
+                    `Borrower: ${customerName} (${borrowerPhone})`,
+                    `Return due: ${ymd(returnDate)}`,
+                    `Days late: ${daysLate}`,
+                    ``,
+                    `Action: decide whether to trigger manual replacement charge.`,
+                    `Console: https://console.sharetribe.com/o/sherbrt/transactions/${tx?.id?.uuid}`,
+                  ].join('\n');
+
+                  if (!DRY_RUN) {
+                    sendTransactionalEmail({
+                      to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                      subject: `[Sherbrt] Day-6 overdue — manual replacement decision needed (tx ${tx?.id?.uuid?.slice(0, 8) || '??'})`,
+                      text: emailBody,
+                    }).catch(err => {
+                      console.error('[OVERDUE][DAY6_EMAIL_FAILED]', { txId: tx?.id?.uuid, error: err.message });
+                    });
+                  } else {
+                    console.log('[OVERDUE][DAY6_EMAIL_DRY_RUN]', { txId: tx?.id?.uuid });
+                  }
+                }
               } else {
                 await redis.del(inFlightKey); // let next tick retry
                 console.log(`[OVERDUE][SMS-SKIPPED] tx=${txId} reason=${smsResult?.reason}`);
@@ -747,6 +842,13 @@ async function sendOverdueReminders() {
       }
     }
     
+    // §3b.2 — Send daily late-fee digest email (end-of-run)
+    if (chargeDigest.length > 0 && !DRY_RUN) {
+      await sendLateFeeDigest(chargeDigest);
+    } else if (chargeDigest.length > 0) {
+      console.log('[OVERDUE][DIGEST_DRY_RUN]', { events: chargeDigest.length });
+    }
+
     // Final summary
     console.log('');
     console.log('═══════════════════════════════════════════════════════════');

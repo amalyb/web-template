@@ -225,6 +225,38 @@ function getNext9AM() {
 }
 
 /**
+ * Returns true if `now` falls within the SMS send window: 8 AM – 11 PM PT.
+ * Used by all SMS-sending daemons to defer messages outside business hours.
+ *
+ * Defaults to getNow() so FORCE_NOW env var is respected in scenario tests
+ * without requiring callers to pass the time explicitly.
+ *
+ * @param {Date} [now=getNow()] - Timestamp to check (defaults to current time)
+ * @returns {boolean} True if within send window
+ *
+ * @example
+ * withinSendWindow() // => true (if 8 AM – 10:59 PM PT)
+ *
+ * // With explicit time
+ * withinSendWindow(new Date('2026-04-16T07:00:00Z')) // => false (midnight PT)
+ *
+ * // With FORCE_NOW
+ * process.env.FORCE_NOW = '2026-04-16T14:00:00Z'; // 7 AM PT
+ * withinSendWindow() // => false
+ */
+function withinSendWindow(now = getNow()) {
+  const ptHour = parseInt(
+    now.toLocaleString('en-US', {
+      timeZone: 'America/Los_Angeles',
+      hour: '2-digit',
+      hour12: false,
+    }),
+    10
+  );
+  return ptHour >= 8 && ptHour < 23; // 8:00 AM – 10:59 PM PT
+}
+
+/**
  * Log current time state (useful for debugging reminder jobs)
  * Shows all FORCE_* overrides in effect
  *
@@ -251,5 +283,6 @@ module.exports = {
   isMorningOf,
   timestamp,
   getNext9AM,
+  withinSendWindow,
   logTimeState,
 };

@@ -52,6 +52,7 @@ const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { getFirstChargeableLateDate } = require('../lib/businessDays');
 const { getRedis } = require('../redis');
+const { withinSendWindow } = require('../util/time');
 
 // In-memory guards to avoid repeat sends within the same daemon process
 // if Flex protectedData updates fail. Keys are txId → local date string.
@@ -632,6 +633,12 @@ async function sendReturnReminders(allowExitOnError = true) {
 
         if (VERBOSE) {
           console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
+        }
+
+        // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
+        if (!withinSendWindow()) {
+          console.log(`[RETURN-REMINDER][QUIET-HOURS] tx=${tx?.id?.uuid || '(no id)'} — deferred to next poll`);
+          continue;
         }
 
         try {

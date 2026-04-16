@@ -4,6 +4,7 @@ const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 const { shortLink } = require('../api-util/shortlink');
 const { hasOutboundScan } = require('../lib/txData');
+const { withinSendWindow } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
 async function getScriptSdk() {
@@ -231,7 +232,13 @@ async function sendShipByReminders() {
         if (VERBOSE) {
           console.log(`📬 To ${providerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
         }
-        
+
+        // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
+        if (!withinSendWindow()) {
+          console.log(`[SHIPBY-REMINDER][QUIET-HOURS] tx=${tx?.id?.uuid || '(no id)'} — deferred to next poll`);
+          continue;
+        }
+
         try {
           const smsResult = await sendSMS(providerPhone, message, {
             role: 'lender',
