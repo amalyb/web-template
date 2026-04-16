@@ -52,6 +52,7 @@ const {
   computeChargeableLateDays,
 } = require('../lib/businessDays');
 const { sendTransactionalEmail } = require('../email/emailClient');
+const { buildOverdueMessage } = require('./messages/overdueMessages');
 
 // Redis SMS dedupe constants (mirrors sendShippingReminders.js pattern)
 const SENT_TTL_SEC     = 7 * 24 * 60 * 60; // 7 days
@@ -752,45 +753,15 @@ async function sendOverdueReminders() {
             // Resolve itemTitle from listing
             const itemTitle = listing?.attributes?.title || 'your item';
 
-            // Build message using new standardized copy (9.1 spec)
-            let message;
-            let tag;
-
-            if (daysLate === 1) {
-              message = `⚠️ Your Sherbrt return for "${itemTitle}" ended yesterday. ` +
-                `$15/day late fee may apply until scanned by the carrier. ` +
-                `Please ship today using your QR/label: ${shortUrl}. ` +
-                `For help: bestie@sherbrt.com.`;
-              tag = 'overdue_day1_to_borrower';
-            } else if (daysLate === 2) {
-              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 2 days late. ` +
-                `$15/day late fee applies until scanned by the carrier. ` +
-                `Please ship today using your QR/label: ${shortUrl}.`;
-              tag = 'overdue_day2_to_borrower';
-            } else if (daysLate === 3) {
-              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 3 days late. ` +
-                `$15/day late fee applies until scanned by the carrier. ` +
-                `Please ship today using your QR/label: ${shortUrl}.`;
-              tag = 'overdue_day3_to_borrower';
-            } else if (daysLate === 4) {
-              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 4 days late. ` +
-                `$15/day late fee continues and you may be charged the full replacement value. ` +
-                `Ship immediately using your QR/label: ${shortUrl}. ` +
-                `For help: bestie@sherbrt.com.`;
-              tag = 'overdue_day4_to_borrower';
-            } else if (daysLate === 5) {
-              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 5 days late. ` +
-                `$15/day late fee continues. ` +
-                `Ship immediately using your QR/label: ${shortUrl} to avoid a replacement charge. ` +
-                `For help: bestie@sherbrt.com.`;
-              tag = 'overdue_day5_to_borrower';
-            } else if (daysLate === 6) {
-              message = `🚨 Your Sherbrt return for "${itemTitle}" is now 6 days late. ` +
-                `Your borrow is being investigated and the full replacement value of the item may be charged. ` +
-                `Please ship it back ASAP using your QR code or label: ${shortUrl}. ` +
-                `For help: bestie@sherbrt.com.`;
-              tag = 'overdue_day6_to_borrower';
+            // Build message using the 9.1 message-map module.
+            // buildOverdueMessage returns null for any day outside 1..6 —
+            // defense-in-depth against the upstream daysLate > 6 hard stop.
+            const built = buildOverdueMessage(daysLate, { itemTitle, shortUrl });
+            if (!built) {
+              console.log(`[OVERDUE][NO-COPY] tx=${txId} daysLate=${daysLate} — no message for this day, skipping`);
+              continue;
             }
+            const { message, tag } = built;
 
             if (VERBOSE) {
               console.log(`[SMS] To ${borrowerPhone} (tx ${txId}, day ${daysLate}) → ${message}`);
