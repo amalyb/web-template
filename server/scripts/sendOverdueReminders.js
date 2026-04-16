@@ -587,7 +587,12 @@ async function sendOverdueReminders() {
             const listing = listingKey ? included.get(listingKey) : null;
             
             // Canonical return-label URL (9.1 spec: two fields only)
-            const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl || '';
+            const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl;
+
+            if (!returnLabelUrl) {
+              console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl or returnLabelUrl, skipping SMS`);
+              continue;
+            }
 
             let shortUrl = returnLabelUrl;
             try {

@@ -53,12 +53,18 @@ async function main() {
   console.log(`${TAG} late fee simulation result`, lateResult);
 
   const assertions = [];
+
+  // Under the unified daily model (PR-3a), the non-return path returns
+  // scenario='non-return' for daysLate >= 2. For daysLate <= 1, the
+  // scan-lag-grace guard fires first (no scenario field). Both are valid
+  // for this test — the key invariant is that it's NOT scan-detected or
+  // delivered-without-scan (which would mean the item was returned).
   assertions.push(
     assertInvariant({
       tag: TAG,
-      condition: lateResult.scenario === 'non-return',
-      success: `Classified as non-return (lateDays=${lateResult.lateDays ?? 'n/a'})`,
-      failure: `Unexpected scenario classification: ${lateResult.scenario}`,
+      condition: lateResult.scenario === 'non-return' || lateResult.reason === 'scan-lag-grace' || lateResult.reason === 'not-overdue',
+      success: `Classified as non-return path (scenario=${lateResult.scenario ?? 'n/a'} reason=${lateResult.reason ?? 'n/a'} lateDays=${lateResult.lateDays ?? 'n/a'})`,
+      failure: `Unexpected classification: scenario=${lateResult.scenario} reason=${lateResult.reason}`,
     })
   );
 
@@ -71,25 +77,16 @@ async function main() {
     })
   );
 
-  if (typeof lateResult.lateDays === 'number' && lateResult.lateDays >= 5) {
-    assertions.push(
-      assertInvariant({
-        tag: TAG,
-        condition: (lateResult.items || []).includes('replacement') || returnData.replacementCharged === true,
-        success: 'Replacement would be charged at day 5+',
-        failure: 'Replacement NOT indicated even though lateDays >= 5',
-      })
-    );
-  } else {
-    assertions.push(
-      assertInvariant({
-        tag: TAG,
-        condition: returnData.replacementCharged !== true,
-        success: 'Replacement not charged before threshold',
-        failure: 'Unexpected replacementCharged before day 5',
-      })
-    );
-  }
+  // Under unified daily model, there are no replacement charges.
+  // Verify that the result never includes 'replacement' in items.
+  assertions.push(
+    assertInvariant({
+      tag: TAG,
+      condition: !(lateResult.items || []).includes('replacement'),
+      success: 'No replacement charge (unified daily model — late-fee only)',
+      failure: `Unexpected replacement charge in items: ${(lateResult.items || []).join(', ')}`,
+    })
+  );
 
   exitFromAssertions(assertions);
 }

@@ -26,8 +26,9 @@ dayjs.extend(timezone);
 
 const getFlexSdk = require('../server/util/getFlexSdk');
 const getMarketplaceSdk = require('../server/util/getMarketplaceSdk');
-const { applyCharges } = require('../server/lib/lateFees');
+const { applyCharges, MAX_LATE_FEE_CHARGES } = require('../server/lib/lateFees');
 const { shortLink } = require('../server/api-util/shortlink');
+const { getRedis } = require('../server/redis');
 
 // Configuration
 const TZ = 'America/Los_Angeles';
@@ -161,15 +162,24 @@ async function diagnoseTransaction(txId, now) {
     
     // Idempotency check
     const lastLateFeeDayCharged = returnData.lastLateFeeDayCharged;
-    const replacementCharged = returnData.replacementCharged === true;
-    const lastNotifiedDay = returnData.overdue?.lastNotifiedDay;
-    
+
+    // SMS notification state — now in Redis (PR-3a migration)
+    const redis = getRedis();
+    const smsSentKey = `overdueNotified:${txId}:${lateDays}:sent`;
+    const smsAlreadySent = !!(await redis.get(smsSentKey).catch(() => null));
+
+    // Count prior late-fee charges for cap check
+    const chargeHistory = protectedData.chargeHistory || [];
+    const priorChargeCount = chargeHistory.filter(
+      e => e.items?.some(i => i.code === 'late-fee')
+    ).length;
+
     console.log('─'.repeat(70));
     console.log('🔒 IDEMPOTENCY STATUS');
     console.log('─'.repeat(70));
     console.log(`   Last fee day charged: ${lastLateFeeDayCharged || 'Never'}`);
-    console.log(`   Replacement charged:  ${replacementCharged ? 'YES ✅' : 'NO ❌'}`);
-    console.log(`   Last notified day:    ${lastNotifiedDay || 'Never'}`);
+    console.log(`   Prior late-fee charges: ${priorChargeCount} / ${MAX_LATE_FEE_CHARGES} (cap)`);
+    console.log(`   SMS sent (Redis):     ${smsAlreadySent ? `YES ✅ (key: ${smsSentKey})` : 'NO ❌'}`);
     console.log('');
     
     // Get listing data for replacement value
@@ -196,10 +206,8 @@ async function diagnoseTransaction(txId, now) {
                          customer?.attributes?.profile?.protectedData?.phoneNumber ||
                          '+1XXXXXXXXXX';
     
-    // Get return label URL
-    const returnLabelUrl = returnData.label?.url ||
-                          protectedData.returnLabelUrl ||
-                          `https://sherbrt.com/return/${txId}`;
+    // Canonical return-label URL (9.1 spec: two fields only)
+    const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl;
     
     const shortUrl = await shortLink(returnLabelUrl).catch(() => returnLabelUrl);
     
@@ -214,8 +222,10 @@ async function diagnoseTransaction(txId, now) {
     console.log(`   Tag:     ${smsTemplate.tag}`);
     console.log(`   Message: ${smsTemplate.message}`);
     
-    if (lastNotifiedDay === lateDays) {
-      console.log(`   ⚠️  SKIP: Already notified for day ${lateDays}`);
+    if (smsAlreadySent) {
+      console.log(`   ⚠️  SKIP: Already notified for day ${lateDays} (Redis key exists)`);
+    } else if (!returnLabelUrl) {
+      console.log(`   ⚠️  SKIP: No return label URL — SMS would be skipped`);
     } else {
       console.log(`   ✅ SEND: New notification for day ${lateDays}`);
     }
@@ -228,34 +238,24 @@ async function diagnoseTransaction(txId, now) {
     
     const todayYmd = ymd(now);
     let willChargeFee = false;
-    let willChargeReplacement = false;
-    
-    // Late fee logic
-    if (lateDays >= 1 && lastLateFeeDayCharged !== todayYmd) {
-      willChargeFee = true;
-      console.log(`   ✅ Late Fee: ${formatCurrency(LATE_FEE_CENTS)} (Day ${lateDays})`);
-      console.log(`      Reason: Not yet charged for ${todayYmd}`);
+
+    // Unified daily model (PR-3a): $15/day, max 5 charges ($75 cap)
+    if (lateDays <= 1) {
+      console.log(`   ⏳ Late Fee: scan-lag-grace (Day ${lateDays} — charge starts Day 2)`);
+    } else if (priorChargeCount >= MAX_LATE_FEE_CHARGES) {
+      console.log(`   ❌ Late Fee: ${formatCurrency(LATE_FEE_CENTS)} (Day ${lateDays})`);
+      console.log(`      SKIP: Cap reached (${priorChargeCount}/${MAX_LATE_FEE_CHARGES} charges = ${formatCurrency(priorChargeCount * LATE_FEE_CENTS)})`);
     } else if (lastLateFeeDayCharged === todayYmd) {
       console.log(`   ❌ Late Fee: ${formatCurrency(LATE_FEE_CENTS)} (Day ${lateDays})`);
       console.log(`      SKIP: Already charged today (${todayYmd})`);
+    } else {
+      willChargeFee = true;
+      console.log(`   ✅ Late Fee: ${formatCurrency(LATE_FEE_CENTS)} (Day ${lateDays})`);
+      console.log(`      Charge #${priorChargeCount + 1} of ${MAX_LATE_FEE_CHARGES} — not yet charged for ${todayYmd}`);
     }
-    
-    // Replacement charge logic
-    if (lateDays >= 5 && !replacementCharged) {
-      willChargeReplacement = true;
-      console.log(`   ✅ Replacement: ${formatCurrency(replacementCents)}`);
-      console.log(`      Reason: Day ${lateDays}, no carrier scan, not yet charged`);
-    } else if (replacementCharged) {
-      console.log(`   ❌ Replacement: ${formatCurrency(replacementCents)}`);
-      console.log(`      SKIP: Already charged previously`);
-    } else if (lateDays < 5) {
-      console.log(`   ⏳ Replacement: ${formatCurrency(replacementCents)}`);
-      console.log(`      PENDING: Will charge on Day 5 (${5 - lateDays} days from now)`);
-    }
-    
-    const totalCharge = (willChargeFee ? LATE_FEE_CENTS : 0) + 
-                       (willChargeReplacement ? replacementCents : 0);
-    
+
+    const totalCharge = willChargeFee ? LATE_FEE_CENTS : 0;
+
     console.log('');
     console.log(`   💰 TOTAL TODAY: ${formatCurrency(totalCharge)}`);
     console.log('');
@@ -296,9 +296,9 @@ async function diagnoseTransaction(txId, now) {
     console.log(`   Transaction:     ${txId}`);
     console.log(`   Days Late:       ${lateDays}`);
     console.log(`   Carrier Scanned: ${isScanned ? 'Yes' : 'No'}`);
-    console.log(`   Will Send SMS:   ${lastNotifiedDay !== lateDays ? 'Yes' : 'No (already sent)'}`);
+    console.log(`   Will Send SMS:   ${!smsAlreadySent && returnLabelUrl ? 'Yes' : 'No (already sent or no label)'}`);
     console.log(`   Will Charge Fee: ${willChargeFee ? 'Yes' : 'No'}`);
-    console.log(`   Will Charge Rep: ${willChargeReplacement ? 'Yes' : 'No'}`);
+    console.log(`   Charges So Far:  ${priorChargeCount}/${MAX_LATE_FEE_CHARGES}`);
     console.log(`   Total Charge:    ${formatCurrency(totalCharge)}`);
     console.log('═'.repeat(70));
     console.log('');

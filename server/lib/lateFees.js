@@ -264,6 +264,9 @@ async function applyCharges({ sdkInstance, txId, now }) {
     // From here: currentState === 'accepted' && !hasScan (Scenario B: non-return)
     // This is the ONLY path that reaches the charging transition.
     // ============================================================================
+    // NOTE: `scenario` in the *return value* stays 'non-return' for backward-compat
+    // with nonReturnNeverShips.js and callers that switch on it. The *chargeHistory*
+    // entry uses 'daily-overdue' (see below). This asymmetry is intentional.
     const scenario = 'non-return';
     const effectiveDate = dayjs(now);
     const lateDays = computeChargeableLateDays(now, returnDueAt);
@@ -414,6 +417,5 @@ async function applyCharges({ sdkInstance, txId, now }) {
   }
 }
 
-// Export only applyCharges
-module.exports = { applyCharges };
+module.exports = { applyCharges, MAX_LATE_FEE_CHARGES };
 
