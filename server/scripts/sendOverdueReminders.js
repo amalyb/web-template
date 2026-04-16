@@ -8,7 +8,7 @@
  * - Replacement charging is manual / operator-initiated (not automatic)
  * 
  * CRON SCHEDULING (Render/Heroku):
- * Run daily at 9 AM UTC: 0 9 * * * node server/scripts/sendOverdueReminders.js
+ * Run daily at 17:00 UTC (~10 AM PT): 0 17 * * * node server/scripts/sendOverdueReminders.js
  * 
  * For testing:
  * npm run worker:overdue-reminders -- --dry-run
@@ -46,10 +46,15 @@ const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
 const { applyCharges } = require('../lib/lateFees');
+const { getRedis } = require('../redis');
 const {
   ymd,
   computeChargeableLateDays,
 } = require('../lib/businessDays');
+
+// Redis SMS dedupe constants (mirrors sendShippingReminders.js pattern)
+const SENT_TTL_SEC     = 7 * 24 * 60 * 60; // 7 days
+const INFLIGHT_TTL_SEC = 10 * 60;           // 10 min
 
 // Parse command line arguments
 const argv = process.argv.slice(2);
@@ -581,14 +586,9 @@ async function sendOverdueReminders() {
             const listingKey = listingRef ? `${listingRef.type}/${listingRef.id?.uuid || listingRef.id}` : null;
             const listing = listingKey ? included.get(listingKey) : null;
             
-            // Get return label URL
-            const returnLabelUrl = returnData.label?.url ||
-                                  protectedData.returnLabelUrl ||
-                                  protectedData.returnLabel ||
-                                  protectedData.shippingLabelUrl ||
-                                  protectedData.returnShippingLabel ||
-                                  `https://sherbrt.com/return/${tx?.id?.uuid || tx?.id}`;
-            
+            // Canonical return-label URL (9.1 spec: two fields only)
+            const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl || '';
+
             let shortUrl = returnLabelUrl;
             try {
               const maybeShort = await shortLink(returnLabelUrl);
@@ -601,137 +601,131 @@ async function sendOverdueReminders() {
             }
             console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
             
-            // Check if we've already notified for this day
-            // SMS gating logic for Scenario B: SMS sends ONLY when:
-            // 1. scenario === 'non-return' (already checked above)
-            // 2. borrowerPhone exists (already checked above)
-            // 3. lastNotifiedDay !== daysLate (check below)
-            const overdue = returnData.overdue || {};
-            const lastNotifiedDay = overdue.lastNotifiedDay;
-            
-            const runGuardDay = runNotificationGuard.get(txId);
+            // ================================================================
+            // SMS DEDUPE — Redis-backed (PR-3a, replaces dead transition call)
+            // Pattern matches sendShippingReminders.js / sendReturnReminders.js.
+            // runNotificationGuard kept as belt-and-suspenders intra-run guard.
+            // ================================================================
             if (daysLate > 6) {
               if (!ONLY_TX || txId === ONLY_TX) {
-                console.log('[OVERDUE][DAY>6][HARD-STOP]', { txId, daysLate, lastNotifiedDay, runGuardDay });
+                console.log('[OVERDUE][DAY>6][HARD-STOP]', { txId, daysLate });
               }
               continue; // Hard stop after day 6 — no SMS or persistence attempts
-            } else if (lastNotifiedDay !== daysLate && runGuardDay !== daysLate) {
-              // Determine message based on days late
-              let message;
-              let tag;
-              
-              if (daysLate === 1) {
-                message = `📦 Your Sherbrt return is now late. A $15/day late fee is being charged until your item is scanned in. If the item isn't shipped within 5 days, you may be charged the full replacement value. Please ship it back as soon as possible using your QR code or shipping label: ${shortUrl} 💌`;
-                tag = 'overdue_day1_to_borrower';
-              } else if (daysLate === 2) {
-                message = `🚫 2 days late. $15/day fees are adding up. Ship now: ${shortUrl}`;
-                tag = 'overdue_day2_to_borrower';
-              } else if (daysLate === 3) {
-                message = `⏰ 3 days late. Fees continue. Ship today to avoid full replacement.`;
-                tag = 'overdue_day3_to_borrower';
-              } else if (daysLate === 4) {
-                message = `⚠️ 4 days late. Ship immediately to prevent replacement charges.`;
-                tag = 'overdue_day4_to_borrower';
-              } else if (daysLate === 5) {
-                message = [
-                  `🚫 5 chargeable days late.`,
-                  `Per Sherbrt policy, you may be charged the full replacement value set by the lender if the item is not returned.`,
-                  `Please ship back your item as soon as possible: ${shortUrl}`
-                ].join(' ');
-                tag = 'overdue_day5_to_borrower';
-              } else if (daysLate === 6) {
-                message = `Sherbrt 🍧: 🚨 Your return is now 6 days late (excluding Sundays/USPS holidays). Your borrow is being investigated and the full replacement value of the item will be charged. Please ship it back ASAP using your QR code or label: ${shortUrl}. Reply to this text if you need help.`;
-                tag = 'overdue_day6_to_borrower';
-              }
-              
-              if (VERBOSE) {
-                console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}, ${daysLate} chargeable days late) → ${message}`);
-              }
-              
-              try {
-                // Guard this run even if persistence fails to avoid re-sending in-loop
-                runNotificationGuard.set(txId, daysLate);
+            }
 
-                if (daysLate === 6) {
-                  console.log('[OVERDUE][DAY6_SENT]', {
-                    txId: tx?.id?.uuid || tx?.id,
-                    daysLate,
-                    tag
-                  });
-                }
-                const smsResult = await sendSMS(borrowerPhone, message, {
-                  role: 'borrower',
-                  tag: tag,
-                  meta: { 
-                    txId: tx?.id?.uuid || tx?.id,
-                    listingId: listing?.id?.uuid || listing?.id,
-                    daysLate: daysLate,
-                    scenario: scenario
-                  }
+            const redis = getRedis();
+            const sentKey = `overdueNotified:${txId}:${daysLate}:sent`;
+            const inFlightKey = `overdueNotified:${txId}:${daysLate}:inFlight`;
+
+            // Check Redis sent mark
+            if (await redis.get(sentKey)) {
+              console.log(`[OVERDUE][ALREADY-SENT] tx=${txId} day=${daysLate}`);
+              continue;
+            }
+            // Check Redis in-flight mark
+            if (await redis.get(inFlightKey)) {
+              console.log(`[OVERDUE][IN-FLIGHT] tx=${txId} day=${daysLate}`);
+              continue;
+            }
+            // Belt-and-suspenders: in-memory guard for intra-run dupes
+            const runGuardDay = runNotificationGuard.get(txId);
+            if (runGuardDay === daysLate) {
+              console.log(`[OVERDUE][RUN-GUARD] tx=${txId} day=${daysLate}`);
+              continue;
+            }
+
+            if (DRY_RUN) {
+              console.log(`[OVERDUE][DRY-RUN] Would SET ${sentKey}`);
+              continue; // DRY_RUN skips Redis writes too
+            }
+
+            // Resolve itemTitle from listing
+            const itemTitle = listing?.attributes?.title || 'your item';
+
+            // Build message using new standardized copy (9.1 spec)
+            let message;
+            let tag;
+
+            if (daysLate === 1) {
+              message = `⚠️ Your Sherbrt return for "${itemTitle}" ended yesterday. ` +
+                `$15/day late fee may apply until scanned by the carrier. ` +
+                `Please ship today using your QR/label: ${shortUrl}. ` +
+                `For help: bestie@sherbrt.com.`;
+              tag = 'overdue_day1_to_borrower';
+            } else if (daysLate === 2) {
+              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 2 days late. ` +
+                `$15/day late fee applies until scanned by the carrier. ` +
+                `Please ship today using your QR/label: ${shortUrl}.`;
+              tag = 'overdue_day2_to_borrower';
+            } else if (daysLate === 3) {
+              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 3 days late. ` +
+                `$15/day late fee applies until scanned by the carrier. ` +
+                `Please ship today using your QR/label: ${shortUrl}.`;
+              tag = 'overdue_day3_to_borrower';
+            } else if (daysLate === 4) {
+              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 4 days late. ` +
+                `$15/day late fee continues and you may be charged the full replacement value. ` +
+                `Ship immediately using your QR/label: ${shortUrl}. ` +
+                `For help: bestie@sherbrt.com.`;
+              tag = 'overdue_day4_to_borrower';
+            } else if (daysLate === 5) {
+              message = `⚠️ Your Sherbrt return for "${itemTitle}" is now 5 days late. ` +
+                `$15/day late fee continues. ` +
+                `Ship immediately using your QR/label: ${shortUrl} to avoid a replacement charge. ` +
+                `For help: bestie@sherbrt.com.`;
+              tag = 'overdue_day5_to_borrower';
+            } else if (daysLate === 6) {
+              message = `🚨 Your Sherbrt return for "${itemTitle}" is now 6 days late. ` +
+                `Your borrow is being investigated and the full replacement value of the item may be charged. ` +
+                `Please ship it back ASAP using your QR code or label: ${shortUrl}. ` +
+                `For help: bestie@sherbrt.com.`;
+              tag = 'overdue_day6_to_borrower';
+            }
+
+            if (VERBOSE) {
+              console.log(`[SMS] To ${borrowerPhone} (tx ${txId}, day ${daysLate}) → ${message}`);
+            }
+
+            // Set in-memory guard immediately (belt-and-suspenders)
+            runNotificationGuard.set(txId, daysLate);
+
+            // Set Redis in-flight mark before SMS send
+            await redis.set(inFlightKey, '1', 'EX', INFLIGHT_TTL_SEC);
+
+            try {
+              if (daysLate === 6) {
+                console.log('[OVERDUE][DAY6_SENT]', {
+                  txId: tx?.id?.uuid || tx?.id,
+                  daysLate,
+                  tag,
                 });
-                
-                // Only update transaction with SMS notification tracking if SMS was actually sent
-                // (Charges are now handled by applyCharges() below)
-                if (!smsResult?.skipped) {
-                  const updatedReturnData = {
-                    ...(returnData || {}),
-                    overdue: {
-                      ...(overdue || {}),
-                      daysLate,
-                      lastNotifiedDay: daysLate
-                    }
-                  };
-                  
-                  const protectedPatch = { return: updatedReturnData };
-                  // TODO(PR-follow-up, 9.x): neither transition below exists in
-                  // the live default-booking process.edn (nor in the backup).
-                  // Every SMS send today silently fails this transition call;
-                  // the error is caught + logged and SMS still dispatches, but
-                  // `lastNotifiedDay` never persists to Flex. Dedupe relies on
-                  // the in-memory `runNotificationGuard`, which means a cron
-                  // restart mid-run can re-send the same day's SMS. Options:
-                  //   (a) add these two transitions to process.edn (mirror of
-                  //       privileged-apply-late-fees shape, no Stripe actions)
-                  //   (b) migrate to Redis idempotency like lender/shipping
-                  //       reminders did in April 2026 (pattern in CLAUDE_CONTEXT)
-                  // Not touched in PR-2 to keep scope tight. Flagged by CC review.
-                  const overdueTransition =
-                    currentState === 'delivered'
-                      ? 'transition/privileged-set-overdue-notified-delivered'
-                      : 'transition/privileged-set-overdue-notified';
-                  
-                  try {
-                    await integSdk.transactions.transition({
-                      id: tx.id.uuid || tx.id,
-                      transition: overdueTransition,
-                      params: {
-                        protectedData: protectedPatch
-                      }
-                    });
-                    console.log(`💾 Persisted overdue notification via ${overdueTransition} for tx ${txId}`);
-                  } catch (updateError) {
-                    logFlexError(`${overdueTransition} (SMS notification tracking)`, updateError, {
-                      txId: tx?.id?.uuid || tx?.id,
-                      state: currentState
-                    });
-                    console.error(`❌ Failed to persist overdue notification via ${overdueTransition}:`, updateError.message);
-                    console.error('[OVERDUE][PERSISTENCE-FAILED][SKIP-RETRY-THIS-RUN]', {
-                      txId,
-                      daysLate,
-                      guarded: true
-                    });
-                  }
-                  
-                  sent++;
-                } else {
-                  console.log(`⏭️ SMS skipped (${smsResult.reason}) - NOT updating lastNotifiedDay flag for tx ${tx?.id?.uuid || '(no id)'}`);
-                }
-              } catch (e) {
-                console.error(`❌ SMS failed to ${borrowerPhone}:`, e?.message || e);
-                failed++;
               }
-            } else {
-              console.log(`📅 Already notified for day ${daysLate} for tx ${tx?.id?.uuid || '(no id)'}`);
+
+              const smsResult = await sendSMS(borrowerPhone, message, {
+                role: 'borrower',
+                tag: tag,
+                meta: {
+                  txId: tx?.id?.uuid || tx?.id,
+                  listingId: listing?.id?.uuid || listing?.id,
+                  daysLate,
+                  scenario,
+                }
+              });
+
+              if (smsResult?.success || !smsResult?.skipped) {
+                // Atomic: SET NX EX closes the double-send race if two
+                // processes overlap on restart.
+                await redis.set(sentKey, String(daysLate), 'NX', 'EX', SENT_TTL_SEC);
+                await redis.del(inFlightKey);
+                sent++;
+              } else {
+                await redis.del(inFlightKey); // let next tick retry
+                console.log(`[OVERDUE][SMS-SKIPPED] tx=${txId} reason=${smsResult?.reason}`);
+              }
+            } catch (e) {
+              await redis.del(inFlightKey);
+              console.error(`[OVERDUE][SMS-FAILED] tx=${txId} day=${daysLate}:`, e?.message || e);
+              failed++;
             }
           }
         } else {
@@ -793,8 +787,8 @@ if (require.main === module) {
   if (argv.includes('--test')) {
     testOverdueScenarios();
   } else if (argv.includes('--daemon')) {
-    // Run as daemon with internal scheduling (daily at 9 AM UTC)
-    console.log('🔄 Starting overdue reminders daemon (daily at 9 AM UTC)');
+    // Run as daemon with internal scheduling (daily at 17:00 UTC ~10 AM PT)
+    console.log('🔄 Starting overdue reminders daemon (daily at 17:00 UTC)');
     
     const runDaily = async () => {
       try {
@@ -804,22 +798,22 @@ if (require.main === module) {
       }
     };
     
-    // Calculate time until next 9 AM UTC
+    // Calculate time until next 17:00 UTC (~10 AM PT)
     const now = new Date();
-    const next9AM = new Date(now);
-    next9AM.setUTCHours(9, 0, 0, 0);
-    if (next9AM <= now) {
-      next9AM.setUTCDate(next9AM.getUTCDate() + 1);
+    const nextRunTime = new Date(now);
+    nextRunTime.setUTCHours(17, 0, 0, 0);
+    if (nextRunTime <= now) {
+      nextRunTime.setUTCDate(nextRunTime.getUTCDate() + 1);
     }
-    
-    const msUntilNext9AM = next9AM.getTime() - now.getTime();
-    console.log(`⏰ Next run scheduled for: ${next9AM.toISOString()}`);
-    
+
+    const msUntilNextRun = nextRunTime.getTime() - now.getTime();
+    console.log(`⏰ Next run scheduled for: ${nextRunTime.toISOString()}`);
+
     setTimeout(() => {
       runDaily();
       // Then run every 24 hours
       setInterval(runDaily, 24 * 60 * 60 * 1000);
-    }, msUntilNext9AM);
+    }, msUntilNextRun);
     
     // Run immediately for testing
     runDaily();

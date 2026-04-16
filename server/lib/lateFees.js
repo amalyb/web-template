@@ -1,18 +1,30 @@
 /**
- * Late fee & replacement policy (manual replacement model)
+ * Late fee policy — unified daily charging model (PR-3a, April 2026)
  *
- * - $15/day late fees accrue starting Day 1 and continue until the item is scanned in
- * - Late fees are charged idempotently per effective day
- * - Automatic replacement charging is DISABLED by design
- * - Day 5+ represents an escalation threshold only (warnings / operator review)
+ * - $15/day, charged daily, max 5 charges = $75 cap
+ * - Charge for day N-1 on day N's cron (24h scan-lag rule)
+ * - Day 1 = SMS only, no charge (daysLate <= 1 guard returns 'scan-lag-grace')
+ * - Days 2-6 cron = SMS + $15 charge for prior day
+ * - Day 6 = replacement warning SMS + 5th/final $15 charge (for day 5)
+ * - Day 7+ = hard stop (no SMS, no charge)
+ * - USPS scan stops all charging immediately ('scan-detected' skip)
+ * - Cap is count-based (chargeHistory entries with code='late-fee'), not day-based
+ * - Both tx states (delivered+scan, accepted+no-scan) use the same charging logic
+ * - Only transition/privileged-apply-late-fees-non-return ever fires (from :state/accepted)
+ * - transition/privileged-apply-late-fees (from :state/delivered) is vestigial — see note below
+ * - Automatic replacement charging is DISABLED (AUTO_REPLACEMENT_ENABLED = false)
  * - Full replacement charges must be applied manually by an operator
  *
- * NOTE:
- * AUTO_REPLACEMENT_ENABLED is intentionally false to prevent accidental replacement charges.
+ * Vestigial transition: transition/privileged-apply-late-fees (from :state/delivered,
+ * process.edn:128) was added in v4 but is never called under the unified model.
+ * Any :state/delivered tx is intercepted by the hasScan check (scan-detected skip) or
+ * the PR-2 delivered-without-scan policy-skip before reaching the transition call.
+ * Kept in process.edn to avoid a v5 push for zero behavioral benefit.
  *
  * Called by: server/scripts/sendOverdueReminders.js
  *
  * Late days are calculated as "chargeable late days" that exclude Sundays and USPS federal holidays.
+ * All dates normalized to Pacific time (America/Los_Angeles).
  */
 
 const dayjs = require('dayjs');
@@ -42,9 +54,11 @@ const OVERDUE_FEES_CHARGING_ENABLED =
 // skipped cleanly with reason 'processVersion-too-old'.
 const MIN_PROCESS_VERSION_FOR_LATE_FEES = 4;
 
-// Hard cap on chargeable days. Defense-in-depth alongside the day-6
-// SMS hard-stop in sendOverdueReminders.js.
-const MAX_CHARGEABLE_DAYS = 6;
+// Count-based cap: max 5 charges of $15 = $75 total. This is count-based
+// (how many times we've charged), not day-based (how many days late).
+// Count is the correct metric because missed cron runs could skip a day,
+// and we shouldn't penalize the borrower for our infrastructure gaps.
+const MAX_LATE_FEE_CHARGES = 5;
 
 // Feature flag: gate automatic replacement charges (Day 5+) while keeping daily late fees
 const AUTO_REPLACEMENT_ENABLED = false;
@@ -113,51 +127,34 @@ function getReplacementValue(listing) {
 }
 
 /**
- * Apply late fees and/or replacement charges to a transaction
- * 
- * This function handles two scenarios:
- * - SCENARIO A: Returned late (state: 'delivered', has firstScanAt)
- * - SCENARIO B: Never returned (state: 'accepted', no firstScanAt)
- * 
- * Process:
- * 1. Loads transaction with listing data
- * 2. Detects scenario (A or B) based on state and firstScanAt
- * 3. Calculates days late (scanDate-based for A, today-based for B)
- * 4. Checks idempotency flags (what's already been charged)
- * 5. Builds line items for new charges
- * 6. Calls appropriate privileged transition to charge customer
- * 7. Updates protectedData to prevent duplicate charges
- * 
+ * Apply daily late fees to a transaction (unified model).
+ *
+ * Under the unified model, both tx states (delivered+scan, accepted+no-scan)
+ * use the same charging logic: $15/day, quantity 1, max 5 charges = $75.
+ * Only transition/privileged-apply-late-fees-non-return (from :state/accepted)
+ * ever fires. Any :state/delivered tx is intercepted by early-return checks.
+ *
+ * Flow:
+ * 1. Load transaction with listing data
+ * 2. Gate: processVersion floor
+ * 3. Early returns: scan-detected, borrower-shipped-in-transit,
+ *    delivered-without-scan, unexpected state
+ * 4. Guard: daysLate <= 1 → scan-lag-grace (no charge on day 1)
+ * 5. Guard: already-charged-today (lastLateFeeDayCharged idempotency)
+ * 6. Guard: max-charges-reached (count-based, 5 charges = $75)
+ * 7. Gate: feature flag (OVERDUE_FEES_CHARGING_ENABLED)
+ * 8. Call privileged-apply-late-fees-non-return with $15 line item
+ *
  * Idempotency:
- * - Late fees: Max one charge per day (tracked by lastLateFeeDayCharged)
- * - Replacement: Max one charge ever (tracked by replacementCharged boolean)
- * - Once replacement is charged, no further daily fees are added
- * 
- * @param {Object} options - Configuration object
- * @param {Object} options.sdkInstance - Flex SDK instance (Integration or trusted)
+ * - Charge dedupe: Flex protectedData lastLateFeeDayCharged (per-day gate)
+ * - Cap: chargeHistory.filter(code='late-fee').length >= 5
+ * - SMS dedupe is separate (Redis, handled by sendOverdueReminders.js)
+ *
+ * @param {Object} options
+ * @param {Object} options.sdkInstance - Flex Integration SDK instance
  * @param {string} options.txId - Transaction UUID
- * @param {string|Date} options.now - Current time (for time-travel testing)
- * 
- * @returns {Promise<Object>} Result object with charged status and items
- * @returns {boolean} returns.charged - True if charges were applied
- * @returns {string[]} [returns.items] - Array of charged item codes (e.g., ['late-fee', 'replacement'])
- * @returns {string} [returns.reason] - Reason if no charges applied (e.g., 'no-op', 'not-overdue')
- * @returns {string} [returns.scenario] - 'delivered-late' or 'non-return'
- * 
- * @throws {Error} If transaction not found, missing return date, or API errors
- * 
- * @example
- * const result = await applyCharges({
- *   sdkInstance: sdk,
- *   txId: 'abc-123-def-456',
- *   now: new Date()
- * });
- * 
- * if (result.charged) {
- *   console.log(`Charged: ${result.items.join(', ')} (scenario: ${result.scenario})`);
- * } else {
- *   console.log(`No charges: ${result.reason}`);
- * }
+ * @param {Date} options.now - Current time (supports FORCE_NOW for testing)
+ * @returns {Promise<Object>} { charged, reason, items, amounts, lateDays, scenario }
  */
 async function applyCharges({ sdkInstance, txId, now }) {
   try {
@@ -219,78 +216,23 @@ async function applyCharges({ sdkInstance, txId, now }) {
     const hasScan = isScanned(returnData);
     const scanDate = returnData.firstScanAt ? dayjs(returnData.firstScanAt) : null;
 
-    let scenario, lateDays, transitionName, effectiveDate;
-    
     // ============================================================================
-    // LATE DAYS CALCULATION LOGIC (Chargeable Business Days)
+    // UNIFIED DAILY CHARGING — early returns for non-chargeable states
     // ============================================================================
-    // Case A: firstScanAt exists (returned, possibly late)
-    //   → lateDays = chargeable days between returnDueDate and scanDate
-    //   → This locks in lateness based on when borrower actually shipped
-    //   → Example: dueDate = Jan 10 (Fri), firstScanAt = Jan 13 (Mon)
-    //     → lateDays = 2 (Sat + Mon; Sunday Jan 12 skipped)
-    //   → Even if today = Jan 20, we STILL use 2 (not 10) - no stacking after scan
-    //
-    // Case B: firstScanAt does not exist (no scan/non-return)
-    //   → lateDays = chargeable days between returnDueDate and today
-    //   → This tracks ongoing lateness for items never returned
-    //   → Example: dueDate = Jan 10 (Fri), today = Jan 13 (Mon)
-    //     → lateDays = 2 (Sat + Mon; Sunday Jan 12 skipped)
-    //   → This updates daily until item is returned or replacement charged
-    //   → Sundays and USPS holidays are excluded from the count
-    //   → All dates normalized to Pacific time (America/Los_Angeles)
+    // Under the unified model, both tx states charge $15/day, quantity 1.
+    // The only question is: has a scan appeared? If yes, stop charging.
+    // Only accepted && !hasScan proceeds to the charging path.
     // ============================================================================
-    
-    if (currentState === 'delivered' && hasScan) {
-      // SCENARIO A: Returned late (has scan, in delivered state)
-      scenario = 'delivered-late';
-      effectiveDate = scanDate;
-      
-      // When a return scan exists, lateDays is calculated using scan date vs due date.
-      // This ensures lateness is locked to when borrower actually shipped, not current date.
-      // Calculate late days based on scan date (when item was actually returned)
-      lateDays = computeChargeableLateDays(scanDate, returnDueAt);
-      
-      transitionName = 'transition/privileged-apply-late-fees';
-      
-      console.log(`[lateFees] SCENARIO A: Returned late`);
-      console.log(`[lateFees] State: ${currentState}, Scan date: ${ymd(scanDate)}, Return due: ${ymd(returnDueAt)}`);
-      console.log(`[lateFees] Days late (based on scan): ${lateDays}`);
-      
-    } else if (currentState === 'accepted' && !hasScan) {
-      // SCENARIO B: Never returned (no scan, still in accepted state)
-      scenario = 'non-return';
-      effectiveDate = dayjs(now);
 
-      // When no scan exists, lateDays is calculated using today vs due date.
-      // This tracks ongoing lateness for items that haven't been returned yet.
-      // Calculate late days based on today (how many days past due)
-      lateDays = computeChargeableLateDays(now, returnDueAt);
+    if (hasScan) {
+      // Scan detected — item has been returned (or is in transit).
+      // No further charging regardless of how many late days remain.
+      console.log(`[lateFees] SKIP tx=${txId} reason=scan-detected ` +
+        `scanDate=${scanDate ? ymd(scanDate) : 'unknown'} returnDueAt=${ymd(returnDueAt)}`);
+      return { charged: false, reason: 'scan-detected' };
+    }
 
-      transitionName = 'transition/privileged-apply-late-fees-non-return';
-
-      console.log(`[lateFees] SCENARIO B: Never returned (state=${currentState})`);
-      console.log(`[lateFees] No scan, Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}`);
-      console.log(`[lateFees] Days late (based on today): ${lateDays}`);
-
-    } else if (currentState === 'accepted' && hasScan) {
-      // POLICY SKIP: Borrower has shipped the return (first scan recorded) but
-      // the package is still in transit — complete-return hasn't fired yet.
-      // The late fee clock stops at first scan; we do not penalize borrowers
-      // for carrier transit time. Normal multi-day window, not an error.
-      // Log the raw ISO firstScanAt (not just the YMD date) so future
-      // staleness investigations can grep for scans older than N days.
-      console.log(`[lateFees] SKIP tx=${txId} reason=borrower-shipped-in-transit state=${currentState} firstScanAt=${returnData.firstScanAt || 'unknown'}`);
-      return {
-        charged: false,
-        reason: 'borrower-shipped-in-transit',
-        state: currentState,
-        hasScan: true,
-        firstScanAt: returnData.firstScanAt || null,
-        scanDate: scanDate ? ymd(scanDate) : null,
-      };
-
-    } else if (currentState === 'delivered' && !hasScan) {
+    if (currentState === 'delivered' && !hasScan) {
       // POLICY SKIP: Transaction reached :state/delivered without a scan on
       // record. Possible causes: operator move, missed webhook, or (future)
       // a non-scan return path such as hand-courier delivery. Policy: once
@@ -304,8 +246,9 @@ async function applyCharges({ sdkInstance, txId, now }) {
         state: currentState,
         hasScan: false,
       };
+    }
 
-    } else {
+    if (currentState !== 'accepted') {
       // Genuine unexpected state (e.g. preauthorized, cancelled, expired).
       // Shouldn't happen inside the overdue cron's query, but guard anyway.
       console.log(`[lateFees] SKIP tx=${txId} reason=state-${currentState}-unhandled hasScan=${hasScan}`);
@@ -316,98 +259,77 @@ async function applyCharges({ sdkInstance, txId, now }) {
         hasScan,
       };
     }
-    
+
+    // ============================================================================
+    // From here: currentState === 'accepted' && !hasScan (Scenario B: non-return)
+    // This is the ONLY path that reaches the charging transition.
+    // ============================================================================
+    const scenario = 'non-return';
+    const effectiveDate = dayjs(now);
+    const lateDays = computeChargeableLateDays(now, returnDueAt);
+
+    console.log(`[lateFees] Charging path: state=${currentState} hasScan=false`);
+    console.log(`[lateFees] Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}, Days late: ${lateDays}`);
+
     if (lateDays < 1) {
       console.log(`[lateFees] Not yet overdue - no charges apply`);
       return {
         charged: false,
         reason: 'not-overdue',
         lateDays,
-        scenario
+        scenario,
       };
     }
 
     // ============================================================================
-    // GATE 2: Day-6 hard cap.
-    // The cron already hard-stops SMS at Day 6. We mirror that cap here
-    // inside applyCharges() so an out-of-band caller can't accidentally
-    // bill past the policy ceiling.
+    // SCAN-LAG GRACE: day 1 cron never charges.
+    // The scan-lag rule says "charge for day N-1 on day N's cron," and there
+    // is no day 0 to charge for. This guard codifies that as a code-level
+    // gate rather than relying solely on cron timing — if the cron ever fires
+    // early or a manual invocation passes daysLate=1, this prevents a false charge.
     // ============================================================================
-    if (lateDays > MAX_CHARGEABLE_DAYS) {
-      console.log(`[lateFees] SKIP tx=${txId} reason=exceeded-max-chargeable-days lateDays=${lateDays} max=${MAX_CHARGEABLE_DAYS}`);
-      return {
-        charged: false,
-        reason: 'exceeded-max-chargeable-days',
-        lateDays,
-        maxChargeableDays: MAX_CHARGEABLE_DAYS,
-        scenario,
-      };
+    if (lateDays <= 1) {
+      console.log(`[lateFees] SKIP tx=${txId} reason=scan-lag-grace daysLate=${lateDays}`);
+      return { charged: false, reason: 'scan-lag-grace', daysLate: lateDays };
     }
-    
-    // Get idempotency flags
+
+    // Per-day idempotency: only one charge per effective date
     const lastLateFeeDayCharged = returnData.lastLateFeeDayCharged;
-    const replacementCharged = returnData.replacementCharged === true;
-    
-    console.log(`[lateFees] Idempotency: lastFeeDay=${lastLateFeeDayCharged}, replacementCharged=${replacementCharged}`);
-    
-    // Build line items for new charges
-    const newLineItems = [];
     const effectiveYmd = ymd(effectiveDate);
-    
-    // Late fee logic:
-    // - Days 1-4: Charge $15/day (one charge per day, idempotent)
-    // - Day 5+: Skip daily fees, charge replacement instead
-    // - If replacement already charged, skip everything
-    
-    if (replacementCharged) {
-      console.log(`[lateFees] Replacement already charged - no further charges apply`);
-    } else if (AUTO_REPLACEMENT_ENABLED && lateDays >= 5) {
-      // Replacement charging is feature-flagged OFF. This block remains for future use.
-      const replacementCents = getReplacementValue(listing);
-      newLineItems.push({
-        code: 'replacement',
-        unitPrice: { amount: replacementCents, currency: 'USD' },
-        quantity: 1,
-        percentage: 0,
-        includeFor: ['customer']
-      });
-      console.log(`[lateFees] Adding replacement charge: $${replacementCents / 100} (Day ${lateDays}+)`);
-    } else if (lateDays >= 1) {
-      if (lateDays >= 5 && !AUTO_REPLACEMENT_ENABLED) {
-        // Day 5+ behavior (auto replacement disabled):
-        // - Automatic replacement is disabled
-        // - Continue charging daily late fees
-        // - Replacement, if needed, is handled manually by an operator
-        console.log('[lateFees] [replacement-disabled] lateDays>=5; auto replacement disabled; continuing daily late fees only');
-      }
-      // Days 1+ (including 5+ when replacement is disabled): charge daily late fee if not already charged for this day
-      if (lastLateFeeDayCharged !== effectiveYmd) {
-        newLineItems.push({
-          code: 'late-fee',
-          unitPrice: { amount: LATE_FEE_CENTS, currency: 'USD' },
-          quantity: 1,
-          percentage: 0,
-          includeFor: ['customer']
-        });
-        console.log(`[lateFees] Adding late fee: $${LATE_FEE_CENTS / 100} for day ${lateDays} (effective date: ${effectiveYmd})`);
-      } else {
-        console.log(`[lateFees] Late fee already charged for effective date ${effectiveYmd}`);
-      }
+
+    if (lastLateFeeDayCharged === effectiveYmd) {
+      console.log(`[lateFees] SKIP tx=${txId} reason=already-charged-today effective=${effectiveYmd}`);
+      return { charged: false, reason: 'already-charged-today', lateDays, scenario };
     }
-    
-    // No-op path: Nothing to charge
-    if (newLineItems.length === 0) {
-      console.log(`[lateFees] No new charges to apply`);
-      return { 
-        charged: false, 
-        reason: 'no-op',
-        lateDays,
-        scenario,
-        lastLateFeeDayCharged,
-        replacementCharged
-      };
+
+    // ============================================================================
+    // COUNT-BASED CAP: max 5 charges total = $75.
+    // Count-based (how many times we've charged), not day-based. If cron missed
+    // a day, the borrower isn't penalized for our infrastructure gaps.
+    // Filter by code='late-fee' (not scenario) so old 'non-return' entries
+    // from before the 'daily-overdue' rename still count toward the cap.
+    // ============================================================================
+    const priorChargeCount = (returnData.chargeHistory || [])
+      .filter(e => e.items?.some(i => i.code === 'late-fee'))
+      .length;
+
+    if (priorChargeCount >= MAX_LATE_FEE_CHARGES) {
+      console.log(`[lateFees] SKIP tx=${txId} reason=max-charges-reached count=${priorChargeCount}`);
+      return { charged: false, reason: 'max-charges-reached', chargeCount: priorChargeCount, lateDays, scenario };
     }
-    
+
+    // Build the line item — always quantity: 1, always $15.
+    const newLineItems = [{
+      code: 'late-fee',
+      unitPrice: { amount: LATE_FEE_CENTS, currency: 'USD' },
+      quantity: 1,
+      percentage: 0,
+      includeFor: ['customer'],
+    }];
+
+    console.log(`[lateFees] Charging $${LATE_FEE_CENTS / 100} for tx=${txId} ` +
+      `day=${lateDays} effective=${effectiveYmd} chargeCount=${priorChargeCount + 1}/${MAX_LATE_FEE_CHARGES}`);
+
     // ============================================================================
     // GATE 3: Feature flag.
     // Master kill switch. Ships defaulted OFF. Until flipped to true in the
@@ -430,11 +352,14 @@ async function applyCharges({ sdkInstance, txId, now }) {
       };
     }
 
-    console.log(`[lateFees] Calling ${transitionName} with ${newLineItems.length} line items...`);
+    // ============================================================================
+    // TRANSITION CALL
+    // Under the unified model, only privileged-apply-late-fees-non-return fires
+    // (from :state/accepted). See file-level docstring for vestigial transition note.
+    // ============================================================================
+    const transitionName = 'transition/privileged-apply-late-fees-non-return';
+    console.log(`[lateFees] Calling ${transitionName} with 1 line item...`);
 
-    // Call privileged transition to apply charges.
-    // :action/privileged-set-line-items reads from params.lineItems; no other
-    // key is documented or consumed by any Flex action.
     await sdkInstance.transactions.transition({
       id: txId,
       transition: transitionName,
@@ -444,36 +369,33 @@ async function applyCharges({ sdkInstance, txId, now }) {
           ...protectedData,
           return: {
             ...returnData,
-            // Update idempotency flags
-            lastLateFeeDayCharged: newLineItems.find(i => i.code === 'late-fee') 
-              ? effectiveYmd 
-              : lastLateFeeDayCharged,
-            replacementCharged: replacementCharged || newLineItems.some(i => i.code === 'replacement'),
-            // Track charge history
+            lastLateFeeDayCharged: effectiveYmd,
+            // Track charge history with 'daily-overdue' scenario.
+            // Old entries used 'non-return' — cap filter uses code='late-fee',
+            // not scenario, so they're backward-compatible.
             chargeHistory: [
               ...(returnData.chargeHistory || []),
               {
                 date: effectiveYmd,
-                scenario: scenario,
+                scenario: 'daily-overdue',
                 items: newLineItems.map(i => ({ code: i.code, amount: i.unitPrice.amount })),
                 timestamp: dayjs(now).toISOString(),
-                lateDays: lateDays
+                lateDays,
               }
             ]
           }
         }
       }
     });
-    
-    console.log(`[lateFees] ✅ Charges applied successfully (scenario: ${scenario})`);
-    
-    // Return success
+
+    console.log(`[lateFees] Charges applied successfully (${transitionName}, day ${lateDays}, $${LATE_FEE_CENTS / 100})`);
+
     return {
       charged: true,
-      items: newLineItems.map(i => i.code),
-      amounts: newLineItems.map(i => ({ code: i.code, cents: i.unitPrice.amount })),
+      items: ['late-fee'],
+      amounts: [{ code: 'late-fee', cents: LATE_FEE_CENTS }],
       lateDays,
-      scenario
+      scenario,
     };
     
   } catch (error) {
