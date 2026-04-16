@@ -535,6 +535,14 @@ async function sendOverdueReminders() {
       try {
         if (DRY_RUN) {
           console.log(`💳 [DRY_RUN] Would evaluate charges for tx ${txId || '(no id)'} (scenario: ${scenario})`);
+          console.log(JSON.stringify({
+            event: 'overdue.charge.dryrun',
+            txId,
+            scenario,
+            daysLate,
+            flag: 'DRY_RUN',
+            ts: new Date().toISOString(),
+          }));
         } else {
           chargeResult = await applyCharges({
             sdkInstance: integSdk,  // Use Integration SDK for privileged transition
@@ -549,8 +557,19 @@ async function sendOverdueReminders() {
                 console.log(`   💰 ${a.code}: $${(a.cents / 100).toFixed(2)}`);
               });
             }
+            // Structured log for Render log drain (PR-5)
+            console.log(JSON.stringify({
+              event: 'overdue.charge',
+              txId,
+              scenario,
+              lateDays: chargeResult.lateDays,
+              items: chargeResult.items,
+              amounts: chargeResult.amounts,
+              flag: 'LIVE',
+              ts: new Date().toISOString(),
+            }));
             charged++;
-            
+
             // Trigger payout only after confirmed replacement charge
             if (chargeResult.items.includes('replacement')) {
               await triggerReplacementCompletionIfNeeded({
@@ -560,6 +579,16 @@ async function sendOverdueReminders() {
             }
           } else {
             console.log(`ℹ️ [${scenario}] No charge for tx ${txId || '(no id)'} (${chargeResult.reason || 'n/a'})`);
+            // Structured log for Render log drain (PR-5)
+            console.log(JSON.stringify({
+              event: 'overdue.charge.skip',
+              txId,
+              scenario,
+              reason: chargeResult.reason,
+              lateDays: chargeResult.lateDays || daysLate,
+              flag: OVERDUE_FEES_CHARGING_ENABLED ? 'LIVE' : 'DISABLED',
+              ts: new Date().toISOString(),
+            }));
           }
         }
       } catch (chargeError) {
@@ -605,6 +634,15 @@ async function sendOverdueReminders() {
           }
         }
         
+        // Structured log for Render log drain (PR-5)
+        console.error(JSON.stringify({
+          event: 'overdue.charge.error',
+          txId: txId || tx?.id?.uuid,
+          scenario,
+          error: chargeError.message,
+          status: chargeError.response?.status || chargeError.status,
+          ts: new Date().toISOString(),
+        }));
         chargesFailed++;
       }
 
