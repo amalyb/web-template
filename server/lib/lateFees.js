@@ -60,17 +60,16 @@ const MIN_PROCESS_VERSION_FOR_LATE_FEES = 4;
 // and we shouldn't penalize the borrower for our infrastructure gaps.
 const MAX_LATE_FEE_CHARGES = 5;
 
-// Feature flag: gate automatic replacement charges (Day 5+) while keeping daily late fees
+// Automatic replacement charging is DISABLED. All replacement charges are
+// manual/operator-only (see PR-3b day-6 email alert for the operator cue).
 const AUTO_REPLACEMENT_ENABLED = false;
 
 /**
- * Check if return shipment has been scanned by carrier
- * 
- * Current policy: We continue charging late fees until carrier accepts the package.
- * Once scanned as "accepted" or "in_transit", late fees stop but replacement is prevented.
- * 
- * Adjust this logic if your policy differs (e.g., continue fees until delivered).
- * 
+ * Check if return shipment has been scanned by carrier.
+ *
+ * Under the unified model, a scan stops ALL charging immediately — the
+ * 'scan-detected' early return in applyCharges() relies on this function.
+ *
  * @param {Object} returnData - transaction.protectedData.return
  * @returns {boolean} True if package has been scanned/accepted by carrier
  */
@@ -92,9 +91,10 @@ function isScanned(returnData) {
 }
 
 /**
- * Get replacement value from listing metadata
- * Tries multiple fields in priority order
- * 
+ * Get replacement value from listing metadata.
+ * Used by the MANUAL replacement path only (operator-initiated).
+ * Not called by the daily late-fee charging logic.
+ *
  * @param {Object} listing - Listing object from Flex API
  * @returns {number} Replacement value in cents
  * @throws {Error} If no replacement value found in listing
@@ -261,7 +261,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
     }
 
     // ============================================================================
-    // From here: currentState === 'accepted' && !hasScan (Scenario B: non-return)
+    // From here: currentState === 'accepted' && !hasScan (non-return path)
     // This is the ONLY path that reaches the charging transition.
     // ============================================================================
     // NOTE: `scenario` in the *return value* stays 'non-return' for backward-compat
