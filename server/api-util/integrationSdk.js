@@ -87,6 +87,12 @@ const ALLOWED_PROTECTED_DATA_KEYS = [
   'returnTrackingUrl',
   'borrowerReturnLabelEmailSent', // Email idempotency flag for borrower return label emails
   'lenderOutboundLabelEmailSent', // Email idempotency flag for lender outbound label emails
+  // Webhook-written scan/status state. Required by hasOutboundScan() and by
+  // the first-scan / delivered SMS idempotency gates in shippoTracking.js.
+  'shippingNotification',
+  'lastTrackingStatus',
+  // Cross-process flags for return-reminder SMS dedupe (H2).
+  'returnSms',
 ];
 
 /**

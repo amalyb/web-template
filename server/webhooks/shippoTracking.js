@@ -1191,7 +1191,6 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         message = "🎁 Your Sherbrt borrow has arrived! 🎉 Slay & tag @shoponsherbrt 🍧\nNeed anything? bestie@sherbrt.com";
         smsType = 'delivery';
         protectedDataUpdate = {
-          ...(protectedData || {}),
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
@@ -1230,7 +1229,6 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         console.log(`[STEP-4] Sending borrower SMS for tracking ${trackingNumber}, txId=${transaction.id}`);
         console.log(`[STEP-4] Message length: ${message.length} chars, shortLink: ${shortTrackingUrl}`);
         protectedDataUpdate = {
-          ...(protectedData || {}),
           lastTrackingStatus: {
             status: trackingStatus,
             substatus: substatus,
@@ -1335,28 +1333,13 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           console.log(`✅ ${smsType} SMS sent successfully to ${borrowerPhone}`);
         }
         
-        // Mark SMS as sent in transaction protectedData (only if SMS was actually sent)
+        // Mark SMS as sent in transaction protectedData (only if SMS was actually sent).
+        // transition/store-shipping-urls does not exist in process.edn — using the
+        // Integration-SDK protectedData upsert path instead (B2, 9.2 pre-QA fixes).
         try {
-          const sdk = getIntegrationSdk();
-          
-          if (isFirstScan) {
-            // Use privileged transition for first scan updates
-            await sdk.transactions.transition({
-              id: transaction.id,
-              transition: 'transition/store-shipping-urls',
-              params: { protectedData: protectedDataUpdate }
-            });
-          } else {
-            // Use privileged transition for delivery updates (consistent approach)
-            await sdk.transactions.transition({
-              id: transaction.id,
-              transition: 'transition/store-shipping-urls',
-              params: { protectedData: protectedDataUpdate }
-            });
-          }
-          
+          const txIdStr = transaction.id.uuid || transaction.id;
+          await upsertProtectedData(txIdStr, protectedDataUpdate, { source: 'webhook' });
           console.log(`💾 Updated transaction protectedData: ${smsType} SMS sent = true`);
-          
         } catch (updateError) {
           console.error(`❌ Failed to update transaction protectedData for ${smsType}:`, updateError.message);
           // Don't fail the webhook if we can't update the flag
