@@ -587,7 +587,7 @@ async function sendOverdueReminders() {
               scenario,
               reason: chargeResult.reason,
               lateDays: chargeResult.lateDays || daysLate,
-              flag: OVERDUE_FEES_CHARGING_ENABLED ? 'LIVE' : 'DISABLED',
+              flag: process.env.OVERDUE_FEES_CHARGING_ENABLED === 'true' ? 'LIVE' : 'DISABLED',
               ts: new Date().toISOString(),
             }));
           }
