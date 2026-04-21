@@ -934,7 +934,15 @@ if (require.main === module) {
     // Run immediately for testing
     runDaily();
   } else {
-    sendOverdueReminders();
+    sendOverdueReminders()
+      .then(() => {
+        console.log('✅ Overdue reminders script complete, exiting.');
+        process.exit(0);
+      })
+      .catch(err => {
+        console.error('❌ Overdue reminders script failed:', err);
+        process.exit(1);
+      });
   }
 }
 
