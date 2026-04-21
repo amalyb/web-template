@@ -15,7 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCRIPT = path.resolve(__dirname, '..', 'sendReturnReminders.js');
+const SCRIPT = path.resolve(__dirname, 'sendReturnReminders.js');
 
 describe('H2 — upsertProtectedData migration', () => {
   test('source no longer references updateTransactionProtectedData helper', () => {
@@ -60,7 +60,7 @@ describe('H2 — return + returnSms survive the whitelist prune', () => {
   });
 
   test('T-1 patch reaches updateMetadata with return.tMinus1SentAt intact', async () => {
-    const { upsertProtectedData } = require('../../lib/txData');
+    const { upsertProtectedData } = require('../lib/txData');
     await upsertProtectedData(
       'tx-h2',
       {
@@ -75,7 +75,7 @@ describe('H2 — return + returnSms survive the whitelist prune', () => {
   });
 
   test('TODAY patch reaches updateMetadata with return + returnSms intact', async () => {
-    const { upsertProtectedData } = require('../../lib/txData');
+    const { upsertProtectedData } = require('../lib/txData');
     await upsertProtectedData(
       'tx-h2',
       {

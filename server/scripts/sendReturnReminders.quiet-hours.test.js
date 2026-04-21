@@ -10,9 +10,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const { withinSendWindow } = require('../../util/time');
+const { withinSendWindow } = require('../util/time');
 
-const SCRIPT = path.resolve(__dirname, '..', 'sendReturnReminders.js');
+const SCRIPT = path.resolve(__dirname, 'sendReturnReminders.js');
 
 describe('H1 — quiet-hours gate ordering', () => {
   const originalForceNow = process.env.FORCE_NOW;

@@ -24,7 +24,7 @@ jest.mock('sharetribe-flex-integration-sdk', () => ({
 process.env.INTEGRATION_CLIENT_ID = 'test-client-id';
 process.env.INTEGRATION_CLIENT_SECRET = 'test-client-secret';
 
-const { upsertProtectedData } = require('../../lib/txData');
+const { upsertProtectedData } = require('../lib/txData');
 
 describe('B2 — webhook protectedData upsert shape', () => {
   beforeEach(() => {

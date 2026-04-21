@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SCRIPT = path.resolve(__dirname, '..', 'sendOverdueReminders.js');
+const SCRIPT = path.resolve(__dirname, 'sendOverdueReminders.js');
 
 describe('sendOverdueReminders — overdue.charge.skip logging', () => {
   const originalFlag = process.env.OVERDUE_FEES_CHARGING_ENABLED;
