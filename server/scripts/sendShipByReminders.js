@@ -3,7 +3,7 @@ let { sendSMS } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { computeShipByDate, formatShipBy } = require('../lib/shipping');
 const { shortLink } = require('../api-util/shortlink');
-const { hasOutboundScan } = require('../lib/txData');
+const { hasOutboundScan, upsertProtectedData } = require('../lib/txData');
 const { withinSendWindow } = require('../util/time');
 
 // Create a trusted SDK instance for scripts (no req needed)
@@ -249,28 +249,29 @@ async function sendShipByReminders() {
             }
           });
           
-          // Only mark reminder as sent if SMS was actually sent
+          // Only mark reminder as sent if SMS was actually sent.
+          // sdk.transactions.update is not exposed by the Integration SDK;
+          // using the protectedData upsert helper instead (H3, 9.2 pre-QA fixes).
           if (!smsResult?.skipped) {
             const updatedReminders = { ...reminders, [reminderKey]: new Date().toISOString() };
-            
+            const txIdStr = tx.id?.uuid || tx.id;
+
             try {
-              await sdk.transactions.update({
-                id: tx.id,
-                attributes: {
-                  protectedData: {
-                    ...protectedData,
-                    outbound: {
-                      ...outbound,
-                      reminders: updatedReminders
-                    }
-                  }
-                }
-              });
+              await upsertProtectedData(
+                txIdStr,
+                {
+                  outbound: {
+                    ...outbound,
+                    reminders: updatedReminders,
+                  },
+                },
+                { source: 'ship-by-reminders' }
+              );
               console.log(`💾 Updated transaction reminders: ${reminderKey} sent`);
             } catch (updateError) {
               console.error(`❌ Failed to update transaction reminders:`, updateError.message);
             }
-            
+
             sent++;
           } else {
             console.log(`⏭️ SMS skipped (${smsResult.reason}) - NOT updating reminder flag for tx ${tx?.id?.uuid || '(no id)'}`);
