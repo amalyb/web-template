@@ -52,7 +52,8 @@ const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { getFirstChargeableLateDate } = require('../lib/businessDays');
 const { getRedis } = require('../redis');
-const { withinSendWindow } = require('../util/time');
+const { withinSendWindow, getNow } = require('../util/time');
+const { upsertProtectedData } = require('../lib/txData');
 
 // In-memory guards to avoid repeat sends within the same daemon process
 // if Flex protectedData updates fail. Keys are txId → local date string.
@@ -163,58 +164,6 @@ const normalizeTxId = (txId) =>
   txId?.id?.uuid ||
   txId?.id ||
   (typeof txId === 'string' ? txId : txId?.toString?.());
-
-async function updateTransactionProtectedData(sdk, txId, protectedDataPatch, { context } = {}) {
-  const txApi = sdk?.transactions || {};
-  const available = listTransactionMethods(sdk);
-  const method = typeof txApi.update === 'function'
-    ? 'update'
-    : typeof txApi.updateMetadata === 'function'
-      ? 'updateMetadata'
-      : typeof txApi.updateProtectedData === 'function'
-        ? 'updateProtectedData'
-        : null;
-
-  if (!method) {
-    const message = `[RETURN-REMINDER] No transaction update method available; methods=[${available.join(', ') || 'none'}]`;
-    const err = new Error(message);
-    err.availableMethods = available;
-    throw err;
-  }
-
-  const idForMetadata = normalizeTxId(txId);
-
-  try {
-    if (method === 'update') {
-      return await txApi.update({
-        id: txId,
-        attributes: { protectedData: protectedDataPatch },
-      });
-    }
-    if (method === 'updateMetadata') {
-      return await txApi.updateMetadata({
-        id: idForMetadata,
-        protectedData: protectedDataPatch,
-      });
-    }
-    // updateProtectedData is not standard, but handle if present.
-    return await txApi.updateProtectedData({
-      id: idForMetadata,
-      protectedData: protectedDataPatch,
-    });
-  } catch (err) {
-    console.error(
-      `[RETURN-REMINDER][TX-UPDATE-ERROR] method=${method} context=${context || 'unknown'} available=[${available.join(', ') || 'none'}] message=${err?.message || err}`
-    );
-    throw err;
-  }
-}
-
-function logAvailableTransactionMethods(sdk) {
-  console.error(
-    `[RETURN-REMINDER-DEBUG] sdk.transactions methods: ${listTransactionMethods(sdk).join(', ') || 'none'}`
-  );
-}
 
 async function acquireRedisLock(key, ttlSeconds, { context } = {}) {
   const status = redis?.status;
@@ -616,6 +565,17 @@ async function sendReturnReminders(allowExitOnError = true) {
           continue;
         }
 
+        // Quiet-hours gate must run BEFORE acquireRedisLock. The per-tx lock
+        // has a 24h TTL; if the first tick of the day lands in quiet hours
+        // and the lock is grabbed, every subsequent tick that day short-
+        // circuits on "lock already held" and the SMS is lost for the day.
+        // Pattern A: 15-min cron poll naturally retries once we're back in
+        // the send window.
+        if (!withinSendWindow(getNow())) {
+          console.log(`[RETURN-REMINDER][QUIET-HOURS] tx=${tx?.id?.uuid || '(no id)'} — deferred to next poll`);
+          continue;
+        }
+
         // Per-tx per-day per-type Redis lock to prevent duplicates
         const perTxLockKey = `return-reminders:${reminderType}:${txId}:${todayLocalDate}`;
         const perTxLock = await acquireRedisLock(perTxLockKey, 60 * 60 * 24, {
@@ -633,12 +593,6 @@ async function sendReturnReminders(allowExitOnError = true) {
 
         if (VERBOSE) {
           console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
-        }
-
-        // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
-        if (!withinSendWindow()) {
-          console.log(`[RETURN-REMINDER][QUIET-HOURS] tx=${tx?.id?.uuid || '(no id)'} — deferred to next poll`);
-          continue;
         }
 
         try {
@@ -662,31 +616,26 @@ async function sendReturnReminders(allowExitOnError = true) {
             
             if (reminderType === 'T-1') {
               try {
-                await updateTransactionProtectedData(
-                  sdk,
-                  tx.id,
+                await upsertProtectedData(
+                  normalizeTxId(tx.id),
                   {
-                    ...pd,
                     return: {
                       ...returnData,
                       tMinus1SentAt: timestamp,
                     },
                   },
-                  { context: `T-1 tx=${txId} day=${todayLocalDate}` }
+                  { source: 'return-reminders' }
                 );
                 console.log(`💾 Marked T-1 SMS as sent for tx ${tx?.id?.uuid || '(no id)'}`);
               } catch (updateError) {
-                logAxios(updateError, `sdk.transactions.update T-1 tx=${txId} day=${todayLocalDate}`);
-                logAvailableTransactionMethods(sdk);
+                logAxios(updateError, `upsertProtectedData T-1 tx=${txId} day=${todayLocalDate}`);
                 console.error(`❌ Failed to mark T-1 as sent:`, updateError.message);
               }
             } else if (reminderType === 'TODAY') {
               try {
-                await updateTransactionProtectedData(
-                  sdk,
-                  tx.id,
+                await upsertProtectedData(
+                  normalizeTxId(tx.id),
                   {
-                    ...pd,
                     return: {
                       ...returnData,
                       todayReminderSentAt: timestamp,
@@ -696,12 +645,11 @@ async function sendReturnReminders(allowExitOnError = true) {
                       dueTodayLastSentLocalDate: todayLocalDate,
                     },
                   },
-                  { context: `TODAY tx=${txId} day=${todayLocalDate}` }
+                  { source: 'return-reminders' }
                 );
                 console.log(`💾 Marked TODAY reminder as sent for tx ${tx?.id?.uuid || '(no id)'}`);
               } catch (updateError) {
-                logAxios(updateError, `sdk.transactions.update TODAY tx=${txId} day=${todayLocalDate}`);
-                logAvailableTransactionMethods(sdk);
+                logAxios(updateError, `upsertProtectedData TODAY tx=${txId} day=${todayLocalDate}`);
                 console.error(`❌ Failed to mark TODAY reminder as sent:`, updateError.message);
                 // Prevent spam in this daemon cycle if Flex update fails
                 sentTodayByTx.set(txId, todayLocalDate);
@@ -719,11 +667,9 @@ async function sendReturnReminders(allowExitOnError = true) {
               });
               // Mark late reminder as sent (once per PT day)
               try {
-                await updateTransactionProtectedData(
-                  sdk,
-                  tx.id,
+                await upsertProtectedData(
+                  normalizeTxId(tx.id),
                   {
-                    ...pd,
                     return: {
                       ...returnData,
                       tomorrowReminderSentAt: timestamp,
@@ -733,12 +679,11 @@ async function sendReturnReminders(allowExitOnError = true) {
                       lateLastSentLocalDate: todayLocalDate,
                     },
                   },
-                  { context: `LATE tx=${txId} day=${todayLocalDate}` }
+                  { source: 'return-reminders' }
                 );
                 console.log(`💾 Marked LATE reminder as sent for tx ${tx?.id?.uuid || '(no id)'} (lateStartLocalDate=${lateStartLocalDate})`);
               } catch (updateError) {
-                logAxios(updateError, `sdk.transactions.update LATE tx=${txId} day=${todayLocalDate}`);
-                logAvailableTransactionMethods(sdk);
+                logAxios(updateError, `upsertProtectedData LATE tx=${txId} day=${todayLocalDate}`);
                 console.error(`❌ Failed to mark LATE as sent:`, updateError.message);
                 // Prevent spam in this daemon cycle if Flex update fails
                 lateSentTodayByTx.set(txId, todayLocalDate);

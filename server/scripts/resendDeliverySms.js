@@ -12,6 +12,7 @@
 require('dotenv').config();
 
 const { getIntegrationSdk } = require('../api-util/integrationSdk');
+const { upsertProtectedData } = require('../lib/txData');
 const { SMS_TAGS } = require('../lib/sms/tags');
 const { timestamp } = require('../util/time');
 const sendSMS = require('../api-util/sendSMS').sendSMS;
@@ -107,10 +108,11 @@ async function main() {
     console.log('[RESEND-DELIVERY] SMS send result:', smsResult);
   }
 
-  // Mark as sent for idempotency when SMS actually went out
+  // Mark as sent for idempotency when SMS actually went out.
+  // transition/store-shipping-urls does not exist in process.edn — using the
+  // Integration-SDK protectedData upsert path instead (B2, 9.2 pre-QA fixes).
   try {
     const pdUpdate = {
-      ...(protectedData || {}),
       lastTrackingStatus: {
         ...(protectedData.lastTrackingStatus || {}),
         status: 'DELIVERED',
@@ -123,11 +125,8 @@ async function main() {
       },
     };
 
-    await integrationSdk.transactions.transition({
-      id: tx.id,
-      transition: 'transition/store-shipping-urls',
-      params: { protectedData: pdUpdate },
-    });
+    const txIdStr = tx.id.uuid || tx.id;
+    await upsertProtectedData(txIdStr, pdUpdate, { source: 'resend-delivery' });
 
     console.log('[RESEND-DELIVERY] Marked delivery SMS as sent in protectedData');
   } catch (updateError) {

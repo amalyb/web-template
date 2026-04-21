@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 /**
  * Shipping Reminder SMS Script
- * 
- * Sends three types of outbound shipping reminders:
+ *
+ * Sends two types of outbound shipping reminders:
  * 1. 24-hour "ship by tomorrow" reminder
  * 2. End-of-day "not scanned yet" alert
- * 3. 48-hour "auto-cancel" flow for unshipped items
- * 
+ *
+ * Cancel policy for unshipped bookings lives in sendAutoCancelUnshipped.js.
+ * This script only sends ship-by reminders (24h, EOD); it does NOT cancel.
+ *
  * CRON SCHEDULING (Render/Heroku):
  * Run every 15 minutes: *\/15 * * * * node server/scripts/sendShippingReminders.js
- * 
+ *
  * For testing:
  * npm run test:shipping-reminders
  */
@@ -39,7 +41,6 @@ const { getRedis } = require('../redis');
 // Keys per transaction, per phase:
 //   shippingReminder:{txId}:24h:sent     (TTL 7 days)
 //   shippingReminder:{txId}:eod:sent     (TTL 7 days)
-//   shippingReminder:{txId}:cancel:sent  (TTL 7 days)
 //   shippingReminder:{txId}:{phase}:inFlight  (TTL 10 min)
 // ──────────────────────────────────────────────────────────────────────────
 const SENT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
@@ -220,41 +221,6 @@ function isEndOfShipByDay(shipByDate) {
   return now.getUTCHours() >= 22;
 }
 
-/**
- * Cancel a transaction via Sharetribe API
- * Uses transition/cancel which requires operator role
- * Respects DRY mode - will not actually cancel in dry-run mode
- */
-async function cancelTransaction(txId, integrationSdk) {
-  if (DRY) {
-    console.log('[shipping-reminder] DRY-RUN: Would cancel transaction', txId);
-    return { success: true, dryRun: true };
-  }
-  
-  try {
-    console.log('[shipping-reminder] Attempting to cancel transaction', txId);
-    
-    const response = await integrationSdk.transactions.transition({
-      id: txId,
-      transition: 'transition/cancel',
-      params: {}
-    });
-    
-    console.log('[shipping-reminder] Transaction canceled successfully', txId);
-    return { success: true, transaction: response?.data?.data };
-  } catch (error) {
-    console.error('[shipping-reminder] Failed to cancel transaction', txId, error.message);
-    
-    // Check if transaction is already canceled or in invalid state
-    if (error.response?.status === 400 || error.response?.status === 409) {
-      console.log('[shipping-reminder] Transaction may already be canceled or in invalid state');
-      return { success: false, error: 'invalid_state' };
-    }
-    
-    return { success: false, error: error.message };
-  }
-}
-
 async function sendShippingReminders() {
   console.log('[shipping-reminder] Starting shipping reminder SMS script...');
   
@@ -319,7 +285,7 @@ async function sendShippingReminders() {
     
     console.log(`[shipping-reminder] Found ${transactions.length} accepted transactions`);
     
-    let sent24h = 0, sentEndOfDay = 0, sentCancel = 0, failed = 0, processed = 0;
+    let sent24h = 0, sentEndOfDay = 0, failed = 0, processed = 0;
     
     for (const tx of transactions) {
       processed++;
@@ -436,14 +402,11 @@ async function sendShippingReminders() {
       }
       
       const shipByStr = formatDateForSMS(shipByDate);
-      
-      // Calculate time differences in hours
+
       const nowMs = now.getTime();
       const shipByMs = shipBy.getTime();
-      const msUntilShipBy = shipByMs - nowMs;
-      const hoursUntilShipBy = msUntilShipBy / (1000 * 60 * 60);
-      const hoursAfterShipBy = -hoursUntilShipBy; // Negative if before, positive if after
-      
+
+
       // 1. 24-hour before ship-by reminder
       // Normally the anchor is (shipBy - 24h). Mirror shipping.adjustIfSundayUTC:
       // if that anchor lands on Sunday, roll back to Saturday same time-of-day
@@ -537,63 +500,15 @@ async function sendShippingReminders() {
         }
       }
       
-      // 3. Auto-cancel after 48 hours past ship-by
-      // Check if ship-by date has passed and we're 48-72 hours after
-      if (hoursAfterShipBy >= 48 && hoursAfterShipBy < 72) {
-        if (await isSent(redis, txId, 'cancel')) {
-          if (VERBOSE) console.log(`[shipping-reminder] Skip auto-cancel for tx ${txId} — already sent`);
-        } else if (await isInFlight(redis, txId, 'cancel')) {
-          if (VERBOSE) console.log(`[shipping-reminder] Skip auto-cancel for tx ${txId} — inFlight`);
-        } else {
-          console.log(`[shipping-reminder] Auto-cancel triggered for tx ${txId}`);
-          // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
-          if (!withinSendWindow()) {
-            console.log(`[shipping-reminder][QUIET-HOURS] tx=${txId} cancel — deferred to next poll`);
-            continue;
-          }
-          try {
-            await markInFlight(redis, txId, 'cancel');
-
-            const cancelResult = await cancelTransaction(txId, sdk);
-
-            if (cancelResult.success || cancelResult.error === 'invalid_state' || cancelResult.dryRun) {
-              const message = `Sherbrt 🍧: Your item was not shipped out in time. This transaction has been canceled.`;
-              const smsResult = await sendSMS(providerPhone, message, {
-                role: 'lender',
-                tag: 'shipping_auto_cancel',
-                meta: { transactionId: txId, listingId: listing?.id?.uuid || listing?.id, direction: 'outbound' }
-              });
-
-              if (!smsResult?.skipped) {
-                await markSent(redis, txId, 'cancel');
-                console.log(`[shipping-reminder] Marked auto-cancel as sent for tx ${txId}`);
-                sentCancel++;
-              } else {
-                await clearInFlight(redis, txId, 'cancel');
-                console.log(`[shipping-reminder] SMS skipped (${smsResult.reason}) - NOT marking auto-cancel as sent for tx ${txId}`);
-              }
-            } else {
-              console.error(`[shipping-reminder] Failed to cancel transaction ${txId}, skipping SMS`);
-              await clearInFlight(redis, txId, 'cancel');
-              failed++;
-            }
-          } catch (e) {
-            console.error(`[shipping-reminder] Auto-cancel failed for tx ${txId}:`, e?.message || e);
-            await clearInFlight(redis, txId, 'cancel');
-            failed++;
-          }
-        }
-      }
-      
-      if (LIMIT && (sent24h + sentEndOfDay + sentCancel) >= LIMIT) {
+      if (LIMIT && (sent24h + sentEndOfDay) >= LIMIT) {
         console.log(`[shipping-reminder] Limit reached (${LIMIT}). Stopping.`);
         break;
       }
     }
-    
-    console.log(`\n[shipping-reminder] Done. 24h=${sent24h} EndOfDay=${sentEndOfDay} Cancel=${sentCancel} Failed=${failed} Processed=${processed}`);
+
+    console.log(`\n[shipping-reminder] Done. 24h=${sent24h} EndOfDay=${sentEndOfDay} Failed=${failed} Processed=${processed}`);
     if (DRY) {
-      console.log('[shipping-reminder] DRY-RUN mode: no real SMS were sent and no transactions were canceled.');
+      console.log('[shipping-reminder] DRY-RUN mode: no real SMS were sent.');
     }
     
   } catch (err) {
