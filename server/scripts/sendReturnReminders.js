@@ -52,7 +52,7 @@ const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { getFirstChargeableLateDate } = require('../lib/businessDays');
 const { getRedis } = require('../redis');
-const { withinSendWindow } = require('../util/time');
+const { withinSendWindow, getNow } = require('../util/time');
 
 // In-memory guards to avoid repeat sends within the same daemon process
 // if Flex protectedData updates fail. Keys are txId → local date string.
@@ -616,6 +616,17 @@ async function sendReturnReminders(allowExitOnError = true) {
           continue;
         }
 
+        // Quiet-hours gate must run BEFORE acquireRedisLock. The per-tx lock
+        // has a 24h TTL; if the first tick of the day lands in quiet hours
+        // and the lock is grabbed, every subsequent tick that day short-
+        // circuits on "lock already held" and the SMS is lost for the day.
+        // Pattern A: 15-min cron poll naturally retries once we're back in
+        // the send window.
+        if (!withinSendWindow(getNow())) {
+          console.log(`[RETURN-REMINDER][QUIET-HOURS] tx=${tx?.id?.uuid || '(no id)'} — deferred to next poll`);
+          continue;
+        }
+
         // Per-tx per-day per-type Redis lock to prevent duplicates
         const perTxLockKey = `return-reminders:${reminderType}:${txId}:${todayLocalDate}`;
         const perTxLock = await acquireRedisLock(perTxLockKey, 60 * 60 * 24, {
@@ -633,12 +644,6 @@ async function sendReturnReminders(allowExitOnError = true) {
 
         if (VERBOSE) {
           console.log(`📬 To ${borrowerPhone} (tx ${tx?.id?.uuid || ''}) → ${message}`);
-        }
-
-        // Quiet-hours gate: 8 AM – 11 PM PT (Pattern A — 15-min poll retries naturally)
-        if (!withinSendWindow()) {
-          console.log(`[RETURN-REMINDER][QUIET-HOURS] tx=${tx?.id?.uuid || '(no id)'} — deferred to next poll`);
-          continue;
         }
 
         try {
