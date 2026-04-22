@@ -119,7 +119,7 @@ All workers run as Render cron jobs. Each has `--dry-run`, `--verbose`, and
 | Lender Request Reminders | `sendLenderRequestReminders.js` | Every 15 min (cron) | 60-min nudge SMS if lender hasn't accepted/declined. Uses 60–80 min age window + Redis idempotency. |
 | Lender Shipping Reminders | `sendShippingReminders.js` | Every hour on the hour (cron, `0 * * * *`) | 24hr "ship by tomorrow", end-of-day "not scanned", 48hr auto-cancel alerts to lender. 24h reminder anchored to `outbound.acceptedAt` time-of-day (not UTC midnight). |
 | return-reminders | `sendReturnReminders.js --daemon` | Long-running worker, internal 15-min loop | T-1, T, T+1 reminders for borrower return shipments. |
-| Overdue / Late-Fee Reminders & Charges | `sendOverdueReminders.js` | Daily 9 AM UTC (moving to **17:00 UTC** in PR-3a — ~10 AM PT) | Late fee notifications + automatic $15/day charge. |
+| Overdue / Late-Fee Reminders & Charges | `sendOverdueReminders.js` | Daily **17:00 UTC** (~10 AM PT) — Render cron schedule aligned April 21 2026 | Late fee notifications + automatic $15/day charge. Exits cleanly post-9.2.1 (PR #54). |
 | Auto-Cancel Unshipped | `sendAutoCancelUnshipped.js --once` | Every hour on the hour (cron, `0 * * * *`) | Cancels accepted bookings still unscanned at end of D (11:59pm lender-local, D+1 for Monday-start). Full refund (rental+commission+shipping) via `transition/auto-cancel-unshipped`, voids outbound+return Shippo labels, 3.2 SMS to borrower + 3.2b SMS to lender. Idempotent via `protectedData.autoCancel.sent` + state-machine guard. **Starts with `AUTO_CANCEL_DRY_RUN=1`** — flip to `0` only after a week of clean dry-run logs. |
 
 `web-template` and `web-template-1` services on Render are unused scaffold placeholders — safe to delete.
@@ -268,6 +268,60 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### Overdue cron Render config drift — post-9.2 validation (April 21, 2026)
+
+Three Render dashboard config issues surfaced while validating the 9.2 PR on the **Overdue / Late-Fee Reminders & Charges** cron. All were config-only (no code change, no deploy).
+
+**F1 — SendGrid key missing on cron service.** `SENDGRID_API_KEY` was set on the main `shop-on-sherbet` web service but never propagated to the overdue cron. `emailClient.js` init logged `hasKey: false` → day-6 ops alert (9.6-Email) and daily digest (9.7-Email) had NEVER fired in production despite being marked "Verified" in the Log tab. **Fix:** copied `SENDGRID_API_KEY` from web-service env vars to cron env vars via Render → Environment tab. No deploy needed.
+
+**F2 — Schedule drift.** PR-3a updated the code's run-time assumption to 17:00 UTC but didn't touch the Render cron schedule, which stayed at 09:00 UTC. The cron ran, just 8 hours earlier than `withinSendWindow()` and the quiet-hours gate assumed. **Fix:** changed Render cron schedule to `0 17 * * *` (17:00 UTC = 10 AM PT).
+
+**F4 — `EMAIL_FROM_ADDRESS` missing on cron service.** `emailClient.js:37` gates on `SENDGRID_API_KEY && EMAIL_FROM_ADDRESS` — both must be set. Only the API key was added in F1, so emails were still being silently skipped. **Fix:** added `EMAIL_FROM_ADDRESS='Sherbrt <notifications@sherbrt.com>'` (same value as web service). Post-fix cron runs show `from: 'Sherbrt <notifications@sherbrt.com>'`.
+
+**Lesson:** Render env vars and cron schedules are PER-SERVICE. When a code change updates an assumed schedule or introduces a new env-var dependency, the corresponding Render dashboard config must be updated on every worker/cron that runs that code, not just the main web service. Easy to miss since `render.yaml` is documentation-only on this project.
+
+**Overdue pipeline is fully operational as of April 21 post-9.2.1** — SendGrid key present, from-address set, clean process exit, correct schedule. Trigger-runs complete with "Successful run" status; emails will land at `amalyb@gmail.com` (the `OPS_ALERT_EMAIL` default) once real overdue data exists. **Log tab "Verified" status on 9.6-Email + 9.7-Email was technically incorrect before today and should be re-verified through Scenario 5 of the live QA plan.**
+
+### 9.2.1 — overdue cron clean exit (April 21, 2026)
+
+**Shipped commit:** `9b764e1` (PR #54), squash-merged on top of `bb51f1f`.
+
+**File:** `server/scripts/sendOverdueReminders.js:936-938` (the no-flag `else` branch of the `require.main === module` block).
+
+**Current behavior before fix:** Script called `sendOverdueReminders()` without `await` and without an explicit `process.exit()`. Async work completed correctly (candidates processed, SMS fired when applicable, summary printed), but ioredis + Sharetribe SDK keep-alive connections held the event loop open. Render's cron timeout force-killed the process minutes later. Every daily run was marked "Failed" in Render's event feed despite work completing. Symptom: daily "cronjob failed" Render notification emails to the operator; false-failure signal that would have masked real failures during Scenario 5.
+
+**Fix:** Wrapped the call in `.then(() => process.exit(0)).catch(err => { console.error(err); process.exit(1); })`, matching the entry-point pattern used by `sendAutoCancelUnshipped.js --once`.
+
+**Verification:** Post-deploy trigger-run completes in <60 seconds with "Successful run" in Render's event feed. stdout ends with `✅ Overdue reminders script complete, exiting.` — no more `[redis] connect / [redis] ready` reconnect loops between the summary block and the cron timeout.
+
+**Out of scope (not touched):** `--daemon` branch (intentional long-running with internal `setInterval`), `--test` branch, function body of `sendOverdueReminders()`. The other crons (`sendAutoCancelUnshipped --once`, `sendShippingReminders`, `sendLenderRequestReminders`) already exit cleanly; no pattern sweep needed.
+
+### 9.2 pre-QA fixes — eliminate silent-failure paths (April 21, 2026)
+
+**Shipped commit:** `bb51f1f` (PR #53) — squash-merge containing 7 atomic commits (B1 / B2 / B3 / H1 / H2 / H3 + a test-relocation housekeeping commit for `npm run test-server` glob compatibility).
+
+Pre-QA code review on April 21 identified 3 BLOCKERS + 2 HIGH + 1 follow-on silent-failure bug in the transaction-comms pipeline. All fixed in one PR before the live-data QA plan (see `sherbrt_transaction_comms_v10.xlsx` → "Test Scenarios" tab) could run Scenarios 4 and 5.
+
+**B1 — `OVERDUE_FEES_CHARGING_ENABLED` undefined (`sendOverdueReminders.js:590`):** The identifier was used inside the `overdue.charge.skip` JSON-log event but never imported or declared in the file (only `applyCharges` was destructured from `lateFees.js`; the const is not exported). Every skip-path log emit threw `ReferenceError`, caught as `overdue.charge.error`, bumped `chargesFailed++`. Pre-fix dry-run logs showed every skipped tx as a charge failure, defeating PR-4 analysis. **Fix:** read from `process.env.OVERDUE_FEES_CHARGING_ENABLED === 'true'`, mirroring the pattern at line 213.
+
+**B2 — Orphan `transition/store-shipping-urls` (`shippoTracking.js:1346,1353`, `resendDeliverySms.js:128`):** This transition does NOT exist in any version of `process.edn`. Calls 400'd with `unknown-transition`, caught-and-logged ("Failed to update transaction protectedData"), no `protectedData` ever landed. Cascade: (1) `outbound.firstScanAt` never set → `hasOutboundScan()` returned `false` for every shipped tx → `sendAutoCancelUnshipped` would have cancelled shipped bookings once `AUTO_CANCEL_DRY_RUN=0`, issuing refunds to borrowers holding items and leaving lenders out of pocket; (2) `shippingNotification.delivered.sent` never set → webhook retries re-sent the delivery SMS (6-SMS); (3) `sendShippingReminders.isOutboundScanned()` returned `false` → 24h/EOD ship-by reminders still fired for shipped items. **This is the single biggest reason `AUTO_CANCEL_DRY_RUN=1` has stayed on so long — the "would-cancel" dry-run logs have been full of false positives for every shipped booking, making it impossible to judge readiness to flip.** **Fix:** replaced all three call sites with `upsertProtectedData(txId, {...}, {source: 'webhook'})`. Deep-merge shape mirrors existing working calls at `shippoTracking.js:901` (return first-scan) and `:1102` (return delivered).
+
+**B3 — 48h double-cancel path (`sendShippingReminders.js:237-241`):** `transition/cancel` block overlapped with `sendAutoCancelUnshipped`. Two cancel paths. The 48h legacy path sent NO SMS to the borrower — borrower got silently refunded. Because of B2, `isOutboundScanned()` always returned `false`, so even lenders who DID ship hit the 48h cancel if they were slow to scan. Any recent silent-refund-no-SMS prod behavior traces to this. **Fix:** deleted the 48h block + `cancelTransaction` helper entirely. `sendAutoCancelUnshipped.js` is now the sole cancel authority. Module-level comment added to prevent re-introduction: "Cancel policy for unshipped bookings lives in `sendAutoCancelUnshipped.js`. This script only sends ship-by reminders (24h, EOD); it does NOT cancel."
+
+**H1 — Quiet-hours gate below Redis lock (`sendReturnReminders.js:621-642`):** `acquireRedisLock(perTxLockKey, 60*60*24)` ran at :621 BEFORE `if (!withinSendWindow()) continue` at :639. A quiet-hours tick (e.g. 7:45 AM PT) claimed the 24h lock, then saw it was too early and skipped. Subsequent ticks that day hit "lock held" and also skipped — the borrower lost their T-1/TODAY reminder entirely. The Pattern A claim in PR-3b ("15-min poll retries naturally in the send window") was silently broken. **Fix:** moved `withinSendWindow(getNow())` above `acquireRedisLock`, with `continue` log tag `[RETURN] SKIP quiet-hours tx=...` for observability.
+
+**H2 — Third instance of `sdk.transactions.update` silent-fail (`sendReturnReminders.js:189`):** Same pattern as the April `sendLenderRequestReminders` and `sendShippingReminders` fixes. Integration SDK doesn't expose `txApi.update` / `updateMetadata` / `updateProtectedData` for transactions — writes threw, caught at :678/:702/:739, logged as "Failed to mark...as sent." Per-day Redis lock covered single-send-per-day, but `tMinus1SentAt`, `todayReminderSentAt`, `tomorrowReminderSentAt`, `returnSms.dueTodayLastSentLocalDate` never persisted + noisy error logs on every cron tick. **Fix:** replaced the `updateTransactionProtectedData` helper with `upsertProtectedData(txId, {returnSms:{...}}, {source:'return-reminders'})`. Helper deleted.
+
+**H3 — Fourth instance (`sendShipByReminders.js:257`):** Same pattern, surfaced during the H2 fix. Added as a same-PR follow-on. **Post-fix sweep:** `grep -rE "sdk\.transactions\.update\s*\(" server/` returns zero active call sites. The pattern class is now fully retired across `server/**`.
+
+**Deviation from original fix plan:** B2 required extending `ALLOWED_PROTECTED_DATA_KEYS` in `server/api-util/integrationSdk.js` to include `shippingNotification`, `lastTrackingStatus`, and `returnSms`. Without this, `upsertProtectedData` would silently drop those keys — the exact silent-failure symptom the fix resolves. `outbound` and `return` were already on the whitelist. **Lesson:** when introducing a new `protectedData` key path via `upsertProtectedData`, always verify the top-level key is on the allow-list first.
+
+**Tests added:** 16 new regression-test assertions across 5 files: B1 (3), B2 (3 — first-scan persistence, webhook-retry idempotency, delivered persistence), H1 (3 — quiet-hours structural + lock-state), H2 (5 — 3 structural + 2 persistence), H3 (3 persistence). All pass. Pre-existing failures in `shipping-estimates.test.js` + frontend (12 total) unchanged from main baseline.
+
+**Orphan-transition sweep clean:** `grep -r "transition/" server/ --include="*.js"` cross-referenced against `process.edn` v4 — every referenced transition exists in the live process, or is marked as a vestigial TODO with an explanatory comment. The `transition/privileged-set-overdue-notified{,-delivered}` TODO flagged in PR-2 was resolved during the PR-3a Redis migration (calls removed); no longer an orphan.
+
+**Residual risk captured at review time (cosmetic only):** `server/test-flex-transition.js` still references `transition/store-shipping-urls`. It's a diagnostic probe script whose whole job is to check whether transitions exist — after B2 it will correctly report "no." Will retire in a future cleanup PR.
+
 ### 9.0 PR-2 — privileged late-fee transitions live + policy-skip symmetry (April 15, 2026)
 
 **Shipped commit:** `a1d808579` on main. Process pushed as v4; alias `default-booking/release-1` flipped from v3 to v4 via `flex-cli process update-alias`.
@@ -288,7 +342,7 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 - Symmetric narrowing of SMS Scenario B gate: now `accepted && !hasScan` only. Pre-PR-2 code included `delivered` here too, which meant a tx in the `delivered-without-scan` skip state on the charging side was still getting day-1 through day-6 SMS ("ship today to avoid replacement charges") telling the borrower to do something the system has decided is done. Fixed.
 - Added two explicit policy-skip branches mirroring `lateFees.js`: `delivered && !hasScan` → WARN-level `[OVERDUE] SKIP tx=... reason=delivered-without-scan`, and `accepted && hasScan` → INFO-level `[OVERDUE] SKIP tx=... reason=borrower-shipped-in-transit firstScanAt=...`. Both `continue` without SMS or shouldProcess. Remaining `else` branch is now genuinely "unexpected state" (e.g. `preauthorized`, `cancelled`).
 - Removed dead `isDeliveredWithoutScan` local and its two unreachable log-branches.
-- Added TODO comment flagging that `transition/privileged-set-overdue-notified{,-delivered}` (called ~line 703 to persist `lastNotifiedDay` to Flex) don't exist in any process.edn variant — every SMS send silently fails this transition, dedupe falls back to in-memory `runNotificationGuard`, and a cron restart mid-run can re-send the same day's SMS. Queued for PR-3.
+- Added TODO comment flagging that `transition/privileged-set-overdue-notified{,-delivered}` (called ~line 703 to persist `lastNotifiedDay` to Flex) don't exist in any process.edn variant — every SMS send silently fails this transition, dedupe falls back to in-memory `runNotificationGuard`, and a cron restart mid-run can re-send the same day's SMS. **Resolved in PR-3a Redis migration — the calls were removed when `overdueNotified:*` Redis dedupe replaced the protectedData-based flag. No longer an orphan.**
 
 **Test regression update (`server/scripts/scenarioTests/deliveredWithoutScan.js`):**
 - Docstring rewritten to describe the post-PR-2 policy.
@@ -342,7 +396,7 @@ Three shipped commits and two new scope docs. All work on return-side reminders 
 - There is no Slack webhook integration in this codebase. PR-5's structured logging is stdout JSON parsed by Render's log drain; any Slack/email alerting is a separate follow-up.
 - `AUTO_REPLACEMENT_ENABLED` stays `false`. Day 7+ hard-stopped in both the cron and `applyCharges()`.
 
-**9.0 PR status (as of April 16, 2026):**
+**9.0 PR status (as of April 21, 2026):**
 - PR-1 ✅ shipped (commit `b1cf60b8d`). Defensive gates in `lateFees.js`: feature flag, processVersion floor, LATE_FEE_CENTS_OVERRIDE env hook.
 - PR-2 ✅ shipped April 15, 2026 (commit `a1d808579`, process v4 live). See the "9.0 PR-2" section above for full details.
 - PR-3a ✅ shipped April 16, 2026 (commits `ace2e68a0` + `bdcff51c0`). Charging-path correctness: Redis SMS dedupe migration (`overdueNotified:*` keys), unified daily $15 charging with `hasScan` stop-check, scan-lag-grace guard (`daysLate <= 1`), count-based $75 cap (5 charges, `code === 'late-fee'`), cron time to 17:00 UTC, `diagnose-overdue.js` Redis migration, URL guard for return label, 5 new scenario tests. CC reviewed + signed off on blocker fixes.
@@ -352,10 +406,13 @@ Three shipped commits and two new scope docs. All work on return-side reminders 
   - §3b.3: `withinSendWindow()` in `server/util/time.js` (8 AM – 11 PM PT, respects `getNow()`/`FORCE_NOW`). Pattern A gates on `sendReturnReminders.js` (1 gate), `sendShippingReminders.js` (3 gates: 24h/eod/cancel), `sendShipByReminders.js` (1 gate). Pattern B gate on `sendLenderRequestReminders.js` (MAX_AGE_MS widened from 80 min → 13h, `withinSendWindow(getNow())` before markInFlight).
   - CC reviewed + signed off. Cleanup fixes applied: duplicate const removal (N1), JSDoc example fix (N2), stale comment update (N5).
 - PR-3c ✅ shipped April 16, 2026 (commit `e59de3c42`). Comment cleanup in `lateFees.js`: updated AUTO_REPLACEMENT_ENABLED, isScanned(), getReplacementValue() docstrings, removed stale "Scenario B" label. Comment-only diff.
-- PR-4: staging dry-run — operational step (no code change). Set `OVERDUE_FEES_CHARGING_ENABLED=true` + `LATE_FEE_CENTS_OVERRIDE=50` in Render, verify $0.50 charge in Stripe + `chargeHistory` advances. Requires an overdue test transaction. Deferred until end-to-end testing pass.
+- PR-4: staging dry-run — operational step (no code change). Set `OVERDUE_FEES_CHARGING_ENABLED=true` + `LATE_FEE_CENTS_OVERRIDE=50` in Render, verify $0.50 charge in Stripe + `chargeHistory` advances. Requires an overdue test transaction. **Unblocked as of April 21 2026 after 9.2 + 9.2.1 + config drift fixes** — will run as Scenario 5 of the live QA plan (see `sherbrt_transaction_comms_v10.xlsx` → "Test Scenarios" tab).
 - PR-5 ✅ shipped April 16, 2026. Structured JSON logging in `sendOverdueReminders.js` charge path: `overdue.charge`, `overdue.charge.skip`, `overdue.charge.error`, `overdue.charge.dryrun` events. Render log drain can filter on `event` field.
-- PR-6: flip `OVERDUE_FEES_CHARGING_ENABLED=true` (remove `LATE_FEE_CENTS_OVERRIDE`) in Render console. Final step after test-transaction verification confirms pipeline works end-to-end.
+- PR-6: flip `OVERDUE_FEES_CHARGING_ENABLED=true` (remove `LATE_FEE_CENTS_OVERRIDE`) in Render console. Final step after PR-4 / Scenario 5 confirms pipeline works end-to-end.
 - 9.1 copy refactor (blocked on 9.0 completing). Day-1 copy softened to "may apply" (scan-lag rule means we can't confirm lateness on day 1). Days 4-5 tightened ("$15/day late fee continues"). Day-6 softened to "may be charged" (not "will be charged" — matches days 4-5 framing, legally safer since replacement is operator-discretionary). Message-map JS updated to match. See `docs/9.1_overdue_copy_refactor.md` (committed `70399793a`).
+- **9.2 pre-QA fixes ✅ shipped April 21, 2026 (commit `bb51f1f`, PR #53).** Eliminated 3 BLOCKERS + 2 HIGH + 1 follow-on silent-failure bugs found during pre-QA code review: B1 (undefined env var in overdue skip-path log), B2 (orphan `transition/store-shipping-urls` — the big one, unblocks `AUTO_CANCEL_DRY_RUN=0`), B3 (48h double-cancel path deleted), H1 (quiet-hours gate reordered above Redis lock in return reminders), H2 + H3 (retired `sdk.transactions.update` pattern across return + ship-by reminders — all four instances of this class now fixed). 16 new regression tests. Deviation: `ALLOWED_PROTECTED_DATA_KEYS` whitelist extended for B2. See "9.2 pre-QA fixes" section above for details.
+- **9.2.1 ✅ shipped April 21, 2026 (commit `9b764e1`, PR #54).** One-line entry-point fix to `sendOverdueReminders.js` — wraps the call in `.then(process.exit(0))` / `.catch(process.exit(1))`. Previously every run was marked "Failed" in Render despite work completing, because open Redis/SDK keep-alives held the event loop until cron timeout. See "9.2.1" section above.
+- **Overdue cron Render config drift ✅ resolved April 21, 2026.** Three dashboard config issues (F1: SendGrid key missing on cron service, F2: cron schedule at 09:00 UTC instead of 17:00 UTC, F4: `EMAIL_FROM_ADDRESS` missing) discovered during post-9.2 validation. All config-only fixes. 9.6-Email and 9.7-Email had never actually fired in production prior to these fixes — Log tab "Verified" status should be re-verified through Scenario 5. See "Overdue cron Render config drift" section above.
 
 ### Step 3.2 — Auto-Cancel Unshipped Bookings (April 14, 2026)
 
