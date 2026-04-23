@@ -487,19 +487,11 @@ async function createShippingLabels({
     console.log('📦 [SHIPPO] Outbound shipment created successfully');
     console.log('📦 [SHIPPO] Shipment ID:', shipmentRes.data.object_id);
     
-    // ──────────────────────────────────────────────────────────────────────────────
-    // COMPUTE SHIP-BY DATE ONCE (BEFORE rate selection)
-    // ──────────────────────────────────────────────────────────────────────────────
-    const computeResult = await computeShipBy(transaction, { preferLabelAddresses: false });
-    const { shipByDate, leadDays, miles, mode } = computeResult;
-    
-    console.log('[RATE-SELECT][COMPUTE]', { 
-      shipByISO: shipByDate?.toISOString?.(), 
-      leadDays, 
-      miles: miles ? Math.round(miles) : null, 
-      mode 
-    });
-    
+    // 10.0 PR-2 step 3: shipByDate is now derived from the Shippo-selected
+    // rate's estimated_days AFTER rate selection (see below, post-selectedRate).
+    // Declared here with `let` so the post-selection assignment can overwrite.
+    let shipByDate = null;
+
     // Select a shipping rate from the available rates
     let availableRates = shipmentRes.data.rates || [];
     const shipmentData = shipmentRes.data;
@@ -576,9 +568,11 @@ async function createShippingLabels({
       return { success: false, reason: 'no_shipping_rates' };
     }
     
-    // Rate selection logic: pickCheapestAllowedRate with daysUntilBookingStart
-    // (10.0 PR-1 step 6). Drops the shipByDate coupling — feasibility is now
-    // measured relative to the actual booking start.
+    // 10.0 PR-2 step 6 — Option 6: ALWAYS use the locked rate at accept when
+    // one exists. No feasibility check, no fallback re-selection. Borrower
+    // preauth cost = actual label cost, always. The NO_LOCK_FALLBACK branch
+    // exists only for pre-PR-2 transactions and the edge case of a Shippo
+    // outage at checkout; after the migration tail, it should never fire.
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
       .split(',')
       .map(p => p.trim().toUpperCase())
@@ -589,11 +583,37 @@ async function createShippingLabels({
       ? Math.ceil((new Date(bookingStartISO) - new Date()) / 86400000)
       : null;
 
-    const selectedRate = pickCheapestAllowedRate(availableRates, {
-      daysUntilBookingStart,
-      preferredProviders,
-    });
-    
+    const lockedOutbound = protectedData?.outbound?.lockedRate;
+    let selectedRate;
+
+    if (lockedOutbound?.rateObjectId) {
+      // Synthesize a rate shape from the stored lock. Only `object_id` is
+      // load-bearing (Shippo validates it at purchase); the other fields are
+      // informational for logs and downstream consumers.
+      // Defensive: if estimatedDays/amountCents are missing or malformed,
+      // proceed anyway — Shippo rejects bad rate_ids at purchase time.
+      selectedRate = {
+        object_id: lockedOutbound.rateObjectId,
+        estimated_days: lockedOutbound.estimatedDays,
+        amount: Number.isFinite(Number(lockedOutbound.amountCents))
+          ? (Number(lockedOutbound.amountCents) / 100).toFixed(2)
+          : null,
+        provider: lockedOutbound.provider || null,
+        servicelevel: lockedOutbound.servicelevel || null,
+      };
+      console.log('[RATE-SELECT][OUTBOUND:LOCKED]', {
+        rateId: lockedOutbound.rateObjectId,
+        estimatedDays: lockedOutbound.estimatedDays,
+        amountCents: lockedOutbound.amountCents,
+      });
+    } else {
+      console.warn('[RATE-SELECT][OUTBOUND:NO_LOCK_FALLBACK]', { txId });
+      selectedRate = pickCheapestAllowedRate(availableRates, {
+        daysUntilBookingStart,
+        preferredProviders,
+      });
+    }
+
     if (!selectedRate) {
       console.error('❌ [SHIPPO][NO-RATES] No suitable rate found');
       return { success: false, reason: 'no_suitable_rate' };
@@ -612,7 +632,21 @@ async function createShippingLabels({
         selectedRate,
       });
     }
-    
+
+    // 10.0 PR-2 step 3: derive shipByDate from the Shippo-selected rate's
+    // estimated_days. Persisted to protectedData.outbound.shipByDate below
+    // (existing persist block), read by all downstream consumers via the
+    // persisted-first branch in computeShipByDate.
+    {
+      const rawTransit = Number(selectedRate?.estimated_days ?? selectedRate?.duration_terms);
+      const transitDays = Number.isFinite(rawTransit) ? rawTransit : undefined;
+      shipByDate = await computeShipByDate(transaction, { transitDays });
+      console.log('[ship-by:derived]', {
+        transitDays: transitDays ?? null,
+        shipByISO: shipByDate?.toISOString?.() || null,
+      });
+    }
+
     // Create the actual label by purchasing the transaction
     console.log('📦 [SHIPPO] Purchasing label for selected rate...');
     console.log('[SHIPPO][TX][CONTEXT]', {
@@ -642,12 +676,14 @@ async function createShippingLabels({
       metadata: outboundMetadata // Keep Shippo metadata short for 100-char limit
     };
     
-    // Only request QR code for USPS (UPS doesn't support it)
-    if (selectedRate.provider.toUpperCase() === 'USPS') {
+    // Only request QR code for USPS (UPS doesn't support it). Null-safe
+    // against locked-rate synthetic objects that may lack `provider`.
+    const selectedProvider = String(selectedRate?.provider || '').toUpperCase();
+    if (selectedProvider === 'USPS') {
       transactionPayload.extra = { qr_code_requested: true };
       console.log('📦 [SHIPPO] Requesting QR code for USPS label');
     } else {
-      console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
+      console.log('📦 [SHIPPO] Skipping QR code request for ' + (selectedRate?.provider || 'unknown-provider') + ' (not USPS)');
     }
     
     // Log the payload (without auth headers) for debugging Shippo 400s

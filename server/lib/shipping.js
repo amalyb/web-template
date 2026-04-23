@@ -1,5 +1,9 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
+const { subtractBusinessDays } = require('./businessDays');
+
+// Buffer days added to `estimated_days` for shipBy derivation (10.0 PR-2).
+const SAFETY_BUFFER_DAYS = Number(process.env.SHIP_SAFETY_BUFFER || 1);
 
 // Shipping client initialization (modern Shippo SDK)
 let shippo = null;
@@ -139,73 +143,78 @@ function adjustIfSundayUTC(date) {
 }
 
 /**
- * Compute ship-by date for a transaction
- * Supports both static and distance-based lead time calculation
- * 
+ * Compute ship-by date for a transaction.
+ *
+ * 10.0 PR-2 rewrite:
+ *   - Prefers the persisted `protectedData.outbound.shipByDate` value first
+ *     (so every downstream consumer reads the same source-of-truth written
+ *     by the accept flow at label-purchase time).
+ *   - When computing fresh, accepts `opts.transitDays` (the Shippo-selected
+ *     rate's `estimated_days`) and subtracts `transitDays + SAFETY_BUFFER`
+ *     business days from bookingStart. Business days skip Sunday and USPS
+ *     holidays (PT-based) and keep Saturday — per scope decision #8.
+ *   - Falls back to the static `LEAD_FLOOR` env var only when `transitDays`
+ *     is not provided AND no persisted value exists (Shippo outage, manual
+ *     cron invocations, pre-PR-2 transactions).
+ *
  * @param {Object} tx - Transaction object with booking and address data
- * @param {Object} opts - Options { preferLabelAddresses: boolean }
+ * @param {Object} [opts]
+ * @param {number} [opts.transitDays] - Authoritative path: carrier estimated_days
+ * @param {boolean} [opts.preferLabelAddresses] - Legacy opt; unused by this
+ *   function but accepted for caller signature compatibility (wrapper
+ *   `computeShipBy` still uses it for distance-mode metadata).
  * @returns {Promise<Date|null>} Ship-by date or null if cannot be computed
  */
 async function computeShipByDate(tx, opts = {}) {
+  // 1. Prefer persisted value (written by the accept flow at label purchase).
+  const persisted = tx?.attributes?.protectedData?.outbound?.shipByDate;
+  if (persisted) {
+    const d = new Date(persisted);
+    if (!Number.isNaN(+d)) {
+      console.log('[ship-by:persisted]', {
+        shipByISO: persisted,
+        txId: tx?.id?.uuid,
+      });
+      return d;
+    }
+  }
+
+  // 2. Compute from booking start + transit days (if provided) or fallback.
   const startISO = getBookingStartISO(tx);
   if (!startISO) return null;
-
   const start = new Date(startISO);
   if (Number.isNaN(+start)) return null;
-  
+
   // Normalize to UTC midnight to avoid timezone shifts
   start.setUTCHours(0, 0, 0, 0);
 
-  let leadDays = LEAD_FLOOR;
+  // Caller-provided transitDays (from selected Shippo rate) is the
+  // authoritative path. Without it, fall back to static LEAD_FLOOR for
+  // safety (Shippo outage, manual invocations, pre-PR-2 transactions).
+  const transitDays = opts.transitDays;
+  const leadDays = transitDays != null
+    ? transitDays + SAFETY_BUFFER_DAYS
+    : LEAD_FLOOR;
 
-  if (LEAD_MODE === 'distance') {
-    const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
-    console.log('[ship-by] zips', { fromZip, toZip });
-    leadDays = await computeLeadDaysDynamic({ fromZip, toZip });
-  } else {
-    // static (existing behavior)
-    console.log('[ship-by:static]', { chosenLeadDays: leadDays });
-  }
+  // subtractBusinessDays returns a dayjs object in PT; convert to native
+  // Date before handing off to adjustIfSundayUTC (which uses Date.getUTCDay).
+  const shipByDayjs = subtractBusinessDays(start, leadDays);
+  const shipBy = shipByDayjs.toDate();
 
-  const shipBy = new Date(start);
-  shipBy.setUTCDate(shipBy.getUTCDate() - leadDays);
-
-  // Optional toggle via env (recommended)
+  // Existing Sunday → Saturday adjust preserved as belt-and-suspenders —
+  // business-day subtraction above already skips Sundays, so this should
+  // only fire in edge cases (e.g., if SAFETY_BUFFER pushes the result in
+  // a way that still lands on Sunday; not currently reachable).
   const ADJUST_SUNDAY = String(process.env.SHIP_ADJUST_SUNDAY || '1') === '1';
   const adjusted = ADJUST_SUNDAY ? adjustIfSundayUTC(shipBy) : shipBy;
 
-  if (ADJUST_SUNDAY && adjusted.getTime() !== shipBy.getTime()) {
-    console.log('[ship-by:adjust]', {
-      originalISO: shipBy.toISOString(),
-      adjustedISO: adjusted.toISOString(),
-      reason: 'sunday_to_saturday',
-    });
-  }
-
-  // DEBUG_SHIPBY structured logging (guarded)
-  if (process.env.DEBUG_SHIPBY === '1') {
-    const { fromZip, toZip } = await resolveZipsFromTx(tx, opts);
-    let distanceMiles = null;
-    if (LEAD_MODE === 'distance' && fromZip && toZip) {
-      try {
-        const [fromLL, toLL] = await Promise.all([geocodeZip(fromZip), geocodeZip(toZip)]);
-        if (fromLL && toLL) {
-          distanceMiles = haversineMiles([fromLL.lat, fromLL.lng], [toLL.lat, toLL.lng]);
-        }
-      } catch (e) {
-        // ignore
-      }
-    }
-    console.info('[shipby] borrowStart=%s leadMode=%s fixedLeadDays=%s distanceMi=%s dynamicDays=%s chosenDays=%s shipBy=%s',
-      startISO,
-      LEAD_MODE,
-      LEAD_MODE === 'static' ? leadDays : null,
-      distanceMiles !== null ? Math.round(distanceMiles) : null,
-      LEAD_MODE === 'distance' ? leadDays : null,
-      leadDays,
-      adjusted.toISOString()
-    );
-  }
+  console.log('[ship-by:computed]', {
+    startISO,
+    transitDays: transitDays ?? null,
+    leadDays,
+    mode: transitDays != null ? 'shippo-anchored' : 'static-fallback',
+    shipByISO: adjusted.toISOString(),
+  });
 
   return adjusted;
 }
@@ -510,10 +519,22 @@ async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
 
     if (!chosen || chosen.amount == null) return null;
 
+    // 10.0 PR-2 step 7: include rateObjectId, estimatedDays, provider, and
+    // servicelevel so the checkout-time caller can lock the exact rate
+    // into protectedData.{outbound,return}.lockedRate and the accept flow
+    // can purchase by object_id.
+    const estimatedDaysRaw = Number(chosen.estimated_days ?? chosen.duration_terms);
     const result = {
       amountCents: Math.round(parseFloat(chosen.amount) * 100),
       currency: chosen.currency || 'USD',
-      debug: { chosen: nameOf(chosen) }
+      rateObjectId: chosen.object_id || chosen.objectId || null,
+      estimatedDays: Number.isFinite(estimatedDaysRaw) ? estimatedDaysRaw : null,
+      provider: chosen.provider || chosen.carrier || null,
+      servicelevel: {
+        name: chosen.servicelevel?.name || chosen.service?.name || null,
+        token: chosen.servicelevel?.token || chosen.service?.token || null,
+      },
+      debug: { chosen: nameOf(chosen) },
     };
     
     // Cache successful result
@@ -548,15 +569,36 @@ async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
 }
 
 /**
+ * Build the lockedRate payload shape persisted to
+ * protectedData.{outbound,return}.lockedRate (10.0 PR-2). Only the
+ * rateObjectId is load-bearing at purchase time; other fields are
+ * informational.
+ */
+function lockedRatePayload(estimate) {
+  if (!estimate || !estimate.rateObjectId) return null;
+  return {
+    rateObjectId: estimate.rateObjectId,
+    estimatedDays: estimate.estimatedDays,
+    amountCents: estimate.amountCents,
+    provider: estimate.provider,
+    servicelevel: estimate.servicelevel,
+  };
+}
+
+/**
  * Estimate round trip (outbound + return) if includeReturn=true.
+ *
+ * 10.0 PR-2: return shape now includes `outboundRate` and `returnRate`
+ * payloads so the checkout-time caller can lock the exact rate IDs into
+ * protectedData. Amount/currency behavior unchanged.
  */
 async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
-  vlog('[estimateRoundTrip] Starting', { 
+  vlog('[estimateRoundTrip] Starting', {
     hasLenderZip: !!lenderZip,
     hasBorrowerZip: !!borrowerZip,
-    includeReturn 
+    includeReturn,
   });
-  
+
   const out = await estimateOneWay({ fromZip: lenderZip, toZip: borrowerZip, parcel });
   if (!out) {
     vlog('[estimateRoundTrip] Outbound estimate failed - returning null');
@@ -565,23 +607,43 @@ async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
 
   if (!includeReturn) {
     vlog('[estimateRoundTrip] Return not included, using outbound only');
-    return out;
+    return {
+      amountCents: out.amountCents,
+      currency: out.currency,
+      outboundRate: lockedRatePayload(out),
+      returnRate: null,
+      debug: { out: out.debug },
+    };
   }
 
   const ret = await estimateOneWay({ fromZip: borrowerZip, toZip: lenderZip, parcel });
   if (!ret) {
     vlog('[estimateRoundTrip] Return estimate failed, using outbound only (best-effort)');
-    return out; // best-effort
+    return {
+      amountCents: out.amountCents,
+      currency: out.currency,
+      outboundRate: lockedRatePayload(out),
+      returnRate: null,
+      debug: { out: out.debug },
+    };
   }
 
   if (ret.currency !== out.currency) {
     vlog('[estimateRoundTrip] Currency mismatch, using outbound only');
-    return out; // keep it simple
+    return {
+      amountCents: out.amountCents,
+      currency: out.currency,
+      outboundRate: lockedRatePayload(out),
+      returnRate: null,
+      debug: { out: out.debug },
+    };
   }
 
   const result = {
     amountCents: out.amountCents + ret.amountCents,
     currency: out.currency,
+    outboundRate: lockedRatePayload(out),
+    returnRate: lockedRatePayload(ret),
     debug: { out: out.debug, ret: ret.debug },
   };
   
