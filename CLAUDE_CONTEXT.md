@@ -103,7 +103,7 @@ and can accept or decline from `preauthorized` state.
 
 **Sharetribe process.edn (server-side state machine):** `ext/transaction-processes/default-booking/process.edn`. **Deployed via `flex-cli process push` + alias update** — the committed file does nothing until it's pushed AND the `default-booking/release-1` alias is repointed at the new version in Sharetribe Console.
 
-Live alias state (as of April 15, 2026): `default-booking/release-1` → **version 4**. Critical gotcha: v2 was pushed on Dec 9, 2025 but the alias was never flipped, so prod ran on v1 (stock Sharetribe) for four months. This is why the Dec 12, 2025 transaction auto-paid-out the lender despite no shipment — v1's auto-complete fired regardless. v3 (April 14, 2026) added the Dec 9 custom complete-return/complete-replacement operator-fired payouts AND `transition/auto-cancel-unshipped`. v4 (April 15, 2026) adds the two privileged late-fee transitions (`transition/privileged-apply-late-fees` from `:state/delivered` and `transition/privileged-apply-late-fees-non-return` from `:state/accepted`) needed for the 9.0 PR-2 charging pipeline. **Always verify the live alias version before debugging payout/cancel/charge behavior.**
+Live alias state (as of April 23, 2026): `default-booking/release-1` → **version 5**. Critical gotcha: v2 was pushed on Dec 9, 2025 but the alias was never flipped, so prod ran on v1 (stock Sharetribe) for four months. This is why the Dec 12, 2025 transaction auto-paid-out the lender despite no shipment — v1's auto-complete fired regardless. v3 (April 14, 2026) added the Dec 9 custom complete-return/complete-replacement operator-fired payouts AND `transition/auto-cancel-unshipped`. v4 (April 15, 2026) added the two privileged late-fee transitions (`transition/privileged-apply-late-fees` from `:state/delivered` and `transition/privileged-apply-late-fees-non-return` from `:state/accepted`) needed for the 9.0 PR-2 charging pipeline. v5 (April 23, 2026) tightens `:transition/expire` from `P6D` to `PT24H` so lenders have 24 hours (not 6 days) to accept or decline a booking request before it auto-expires with full borrower refund. **Always verify the live alias version before debugging payout/cancel/charge behavior.**
 
 **Payout flow (v3 active):** `transition/complete-return` and `transition/complete-replacement` are now `:actor.role/operator` transitions (no `:at` time trigger). They only fire when server code explicitly calls them:
 - `server/webhooks/shippoTracking.js` fires `complete-return` when the return label gets a "delivered" tracking scan
@@ -116,11 +116,11 @@ All workers run as Render cron jobs. Each has `--dry-run`, `--verbose`, and
 
 | Worker | Script | Schedule | What it does |
 |--------|--------|----------|-------------|
-| Lender Request Reminders | `sendLenderRequestReminders.js` | Every 15 min (cron) | 60-min nudge SMS if lender hasn't accepted/declined. Uses 60–80 min age window + Redis idempotency. |
-| Lender Shipping Reminders | `sendShippingReminders.js` | Every hour on the hour (cron, `0 * * * *`) | 24hr "ship by tomorrow", end-of-day "not scanned", 48hr auto-cancel alerts to lender. 24h reminder anchored to `outbound.acceptedAt` time-of-day (not UTC midnight). |
+| Lender Request Reminders | `sendLenderRequestReminders.js` | Every 15 min (cron) | 2-phase escalation SMS if lender hasn't accepted/declined within the v5 24h expire window (10.0 PR-4, April 23 2026): 60m gentle nudge (respects 8am–11pm PT quiet-hours), 22h final warning (bypasses quiet-hours — a 2am text beats a silent miss). Per-phase Redis dedupe keys `lenderReminder:{txId}:{60m\|22h}:sent`. Includes MISSED_FINAL watchdog that queries recently-expired txs (30-min lookback) and logs `[MISSED_FINAL] tx=X` + `[MISSED_FINAL_SUMMARY] count=N` per run; steady-state count should be 0. `MAX_AGE_MS` = 24h. |
+| Lender Shipping Reminders | `sendShippingReminders.js` | Every hour on the hour (cron, `0 * * * *`) | 24hr "ship by tomorrow", end-of-day "not scanned", 48hr auto-cancel alerts to lender. 24h reminder anchored to `outbound.acceptedAt` time-of-day (not UTC midnight). Reads `protectedData.outbound.shipByDate` persisted at label-purchase time (10.0 PR-3) — no longer recomputes with its own `SHIP_LEAD_DAYS` env var. |
 | return-reminders | `sendReturnReminders.js --daemon` | Long-running worker, internal 15-min loop | T-1, T, T+1 reminders for borrower return shipments. |
 | Overdue / Late-Fee Reminders & Charges | `sendOverdueReminders.js` | Daily **17:00 UTC** (~10 AM PT) — Render cron schedule aligned April 21 2026 | Late fee notifications + automatic $15/day charge. Exits cleanly post-9.2.1 (PR #54). |
-| Auto-Cancel Unshipped | `sendAutoCancelUnshipped.js --once` | Every hour on the hour (cron, `0 * * * *`) | Cancels accepted bookings still unscanned at end of D (11:59pm lender-local, D+1 for Monday-start). Full refund (rental+commission+shipping) via `transition/auto-cancel-unshipped`, voids outbound+return Shippo labels, 3.2 SMS to borrower + 3.2b SMS to lender. Idempotent via `protectedData.autoCancel.sent` + state-machine guard. **Starts with `AUTO_CANCEL_DRY_RUN=1`** — flip to `0` only after a week of clean dry-run logs. |
+| Auto-Cancel Unshipped | `sendAutoCancelUnshipped.js --once` | Every hour on the hour (cron, `0 * * * *`) | Cancels accepted bookings still unscanned at end of D (11:59pm lender-local, D+1 for Monday-start) **PLUS 12-hour scan-lag grace buffer** (10.0 PR-5, April 23 2026) to avoid premature cancels when a carrier hasn't yet propagated the scan. Effective cancel window: 36h post-bookingStart for non-Monday bookings, 60h for Monday-start. Full refund (rental+commission+shipping) via `transition/auto-cancel-unshipped`, voids outbound+return Shippo labels, 3.2 SMS to borrower + 3.2b SMS to lender. Idempotent via `protectedData.autoCancel.sent` + state-machine guard. **Version gate accepts `processVersion >= 3`** (10.0 PR-4 fix — previously was `=== 3` exactly, which would have silently disabled auto-cancel for every v5 transaction). **Starts with `AUTO_CANCEL_DRY_RUN=1`** — flip to `0` only after a week of clean dry-run logs. |
 
 `web-template` and `web-template-1` services on Render are unused scaffold placeholders — safe to delete.
 
@@ -129,7 +129,8 @@ All workers run as Render cron jobs. Each has `--dry-run`, `--verbose`, and
 Why Redis: the Integration SDK (used by crons) does NOT expose `sdk.transactions.update`, so any attempt to write `protectedData` flags silently fails → same SMS re-sent every cron tick. Redis is used elsewhere in the codebase (shortlinks, tracking) for exactly this purpose.
 
 Keys per transaction (per phase, where applicable):
-- `lenderReminder:{txId}:{sent|inFlight}` — 60-min lender nudge
+- `lenderReminder:{txId}:{60m|22h}:{sent|inFlight}` — 2-phase lender request escalation (10.0 PR-4)
+- `lenderReminder:{txId}:missedFinal:logged` — 1h dedupe for MISSED_FINAL watchdog log (10.0 PR-4)
 - `shippingReminder:{txId}:{24h|eod|cancel}:{sent|inFlight}` — 3-phase shipping flow
 
 TTLs: `:sent` = 7 days (comfortably outlasts any reminder window). `:inFlight` = 10 min (auto-clears on process crash so next cron tick can retry; by the time it expires, tx has aged past any still-eligible window so no double-text).
@@ -203,12 +204,17 @@ Base URL: `https://flex-api.sharetribe.com`
 - SMS dedupe via Redis (`overdueNotified:{txId}:{daysLate}:{sent|inFlight}`) — pending PR-3a
 - No automatic replacement (manual operator action only, `AUTO_REPLACEMENT_ENABLED=false`)
 
-**Shipping** (`server/lib/shipping.js`):
+**Shipping** (`server/lib/shipping.js`) — Shippo-anchored architecture as of 10.0 (April 23, 2026):
 - Shippo label creation + tracking via webhooks
 - ZIP code resolution from labels or protectedData
-- Lead day calculation (2 days static default)
-- Ship-by date adjusts Sunday → Saturday automatically
-- Haversine distance calculation for cost estimation
+- **Ship-by date derived from Shippo's selected rate `estimated_days` + `SAFETY_BUFFER_DAYS` (default 1), business-day-subtracted from bookingStart** — NOT from a static `SHIP_LEAD_DAYS` env var. `computeShipByDate` prefers the persisted `protectedData.outbound.shipByDate` first; recomputes only on Shippo outage or pre-10.0 transactions. `SHIP_LEAD_DAYS` env var is retained as a fallback floor, not the primary path.
+- Business-day subtraction uses Pacific Time, skips Sundays and USPS holidays, KEEPS Saturdays (scope decision #8).
+- Ship-by date adjusts Sunday → Saturday (legacy safety net; business-day subtraction already skips Sundays).
+- **Rate-lock at borrower checkout:** `estimateOneWay` returns full rate metadata including `rateObjectId` + `estimatedDays` + `amountCents`; `initiate-privileged.js` persists to `protectedData.outbound.lockedRate` + `protectedData.return.lockedRate` at preauth. At lender accept, `transition-privileged.js` purchases the EXACT locked `rateObjectId` — no feasibility re-check, no fallback re-selection. Borrower preauth cost = actual label cost, always. Eliminates the silent Sherbrt-absorbed delta for short-lead cross-country bookings (CC Option 6 recommendation from 10.0 review).
+- **Preferred services (`config/shipping.js`, expanded 10.0 PR-1 to 6 entries):** USPS Priority Mail, USPS Ground Advantage, USPS Priority Mail Express, UPS Ground, UPS 2nd Day Air, UPS Next Day Air Saver. `nameOf` helper strips trademark symbols (® U+00AE, ™ U+2122) from Shippo's returned service names so the filter matches regardless of Shippo-side drift — Shippo returns e.g. `"UPS 2nd Day Air®"` while config is `"UPS 2nd Day Air"` without ®.
+- **Outbound rate selection (`pickCheapestAllowedRate`, 10.0 PR-1 refactor):** takes `daysUntilBookingStart` directly (not `shipByDate`), filters to `preferredServices` FIRST, then prefers UPS Ground if feasible, else cheapest feasible preferred, else cheapest of preferred (last resort). Reads `SAFETY_BUFFER_DAYS` from `SHIP_SAFETY_BUFFER` env.
+- **Return rate selection (`pickCheapestPreferredRate`, new 10.0 PR-1):** always cheapest preferred service, no deadline filter, no dependency on outbound shipByDate. Previously shared `pickCheapestAllowedRate` with outbound and incorrectly reused outbound's past shipByDate as its deadline — always hit the "absolute cheapest" last-resort branch by accident.
+- Haversine distance calculation for cost estimation (legacy `SHIP_LEAD_MODE=distance` mode still supported but unused).
 
 **Business Days** (`server/lib/businessDays.js`):
 - Pacific time (America/Los_Angeles) for all calculations
@@ -250,6 +256,8 @@ See `.env.example` for the full list. Critical ones:
 | `REDIS_URL` | Redis connection |
 | `LINK_SECRET` | Shortlink HMAC secret |
 | `REACT_APP_MARKETPLACE_ROOT_URL` | Public URL |
+| `SHIP_SAFETY_BUFFER` | Buffer days added to Shippo's `estimated_days` when computing ship-by. Default `1`. Only used when deriving shipByDate from a Shippo rate (10.0 PR-2). |
+| `SHIP_LEAD_DAYS` | Fallback lead-days value when no Shippo rate is available (outage, manual cron invocation, pre-10.0 tx). Default `2`. Before 10.0 this was the primary path; now demoted to fallback only. |
 
 ## Checkout Flow (Known Fix)
 
@@ -267,6 +275,70 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 **Full details:** `CHECKOUT_FORM_CONTEXT_FIX.md`
 
 ## Recent Fixes & Gotchas
+
+### 10.0 — Shippo-Anchored Ship-By + 24h Lender Expire + Acceptance Hardening (April 23, 2026)
+
+**Status:** ✅ Shipped end-to-end same day as the env-drift incident (below) that triggered it. All 5 atomic PRs merged, process.edn v5 alias flipped live, deploy verified.
+
+**What shipped:** A comprehensive rewrite of the shipping + lender-acceptance architecture that replaces static env-var-driven ship-by computation with Shippo-anchored derivation, adds rate-lock between checkout and accept to eliminate silent revenue leaks, tightens the lender acceptance window from 6 days to 24 hours with 2-phase SMS escalation + a MISSED_FINAL watchdog, adds a 12-hour scan-lag grace to auto-cancel, and fixes a version-gate blocker that would have silently disabled auto-cancel marketplace-wide on the v5 alias flip.
+
+**PRs merged (in deploy order):**
+- PR-5 (#55): `server/scripts/sendAutoCancelUnshipped.js` — 12h scan-lag grace buffer. Prevents premature cancels when a carrier hasn't yet propagated the scan (USPS often 4-12h behind physical drop). `SKIP reason=scan-lag-grace hoursPastDeadline=X.X` log event structurally parallel to overdue's `daysLate <= 1` guard at `lateFees.js:294`. Compounds intentionally with the existing Monday-start grace: 60h post-bookingStart cancel window for Mon-start, 36h for other weekdays.
+- Bundle PR (#56): 3 atomic commits (`5a4a0230a` + `e67702b37` + `6ff722b3c`) + 1 follow-up (`dbf6f83fd`) — expanded `preferredServices` to 6 entries (added USPS Priority Mail Express, UPS 2nd Day Air, UPS Next Day Air Saver), fixed the `estimateOneWay` name-builder bug (was reading undefined `r.service` under modern Shippo SDK shape — filter matched nothing, fallback silently picked cheapest-of-all-rates), refactored `pickCheapestAllowedRate` to actually filter by `preferredServices` and take `daysUntilBookingStart` directly, added `pickCheapestPreferredRate` for return labels (always-cheapest, no deadline), implemented Shippo-anchored `computeShipByDate` (persisted-first, `transitDays + SAFETY_BUFFER_DAYS` business-day-subtracted, PT-based), added rate-lock at checkout (`outbound.lockedRate` + `return.lockedRate`), implemented CC Option 6 at accept (always-use-locked-rate, no feasibility re-check, no fallback re-selection — eliminates the delta class entirely), added trademark-symbol stripping to `nameOf` (® U+00AE, ™ U+2122) after a live Shippo probe found `"UPS 2nd Day Air®"` and `"UPS Next Day Air Saver®"` in the real response.
+- PR-4: `process.edn` v5 (`:transition/expire` `P6D` → `PT24H`), `sendAutoCancelUnshipped.js:143` `processVersion !== 3` → `< 3` blocker fix, `sendLenderRequestReminders.js` 2-phase escalation (60m respects quiet-hours, 22h bypasses), MISSED_FINAL watchdog with 1h Redis dedupe preventing 2x count inflation across consecutive 15-min cron ticks within the 30-min lookback, `initiate-privileged.js` 1-SMS copy update (`"Tap to review & accept"` → `"You have 24hrs to accept"` + comma splice after title per operator-approved template).
+
+**Deploy sequence executed:**
+1. Merged PR-5, auto-deployed via Render
+2. Merged Bundle PR, auto-deployed
+3. Merged PR-4, auto-deployed
+4. `flex-cli process push --process default-booking -m sherbrt` → `Version 5 successfully saved`
+5. `flex-cli process list` → confirmed v5 exists, alias still v4
+6. `flex-cli process update-alias --alias release-1 --process default-booking --version 5 -m sherbrt`
+7. `flex-cli process list` → alias now v5 ✓
+
+**Scope doc:** `docs/10.0_shippo_anchored_shipby.md` — full architecture + policy decisions (14 locked) + atomic PR breakdown. v3.1 was the final version shipped after 3 CC pre-implementation review rounds (round 1 caught 2 blockers including the processVersion gate issue, round 2 caught 3 pseudocode bugs including a TypeError on every computeShipByDate call, round 3 signed off ✅ READY TO IMPLEMENT).
+
+**Tests added:** ~78 new assertions across 11 new test files (PR-5: 5, Bundle PR-1: 21, Bundle PR-2: 21, Bundle follow-up ® fix: 8, PR-4: 22 including 2 for the MISSED_FINAL dedupe). Full server sweep: 198 total, 186 pass, 12 pre-existing failures in `shipping-estimates.test.js` / `shippingLink.spec.js` unchanged (pre-date this work, confirmed unrelated via git stash comparison).
+
+**New architectural guarantees post-10.0:**
+- Borrower checkout cost = actual label cost, always. No silent deltas absorbed by Sherbrt. Zero cost-mismatch class.
+- Ship-by date persisted once at label purchase, read by all downstream consumers. No more env-var drift between web service and crons (which caused the April 23 3.1b miss).
+- Short-lead cross-country bookings correctly land on expedited services (UPS 2nd Day Air, UPS Next Day Air Saver) instead of silently picking cheapest-of-all with a transit time that wouldn't arrive before booking start.
+- Return shipping decoupled from outbound's deadline; always picks cheapest preferred service.
+- Lenders have 24h (not 6 days) to respond. Two SMS escalations (60m gentle, 22h final warning with quiet-hours bypass). MISSED_FINAL watchdog measures any silent misses.
+- Auto-cancel has 12h scan-lag grace so a lender who dropped the package at 11:50pm PT doesn't get prematurely cancelled when USPS doesn't scan until 6am next morning.
+- Auto-cancel version gate uses `>= 3` instead of `=== 3`, so v5 and future process.edn bumps don't silently disable the feature.
+
+**Pre-merge operator checks completed during rollout:**
+- Shippo service-name format probe (LA→NYC test rate-fetch) confirmed 4/6 preferredServices strings match exactly and 2/6 needed the `®` fix (applied via follow-up commit `dbf6f83fd` with `.replace(/[®™]/g, '')` in the `nameOf` helper).
+- Shippo Dashboard → Carriers confirmed UPS + USPS active with required services.
+
+**Pending post-merge items to revisit** (not blocking, tracked here for next session):
+1. Review Sharetribe Console → Content → Email templates → `booking-expired-request` for stale "6 days" / "within a week" language. Update to "24 hours" or make generic. Pre-merge operator checklist item from the scope doc; not yet verified.
+2. Mid-window reminder SMS for long-lead bookings (between accept and 24h-before-ship) — add to `sherbrt_transaction_comms_v11.xlsx` future comms tab in a dedicated follow-up session with operator.
+3. Critical-path monitoring/alerting session — build operator email/SMS notifications for Shippo outages, cron failure states, Render service health. Separate from 10.0 scope.
+4. Listing-search validation — prevent showing listings to borrowers when the zip-pair + booking-start combination is infeasible even with expedited service. Deferred from 10.0.
+5. Re-compute `outbound.shipByDate` on zip change post-accept — deferred edge case from 10.0.
+
+**Data structure additions:** `outbound.lockedRate` and `return.lockedRate` (both `{rateObjectId, estimatedDays, amountCents, provider, servicelevel}`). `outbound.shipByDate` is now the authoritative read path for all consumers — the shared `computeShipByDate` in `lib/shipping.js` prefers this value and logs `[ship-by:persisted]` when used; falls back to compute-from-rate (logs `[ship-by:computed] mode=shippo-anchored`) or compute-from-fallback (logs `[ship-by:computed] mode=static-fallback`) only when persisted value is absent.
+
+**Env var additions:** `SHIP_SAFETY_BUFFER` (default `1`). `SHIP_LEAD_DAYS` retained as fallback floor only.
+
+### SHIP_LEAD_DAYS env drift on Lender Shipping Reminders cron — root cause for missing 3.1b SMS (April 23, 2026)
+
+**Symptom surfaced during Scenario 1 QA:** Lender Monica D accepted a booking at 8:26 PM PT on Apr 21 for an Apr 23 start. The 3-SMS correctly fired at accept with "Ship by Apr 22." The 3.1b end-of-day unshipped reminder (expected Apr 22 3-5 PM PT window) never fired, even though the lender didn't ship. Cron summary showed `EndOfDay=0, Processed=65` across all hourly ticks.
+
+**Root cause (concrete):** `SHIP_LEAD_DAYS=1` set on `shop-on-sherbet` web service, but NOT set on the `Lender Shipping Reminders` cron — the cron fell back to the code default of `2` in `server/lib/shipping.js:24`. Web service computed ship-by = Apr 23 − 1 = **Apr 22** (what the 3-SMS told the lender). Cron independently recomputed ship-by = Apr 23 − 2 = **Apr 21**. At each Apr 22 cron tick, `isShipByDay` at `sendShippingReminders.js:463` compared cron's Apr 21 against today's Apr 22 → false → skipped the EOD branch. The `[ship-by:static] { chosenLeadDays: 2 }` log line (printed 65x per run, once per accepted tx) is the literal smoking gun.
+
+**Mechanism — `computeShipByDate` never reads persisted values:** Even though `transition-privileged.js:976` already persists `outbound.shipByDate` to protectedData at label purchase, the function at `shipping.js:149-211` always recomputes from scratch using whatever `SHIP_LEAD_DAYS` each service has. Services drift silently.
+
+**Fix class:** Same category as the April 21 Overdue cron F1/F2/F4 config drift — Render env vars and cron schedules are PER-SERVICE, and `render.yaml` is documentation-only on this project.
+
+**Immediate mitigation:** Skipped the config-only `SHIP_LEAD_DAYS=1` patch on the cron in favor of the structural fix — Shippo-anchored shipByDate persisted at label purchase, read by all consumers via `computeShipByDate` in the shared lib (no more per-cron recomputation with per-cron env vars).
+
+**Structural fix: ✅ SHIPPED same day.** See the "10.0 — Shippo-Anchored Ship-By + 24h Lender Expire + Acceptance Hardening (April 23, 2026)" entry above for full shipped-state details. All 5 atomic PRs merged, process.edn v5 alias live, `protectedData.outbound.shipByDate` is now authoritative source-of-truth read first by every downstream consumer. The env-drift class of bug cannot recur via this code path — `computeShipByDate` reads the persisted value and only falls back to a fresh compute when the persisted value is absent (Shippo outage or pre-10.0 tx). Per-service `SHIP_LEAD_DAYS` drift is demoted from "breaks SMS flow" to "last-resort fallback that only matters during Shippo outages."
+
+**All current prod transactions at time of rollout were operator/QA tests** (amalia running as both borrower and lender across listings). Safe to roll out the Shippo-anchored rewrite without impacting real marketplace activity.
 
 ### Overdue cron Render config drift — post-9.2 validation (April 21, 2026)
 
@@ -550,7 +622,10 @@ Transaction protectedData stores shipping, SMS, and late fee state:
 - `trackingNumber`, `returnTrackingNumber`
 - `outbound.acceptedAt` — ISO timestamp set on `transition/accept`. Anchors shipping reminder time-of-day.
 - `outbound.firstScanAt` — ISO timestamp of first outbound carrier scan (written by `shippoTracking.js` webhook; use `hasOutboundScan()` helper to read).
-- `outbound.labelUrl` / `outbound.shipByDate` / `outboundTrackingNumber` — Shippo outbound shipment data
+- `outbound.shipByDate` — ISO timestamp of ship-by date. **Authoritative source-of-truth as of 10.0 PR-2 (April 23, 2026)** — derived from Shippo's selected rate `estimated_days` + `SAFETY_BUFFER_DAYS`, business-day-subtracted. `computeShipByDate` in `lib/shipping.js` reads this FIRST before any recomputation.
+- `outbound.lockedRate` — `{rateObjectId, estimatedDays, amountCents, provider, servicelevel}` persisted at borrower checkout (10.0 PR-2). At lender accept, `transition-privileged.js` purchases this exact `rateObjectId` from Shippo — guarantees borrower preauth cost matches actual label cost.
+- `return.lockedRate` — same shape as `outbound.lockedRate`, for the return label. Return shipping always picks cheapest preferred service, no deadline filter.
+- `outbound.labelUrl` / `outboundTrackingNumber` — Shippo outbound shipment data
 - `returnLabel`, `returnTrackingNumber`, `returnLabelUrl` — Shippo return shipment data
 - `lateFee` — Late fee tracking per day
 - `autoCancel.sent` / `autoCancel.sentAt` / `autoCancel.reason` — Set by `sendAutoCancelUnshipped.js` after firing `transition/auto-cancel-unshipped`. Idempotency marker (state-machine is the primary guard; this flag is belt-and-suspenders).
