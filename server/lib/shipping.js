@@ -502,7 +502,12 @@ async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
     // The previous builder read `r.service` (usually undefined with modern
     // SDK), so the filter matched nothing and the fallback silently picked
     // cheapest-of-all. Fix per 10.0 PR-1 step 2.
-    const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.trim();
+    //
+    // Strip trademark symbols (® U+00AE, ™ U+2122) that Shippo appends to
+    // some service names (e.g., "UPS 2nd Day Air®", "UPS Next Day Air
+    // Saver®"). Without this, config entries written as plain ASCII won't
+    // match the returned strings (live-probe confirmed 2026-04-23).
+    const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.replace(/[®™]/g, '').trim();
     const filtered = preferredServices.length
       ? allRates.filter(r => preferredServices.includes(nameOf(r)))
       : allRates;
@@ -670,7 +675,10 @@ async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
  */
 function pickCheapestPreferredRate(rates, preferredServices = []) {
   if (!Array.isArray(rates) || rates.length === 0) return null;
-  const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.trim();
+  // Strip trademark symbols (® U+00AE, ™ U+2122). See estimateOneWay
+  // above for rationale; live Shippo responses include ® for several UPS
+  // services (2nd Day Air, Next Day Air, Next Day Air Saver, 3 Day Select).
+  const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.replace(/[®™]/g, '').trim();
   const filtered = preferredServices.length
     ? rates.filter(r => preferredServices.includes(nameOf(r)))
     : rates;

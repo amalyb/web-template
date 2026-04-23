@@ -127,4 +127,85 @@ describe('PR-1 regression: estimateOneWay name-builder handles modern Shippo sha
     // should not appear anywhere in shipping.js anymore.
     expect(src).not.toMatch(/\(r\.service\s*\|\|\s*r\.provider_service/);
   });
+
+  test('nameOf strips trademark symbols (® U+00AE, ™ U+2122)', () => {
+    // Every nameOf in shipping.js must apply the trademark strip. Live
+    // Shippo probe (2026-04-23) confirmed UPS returns service names with ®
+    // (e.g., "UPS 2nd Day Air®", "UPS Next Day Air Saver®"). Without this
+    // regex, those names wouldn't match the ASCII-only preferredServices
+    // config entries.
+    const replaceMatches = src.match(/\.replace\(\/\[®™\]\/g, ''\)/g) || [];
+    expect(replaceMatches.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('PR-1: trademark-symbol strip (regression for live Shippo probe 2026-04-23)', () => {
+  // Behavioral test of pickCheapestPreferredRate: passing a rate whose
+  // servicelevel.name contains ® should match the ASCII-only config entry
+  // after the strip. Before the Option B fix, this would fail and the rate
+  // would fall through to the cheapest-of-all fallback.
+  const { pickCheapestPreferredRate } = require('./shipping');
+
+  test("rate with 'UPS 2nd Day Air®' matches config 'UPS 2nd Day Air' after strip", () => {
+    const rates = [
+      // A cheaper non-preferred rate that should be filtered OUT
+      {
+        provider: 'FedEx',
+        servicelevel: { name: 'Express Saver', token: 'fedex_express_saver' },
+        amount: '5.00',
+      },
+      // The rate we care about — has ® in name
+      {
+        provider: 'UPS',
+        servicelevel: { name: '2nd Day Air®', token: 'ups_second_day_air' },
+        amount: '13.24',
+      },
+    ];
+    const preferred = ['UPS 2nd Day Air']; // ASCII — as written in config
+    const chosen = pickCheapestPreferredRate(rates, preferred);
+    expect(chosen).not.toBeNull();
+    expect(chosen.provider).toBe('UPS');
+    expect(chosen.servicelevel.token).toBe('ups_second_day_air');
+    // FedEx Express Saver was cheaper but not in preferred set → not chosen.
+    expect(chosen.provider).not.toBe('FedEx');
+  });
+
+  test("rate with 'UPS Next Day Air Saver®' matches config 'UPS Next Day Air Saver'", () => {
+    const rates = [
+      {
+        provider: 'UPS',
+        servicelevel: { name: 'Next Day Air Saver®', token: 'ups_next_day_air_saver' },
+        amount: '44.30',
+      },
+    ];
+    const chosen = pickCheapestPreferredRate(rates, ['UPS Next Day Air Saver']);
+    expect(chosen).not.toBeNull();
+    expect(chosen.servicelevel.token).toBe('ups_next_day_air_saver');
+  });
+
+  test('™ (U+2122) is also stripped', () => {
+    const rates = [
+      {
+        provider: 'SomeCarrier',
+        servicelevel: { name: 'Premium™', token: 'some_premium' },
+        amount: '10.00',
+      },
+    ];
+    const chosen = pickCheapestPreferredRate(rates, ['SomeCarrier Premium']);
+    expect(chosen).not.toBeNull();
+    expect(chosen.servicelevel.token).toBe('some_premium');
+  });
+
+  test('plain ASCII names (no trademark) still match correctly', () => {
+    const rates = [
+      {
+        provider: 'USPS',
+        servicelevel: { name: 'Priority Mail', token: 'usps_priority' },
+        amount: '12.48',
+      },
+    ];
+    const chosen = pickCheapestPreferredRate(rates, ['USPS Priority Mail']);
+    expect(chosen).not.toBeNull();
+    expect(chosen.servicelevel.token).toBe('usps_priority');
+  });
 });

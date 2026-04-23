@@ -203,7 +203,11 @@ function pickCheapestAllowedRate(availableRates, { daysUntilBookingStart, prefer
   const daysUntil = daysUntilBookingStart ?? 999;
   const buffer = SAFETY_BUFFER_DAYS;
 
-  const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.trim();
+  // Strip trademark symbols (® U+00AE, ™ U+2122). Shippo returns several
+  // UPS services with ® in servicelevel.name (e.g., "UPS 2nd Day Air®",
+  // "UPS Next Day Air Saver®"). Config entries are plain ASCII — without
+  // this strip, those services would fail the preferredServices filter.
+  const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.replace(/[®™]/g, '').trim();
 
   const norm = availableRates.map(r => ({
     provider: String(r.provider || '').toUpperCase(),
