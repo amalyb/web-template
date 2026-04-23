@@ -73,6 +73,11 @@
  * visibility. Steady-state: count=0; non-zero counts indicate clock skew,
  * phase-boundary bugs, or other slippage worth investigating.
  *
+ * Per-tx dedupe: because the 30-min lookback overlaps two consecutive
+ * 15-min cron ticks, each missed-final tx would otherwise log on both
+ * ticks. A Redis key `lenderReminder:{txId}:missedFinal:logged` (1h TTL)
+ * ensures we log + count exactly once per occurrence.
+ *
  * ──────────────────────────────────────────────────────────────────────────
  * CRON SCHEDULING (Render)
  * ──────────────────────────────────────────────────────────────────────────
@@ -116,9 +121,14 @@ const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE;
 
 // Full cron coverage of the 24h expiration window (10.0 PR-4).
-const MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
-const INFLIGHT_TTL_SEC = 10 * 60;       // 10 minutes — longer than any one SMS send
-const SENT_TTL_SEC = 7 * 24 * 60 * 60;  // 7 days — comfortably outlasts 24h window
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;             // 24 hours
+const INFLIGHT_TTL_SEC = 10 * 60;                   // 10 minutes — longer than any one SMS send
+const SENT_TTL_SEC = 7 * 24 * 60 * 60;              // 7 days — comfortably outlasts 24h window
+// The watchdog's 30-min lookback window overlaps across two consecutive
+// cron ticks, so a single missed-final tx would otherwise log twice.
+// 1h TTL is long enough to cover the lookback window with margin and
+// short enough to free the key before the next day's possible recurrence.
+const MISSED_FINAL_DEDUPE_TTL_SEC = 60 * 60;        // 1 hour
 
 // 2-phase escalation: 60m gentle nudge, 22h final warning. Phase windows
 // are non-overlapping by construction — a tx in [60m, 22h) hits the 60m
@@ -498,8 +508,30 @@ async function sendLenderRequestReminders() {
           continue;
         }
         if (!twentyTwoSent) {
+          // Dedupe across consecutive cron ticks: the 30-min lookback
+          // window overlaps the 15-min tick interval, so a single missed
+          // tx would otherwise log on two ticks and inflate count by 2x.
+          // 1h TTL is the cheapest fix (scope doc v3.1 step 7 spec).
+          const dedupeKey = redisKey(txId, 'missedFinal:logged');
+          let alreadyLogged = null;
+          try {
+            alreadyLogged = await redis.get(dedupeKey);
+          } catch (redisErr) {
+            console.warn(`[lender-request-reminder][WATCHDOG] Dedupe read failed for tx=${txId}, logging anyway:`, redisErr.message);
+          }
+          if (alreadyLogged) {
+            // Already counted on a prior tick; skip silently.
+            continue;
+          }
           console.log(`[lender-request-reminder][MISSED_FINAL] tx=${txId} — expired without 22h warning fired`);
           missedFinalCount++;
+          if (!DRY) {
+            try {
+              await redis.set(dedupeKey, new Date().toISOString(), 'EX', MISSED_FINAL_DEDUPE_TTL_SEC);
+            } catch (redisErr) {
+              console.warn(`[lender-request-reminder][WATCHDOG] Dedupe write failed for tx=${txId}:`, redisErr.message);
+            }
+          }
         }
       }
       console.log(`[lender-request-reminder][MISSED_FINAL_SUMMARY] count=${missedFinalCount} lookbackMs=${WATCHDOG_LOOKBACK_MS}`);

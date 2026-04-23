@@ -142,6 +142,23 @@ describe('PR-4: MISSED_FINAL watchdog', () => {
   test('watchdog lookback window is 30 minutes', () => {
     expect(src).toMatch(/WATCHDOG_LOOKBACK_MS\s*=\s*30\s*\*\s*60\s*\*\s*1000/);
   });
+
+  test('per-tx dedupe key "missedFinal:logged" with 1h TTL prevents double-counting', () => {
+    // Scope doc v3.1 step 7: because the 30-min lookback window overlaps
+    // two 15-min cron ticks, the same missed tx would log twice without
+    // dedupe. Lock in the key name, TTL, and the read-before-log pattern.
+    expect(src).toMatch(/redisKey\(txId,\s*['"]missedFinal:logged['"]\)/);
+    expect(src).toMatch(/MISSED_FINAL_DEDUPE_TTL_SEC\s*=\s*60\s*\*\s*60/);
+    // The guard must check alreadyLogged BEFORE incrementing the count;
+    // otherwise dedupe is visual-only and the count still inflates.
+    expect(src).toMatch(/if \(alreadyLogged\)[\s\S]*?continue;[\s\S]*?\[MISSED_FINAL\][\s\S]*?missedFinalCount\+\+/);
+  });
+
+  test('dedupe write is skipped in DRY mode', () => {
+    // DRY mode should log but not write Redis keys — matches the
+    // existing markInFlight/markSent DRY behavior.
+    expect(src).toMatch(/if \(!DRY\)\s*\{[\s\S]*?redis\.set\(dedupeKey/);
+  });
 });
 
 describe('PR-4: stale 6-day references removed', () => {
