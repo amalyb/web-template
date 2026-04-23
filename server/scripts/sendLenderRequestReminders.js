@@ -1,80 +1,90 @@
 #!/usr/bin/env node
 /**
- * Lender Request Reminder SMS Script (60-minute follow-up)
+ * Lender Request Reminder SMS Script — 2-phase escalation (10.0 PR-4)
  *
- * Sends a single follow-up SMS to the lender if they haven't accepted or
- * rejected a borrow request within 60 minutes of it being placed.
+ * Sends up to two follow-up SMS to the lender if they haven't accepted or
+ * rejected a borrow request within the 24-hour expiration window:
+ *   - 60m phase (gentle nudge)
+ *   - 22h phase (final warning, 2h before expiration)
  *
  * ──────────────────────────────────────────────────────────────────────────
  * WHY / WHAT
  * ──────────────────────────────────────────────────────────────────────────
  * A borrower creates a request and the lender is notified immediately via
- * the initial lender SMS (see server/api/initiate-privileged.js). If the
- * lender doesn't act, this worker nudges them once at ~60 minutes:
+ * the initial lender SMS (see server/api/initiate-privileged.js). Under
+ * the 10.0 24h expire window (process.edn v5), requests auto-expire at
+ * min(firstEnteredPreauthorized + 24h, bookingStart + 1d, bookingEnd).
  *
- *   "Sherbrt 🍧: Don't leave <FirstName> hanging! <$Earnings> is waiting
- *    for you! 🤑🤑🤑 Just tap to accept: <shortUrl>."
- *
- * Requests auto-expire (transition/expire) at min(
- *   firstEnteredPreauthorized + 6 days,
- *   bookingStart + 1 day,
- *   bookingEnd,
- * ), so the 60-minute window is always safely before auto-expire (minimum
- * floor is ≥ several hours in practice; we still re-check tx.state before
- * sending).
+ * If the lender doesn't act, this worker nudges them twice:
+ *   - 60m: "Don't leave ${first} hanging! ... Just tap before it expires"
+ *   - 22h: "⚠️ Final call — ${first}'s request expires in 2 hours."
  *
  * ──────────────────────────────────────────────────────────────────────────
- * 60–80 MINUTE WINDOW LOGIC
+ * PHASE WINDOWS
  * ──────────────────────────────────────────────────────────────────────────
- * The Render cron runs every 15 minutes. A naive "age > 60 min" filter
- * would keep matching the same tx on every subsequent run. We instead pick
- * transactions whose age is in [60, 80) minutes:
+ * Phases are non-overlapping age buckets evaluated per-tx per-cron-tick:
  *
- *   - Lower bound 60m: don't nudge too early.
- *   - Upper bound 80m: 60m + one 15m cron tick + 5m of slack for long
- *     runs / cron jitter. Anything older than 80m has either already been
- *     reminded on a prior run, or is stale enough that we let it go.
+ *   60m phase: [60m, 22h)   — gentle nudge
+ *   22h phase: [22h, 24h)   — final warning
  *
- * The window alone is not a correctness guarantee — it's a filter. The
- * real "send once" guarantee is the idempotency flag below.
+ * Each phase has its own Redis dedupe key, so a tx that passes through
+ * both windows on successive cron ticks gets exactly one SMS per phase
+ * (two total). Txs outside both windows are skipped.
  *
  * ──────────────────────────────────────────────────────────────────────────
- * IDEMPOTENCY CONTRACT (Redis-backed)
+ * QUIET-HOURS POLICY
  * ──────────────────────────────────────────────────────────────────────────
- * We use a "flag-before-send" pattern backed by Redis to eliminate any
- * risk of double-texting a lender. Redis (not protectedData) because the
- * Integration SDK we run under doesn't expose transactions.update — and
- * Redis is already used throughout the codebase (shortlinks, tracking,
- * return reminders) for exactly this kind of ephemeral cross-run state.
+ * The 60m phase respects the standard withinSendWindow gate (8am-11pm PT;
+ * out-of-window cron ticks defer until in-window, which works because the
+ * 60m window is 21 hours wide and absorbs any quiet-hours gap).
  *
- * Keys per transaction:
- *
- *   lenderReminder:{txId}:sent     (TTL 7 days)  → SMS already sent
- *   lenderReminder:{txId}:inFlight (TTL 10 min)  → a run is mid-send now
- *
- * Send sequence for each eligible tx:
- *
- *   1. If :sent exists → skip.
- *   2. If :inFlight exists → skip (another run — or a recently crashed
- *      run — is/was mid-send; 10-min TTL auto-clears a true crash).
- *   3. SET :inFlight with 10-min TTL.
- *   4. Call sendSMS().
- *   5a. On success → SET :sent (7-day TTL), DEL :inFlight.
- *   5b. On failure → DEL :inFlight so next cron tick can retry if still
- *       in the 60–80m window.
- *
- * If step 5 itself fails after a successful send, the inFlight key stays
- * until its 10-min TTL expires — by which point the tx has aged past the
- * 80m upper bound of the send window and will no longer be picked up, so
- * the lender is NOT re-texted.
+ * The 22h phase BYPASSES quiet-hours. Rationale: the phase window is only
+ * 2 hours wide. Borrowers who check out between 1am-3am PT would have
+ * their 22h final warning land entirely in the 11pm-1am PT quiet-hours
+ * block; by the time 8am rolls around, the tx has already expired and
+ * the warning is lost. A brief after-hours text when money is 2h from
+ * expiring is preferable to a silent miss (operator decision, April 23,
+ * 2026).
  *
  * ──────────────────────────────────────────────────────────────────────────
- * CRON SCHEDULING (Render/Heroku)
+ * IDEMPOTENCY CONTRACT (Redis-backed, per-phase)
+ * ──────────────────────────────────────────────────────────────────────────
+ * Keys per transaction per phase:
+ *
+ *   lenderReminder:{txId}:{phase}:sent     (TTL 7 days)
+ *   lenderReminder:{txId}:{phase}:inFlight (TTL 10 min)
+ *
+ * where {phase} is "60m" or "22h". The send sequence is per-phase:
+ *
+ *   1. If {phase}:sent exists → skip phase.
+ *   2. If {phase}:inFlight exists → skip (crash auto-clears at 10m).
+ *   3. SET {phase}:inFlight with 10-min TTL.
+ *   4. Call sendSMS() with phase-specific copy + tag.
+ *   5a. On success → SET {phase}:sent (7-day TTL), DEL {phase}:inFlight.
+ *   5b. On failure → DEL {phase}:inFlight so next cron tick can retry.
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ * MISSED_FINAL WATCHDOG (10.0 PR-4)
+ * ──────────────────────────────────────────────────────────────────────────
+ * After the main loop, a second query pass looks for transactions that
+ * transitioned to :state/expired within the last 30 minutes (two cron
+ * ticks) and checks whether their 22h:sent key exists in Redis. If not,
+ * the 22h final warning was missed and we log [MISSED_FINAL] for ops
+ * visibility. Steady-state: count=0; non-zero counts indicate clock skew,
+ * phase-boundary bugs, or other slippage worth investigating.
+ *
+ * Per-tx dedupe: because the 30-min lookback overlaps two consecutive
+ * 15-min cron ticks, each missed-final tx would otherwise log on both
+ * ticks. A Redis key `lenderReminder:{txId}:missedFinal:logged` (1h TTL)
+ * ensures we log + count exactly once per occurrence.
+ *
+ * ──────────────────────────────────────────────────────────────────────────
+ * CRON SCHEDULING (Render)
  * ──────────────────────────────────────────────────────────────────────────
  * Run every 15 minutes:
  *   *\/15 * * * * npm run worker:lender-request-reminders
  *
- * For local testing (no real SMS, no protectedData writes):
+ * Local testing (no real SMS, no Redis writes):
  *   npm run test:lender-request-reminders
  */
 require('dotenv').config();
@@ -110,15 +120,43 @@ const VERBOSE = has('--verbose') || process.env.VERBOSE === '1';
 const LIMIT = parseInt(getOpt('--limit', process.env.LIMIT || '0'), 10) || 0;
 const ONLY_PHONE = process.env.ONLY_PHONE;
 
-const MIN_AGE_MS = 60 * 60 * 1000; // 60 minutes
-// Wide upper bound: 13 hours covers any quiet-hours gap (11 PM → 8 AM = 9h,
-// plus margin). Txs older than 13h are genuinely stale. Previously 80 min;
-// widened for Pattern B quiet-hours support (see PR-3b spec §3b.3).
-const MAX_AGE_MS = 13 * 60 * 60 * 1000; // 13 hours (780 minutes)
-const INFLIGHT_TTL_SEC = 10 * 60; // 10 minutes — longer than any one SMS send
-const SENT_TTL_SEC = 7 * 24 * 60 * 60; // 7 days — comfortably outlasts 13h window
+// Full cron coverage of the 24h expiration window (10.0 PR-4).
+const MAX_AGE_MS = 24 * 60 * 60 * 1000;             // 24 hours
+const INFLIGHT_TTL_SEC = 10 * 60;                   // 10 minutes — longer than any one SMS send
+const SENT_TTL_SEC = 7 * 24 * 60 * 60;              // 7 days — comfortably outlasts 24h window
+// The watchdog's 30-min lookback window overlaps across two consecutive
+// cron ticks, so a single missed-final tx would otherwise log twice.
+// 1h TTL is long enough to cover the lookback window with margin and
+// short enough to free the key before the next day's possible recurrence.
+const MISSED_FINAL_DEDUPE_TTL_SEC = 60 * 60;        // 1 hour
+
+// 2-phase escalation: 60m gentle nudge, 22h final warning. Phase windows
+// are non-overlapping by construction — a tx in [60m, 22h) hits the 60m
+// phase only, [22h, 24h) hits the 22h phase only. Each phase has its own
+// Redis dedupe key so a tx surviving both windows gets exactly 2 SMS.
+//
+// 22h BYPASSES quiet-hours (bypassQuietHours: true); 60m respects it.
+const PHASES = [
+  {
+    key: '60m',
+    minAgeMs: 60 * 60 * 1000,      // 1 hour
+    maxAgeMs: 22 * 60 * 60 * 1000, // 22 hours
+    tag: 'lender_request_reminder_60m',
+    bypassQuietHours: false,
+  },
+  {
+    key: '22h',
+    minAgeMs: 22 * 60 * 60 * 1000, // 22 hours
+    maxAgeMs: 24 * 60 * 60 * 1000, // 24 hours
+    tag: 'lender_request_reminder_22h',
+    bypassQuietHours: true,
+  },
+];
 
 const redisKey = (txId, suffix) => `lenderReminder:${txId}:${suffix}`;
+
+// Compose the per-phase Redis key suffix (e.g., "60m:sent", "22h:inFlight").
+const phaseKey = (phase, kind) => `${phase.key}:${kind}`;
 
 const REQUEST_TRANSITIONS = new Set([
   'transition/request-payment',
@@ -142,31 +180,36 @@ if (DRY) {
 }
 
 /**
- * Redis-backed idempotency helpers. No-op writes in DRY mode.
+ * Redis-backed idempotency helpers — per-phase. No-op writes in DRY mode.
+ * `phase` is a PHASES entry; keys resolve to e.g. "lenderReminder:{txId}:60m:sent".
  */
-async function markInFlight(redis, txId) {
+async function markInFlight(redis, txId, phase) {
+  const key = redisKey(txId, phaseKey(phase, 'inFlight'));
   if (DRY) {
-    console.log(`[lender-request-reminder] DRY-RUN: Would SET ${redisKey(txId, 'inFlight')} (TTL ${INFLIGHT_TTL_SEC}s)`);
+    console.log(`[lender-request-reminder] DRY-RUN: Would SET ${key} (TTL ${INFLIGHT_TTL_SEC}s)`);
     return;
   }
-  await redis.set(redisKey(txId, 'inFlight'), new Date().toISOString(), 'EX', INFLIGHT_TTL_SEC);
+  await redis.set(key, new Date().toISOString(), 'EX', INFLIGHT_TTL_SEC);
 }
 
-async function clearInFlight(redis, txId) {
+async function clearInFlight(redis, txId, phase) {
+  const key = redisKey(txId, phaseKey(phase, 'inFlight'));
   if (DRY) {
-    console.log(`[lender-request-reminder] DRY-RUN: Would DEL ${redisKey(txId, 'inFlight')}`);
+    console.log(`[lender-request-reminder] DRY-RUN: Would DEL ${key}`);
     return;
   }
-  await redis.del(redisKey(txId, 'inFlight'));
+  await redis.del(key);
 }
 
-async function markSent(redis, txId) {
+async function markSent(redis, txId, phase) {
+  const sentKey = redisKey(txId, phaseKey(phase, 'sent'));
+  const inFlightKey = redisKey(txId, phaseKey(phase, 'inFlight'));
   if (DRY) {
-    console.log(`[lender-request-reminder] DRY-RUN: Would SET ${redisKey(txId, 'sent')} (TTL ${SENT_TTL_SEC}s)`);
+    console.log(`[lender-request-reminder] DRY-RUN: Would SET ${sentKey} (TTL ${SENT_TTL_SEC}s)`);
     return;
   }
-  await redis.set(redisKey(txId, 'sent'), new Date().toISOString(), 'EX', SENT_TTL_SEC);
-  await redis.del(redisKey(txId, 'inFlight'));
+  await redis.set(sentKey, new Date().toISOString(), 'EX', SENT_TTL_SEC);
+  await redis.del(inFlightKey);
 }
 
 async function sendLenderRequestReminders() {
@@ -269,7 +312,7 @@ async function sendLenderRequestReminders() {
         continue;
       }
 
-      // Age window: [60m, 80m)
+      // Age check + phase selection (10.0 PR-4).
       const createdAt = attrs.createdAt ? new Date(attrs.createdAt).getTime() : null;
       if (!createdAt) {
         if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — no createdAt`);
@@ -277,30 +320,32 @@ async function sendLenderRequestReminders() {
         continue;
       }
       const ageMs = nowMs - createdAt;
-      if (ageMs < MIN_AGE_MS || ageMs >= MAX_AGE_MS) {
-        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — ageMin=${Math.round(ageMs / 60000)} out of window`);
+      // A tx can match at most one phase by construction (non-overlapping windows).
+      const phase = PHASES.find(p => ageMs >= p.minAgeMs && ageMs < p.maxAgeMs);
+      if (!phase) {
+        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — ageMin=${Math.round(ageMs / 60000)} in no phase window`);
         skipped++;
         continue;
       }
 
-      // Idempotency: inspect Redis flags
+      // Per-phase idempotency: inspect Redis flags for THIS phase only.
       let sentFlag = null;
       let inFlightFlag = null;
       try {
-        sentFlag = await redis.get(redisKey(txId, 'sent'));
-        inFlightFlag = await redis.get(redisKey(txId, 'inFlight'));
+        sentFlag = await redis.get(redisKey(txId, phaseKey(phase, 'sent')));
+        inFlightFlag = await redis.get(redisKey(txId, phaseKey(phase, 'inFlight')));
       } catch (redisErr) {
-        console.error(`[lender-request-reminder] Redis read failed for tx ${txId}, skipping to be safe:`, redisErr.message);
+        console.error(`[lender-request-reminder] Redis read failed for tx ${txId} phase=${phase.key}, skipping to be safe:`, redisErr.message);
         skipped++;
         continue;
       }
       if (sentFlag) {
-        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — already sent at ${sentFlag}`);
+        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} phase=${phase.key} — already sent at ${sentFlag}`);
         skipped++;
         continue;
       }
       if (inFlightFlag) {
-        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} — inFlight since ${inFlightFlag}`);
+        if (VERBOSE) console.log(`[lender-request-reminder] Skipping tx ${txId} phase=${phase.key} — inFlight since ${inFlightFlag}`);
         skipped++;
         continue;
       }
@@ -360,22 +405,27 @@ async function sendLenderRequestReminders() {
         console.warn(`[lender-request-reminder] shortLink failed for tx ${txId}, using full URL:`, e.message);
       }
 
-      const message = `Sherbrt 🍧: Don't leave ${borrowerFirstName} hanging! ${formattedPayout} is waiting for you! 🤑🤑🤑 Just tap to accept: ${shortUrl}.`;
+      // Per-phase SMS copy (operator-approved, 2026-04-23).
+      const message = phase.key === '60m'
+        ? `Sherbrt 🍧: Don't leave ${borrowerFirstName} hanging! ${formattedPayout} is waiting for you! 🤑🤑🤑 Just tap before it expires: ${shortUrl}.`
+        : `Sherbrt 🍧: ⚠️ Final call — ${borrowerFirstName}'s request expires in 2 hours. After that, ${formattedPayout} is gone. Tap to accept now: ${shortUrl}`;
 
       const listingRef = tx?.relationships?.listing?.data;
       const listingId = listingRef?.id?.uuid || listingRef?.id || null;
 
-      // Step 1: flag inFlight BEFORE sending (10-min TTL auto-clears on crash)
-      // Quiet-hours gate: 8 AM – 11 PM PT (Pattern B — wide upper bound defers, not skips)
-      if (!withinSendWindow(getNow())) {
-        console.log(`[lender-request-reminder][QUIET-HOURS] tx=${txId} age=${Math.round(ageMs / 60000)}m — deferred`);
+      // Quiet-hours gate: applies to 60m phase only. 22h bypasses — a
+      // brief after-hours text when money is 2h from expiring beats a
+      // silent miss (operator decision, April 23, 2026).
+      if (!phase.bypassQuietHours && !withinSendWindow(getNow())) {
+        console.log(`[lender-request-reminder][QUIET-HOURS] tx=${txId} phase=${phase.key} age=${Math.round(ageMs / 60000)}m — deferred`);
         continue;
       }
 
+      // Step 1: flag inFlight BEFORE sending (10-min TTL auto-clears on crash).
       try {
-        await markInFlight(redis, txId);
+        await markInFlight(redis, txId, phase);
       } catch (flagErr) {
-        console.error(`[lender-request-reminder] Failed to write inFlight flag for tx ${txId}, skipping:`, flagErr.message);
+        console.error(`[lender-request-reminder] Failed to write inFlight flag for tx ${txId} phase=${phase.key}, skipping:`, flagErr.message);
         failed++;
         continue;
       }
@@ -385,26 +435,25 @@ async function sendLenderRequestReminders() {
       try {
         smsResult = await sendSMS(providerPhone, message, {
           role: 'lender',
-          tag: 'lender_request_reminder_60m',
-          meta: { transactionId: txId, listingId },
+          tag: phase.tag,
+          meta: { transactionId: txId, listingId, phase: phase.key },
         });
       } catch (smsErr) {
-        console.error(`[lender-request-reminder] SMS failed for tx ${txId}:`, smsErr?.message || smsErr);
-        // Rollback: clear inFlight so next cron tick can retry (if still in window)
+        console.error(`[lender-request-reminder] SMS failed for tx ${txId} phase=${phase.key}:`, smsErr?.message || smsErr);
+        // Rollback: clear inFlight so next cron tick can retry (if still in window).
         try {
-          await clearInFlight(redis, txId);
+          await clearInFlight(redis, txId, phase);
         } catch (rollbackErr) {
-          console.error(`[lender-request-reminder] Rollback DEL failed for tx ${txId}:`, rollbackErr.message);
+          console.error(`[lender-request-reminder] Rollback DEL failed for tx ${txId} phase=${phase.key}:`, rollbackErr.message);
         }
         failed++;
         continue;
       }
 
       if (smsResult?.skipped) {
-        // sendSMS decided not to send (e.g. suppression). Clear inFlight without marking sent.
-        console.log(`[lender-request-reminder] SMS skipped by sendSMS (${smsResult.reason}) for tx ${txId}`);
+        console.log(`[lender-request-reminder] SMS skipped by sendSMS (${smsResult.reason}) for tx ${txId} phase=${phase.key}`);
         try {
-          await clearInFlight(redis, txId);
+          await clearInFlight(redis, txId, phase);
         } catch (e) {
           console.error(`[lender-request-reminder] Failed to clear inFlight after sendSMS skip:`, e.message);
         }
@@ -412,15 +461,15 @@ async function sendLenderRequestReminders() {
         continue;
       }
 
-      // Step 3: mark sent. If this write fails, inFlight stays set until its
-      // 10-min TTL expires — by then the tx has aged past the 80m window and
-      // won't be picked up again. No double-text.
+      // Step 3: mark sent. If this write fails, inFlight stays set until
+      // its 10-min TTL expires — by then the tx has aged past the phase
+      // window and won't re-enter this branch. No double-text.
       try {
-        await markSent(redis, txId);
+        await markSent(redis, txId, phase);
         sent++;
-        console.log(`[lender-request-reminder] Sent reminder for tx ${txId}`);
+        console.log(`[lender-request-reminder] Sent ${phase.key} reminder for tx ${txId}`);
       } catch (postWriteErr) {
-        console.error(`[lender-request-reminder] SMS sent but Redis SET :sent failed for tx ${txId} — inFlight will TTL-expire after 80m window:`, postWriteErr.message);
+        console.error(`[lender-request-reminder] SMS sent but Redis SET :${phase.key}:sent failed for tx ${txId} — inFlight will TTL-expire:`, postWriteErr.message);
         sent++;
       }
 
@@ -428,6 +477,67 @@ async function sendLenderRequestReminders() {
         console.log(`[lender-request-reminder] Limit reached (${LIMIT}). Stopping.`);
         break;
       }
+    }
+
+    // MISSED_FINAL watchdog (10.0 PR-4). After the main loop, query for
+    // transactions that transitioned to :state/expired in the last 30 min
+    // (two 15-min cron ticks) and confirm their 22h:sent key exists in
+    // Redis. Missing keys mean the 22h final warning was lost — typically
+    // due to clock skew, phase-boundary miscalculation, or a cron outage.
+    // Steady-state log: [MISSED_FINAL_SUMMARY] count=0.
+    const WATCHDOG_LOOKBACK_MS = 30 * 60 * 1000;
+    const expireWindow = new Date(Date.now() - WATCHDOG_LOOKBACK_MS);
+
+    try {
+      const expiredResp = await sdk.transactions.query({
+        lastTransitions: 'transition/expire',
+        // Sharetribe's query API doesn't filter on lastTransitionedAt
+        // server-side; we over-fetch and filter client-side below.
+        per_page: 50,
+      });
+      let missedFinalCount = 0;
+      for (const tx of expiredResp?.data?.data || []) {
+        const lastAt = tx?.attributes?.lastTransitionedAt;
+        if (!lastAt || new Date(lastAt) < expireWindow) continue;
+        const txId = tx?.id?.uuid || tx?.id;
+        let twentyTwoSent = null;
+        try {
+          twentyTwoSent = await redis.get(redisKey(txId, '22h:sent'));
+        } catch (redisErr) {
+          console.warn(`[lender-request-reminder][WATCHDOG] Redis read failed for tx=${txId}:`, redisErr.message);
+          continue;
+        }
+        if (!twentyTwoSent) {
+          // Dedupe across consecutive cron ticks: the 30-min lookback
+          // window overlaps the 15-min tick interval, so a single missed
+          // tx would otherwise log on two ticks and inflate count by 2x.
+          // 1h TTL is the cheapest fix (scope doc v3.1 step 7 spec).
+          const dedupeKey = redisKey(txId, 'missedFinal:logged');
+          let alreadyLogged = null;
+          try {
+            alreadyLogged = await redis.get(dedupeKey);
+          } catch (redisErr) {
+            console.warn(`[lender-request-reminder][WATCHDOG] Dedupe read failed for tx=${txId}, logging anyway:`, redisErr.message);
+          }
+          if (alreadyLogged) {
+            // Already counted on a prior tick; skip silently.
+            continue;
+          }
+          console.log(`[lender-request-reminder][MISSED_FINAL] tx=${txId} — expired without 22h warning fired`);
+          missedFinalCount++;
+          if (!DRY) {
+            try {
+              await redis.set(dedupeKey, new Date().toISOString(), 'EX', MISSED_FINAL_DEDUPE_TTL_SEC);
+            } catch (redisErr) {
+              console.warn(`[lender-request-reminder][WATCHDOG] Dedupe write failed for tx=${txId}:`, redisErr.message);
+            }
+          }
+        }
+      }
+      console.log(`[lender-request-reminder][MISSED_FINAL_SUMMARY] count=${missedFinalCount} lookbackMs=${WATCHDOG_LOOKBACK_MS}`);
+    } catch (watchdogErr) {
+      // Watchdog failures must not block the main cron. Log and continue.
+      console.warn('[lender-request-reminder][WATCHDOG_ERROR]', watchdogErr?.message || watchdogErr);
     }
 
     console.log(`\n[lender-request-reminder] Done. Sent=${sent} Skipped=${skipped} Failed=${failed} Processed=${processed}`);
