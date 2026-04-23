@@ -46,15 +46,24 @@ async function buildLenderMsg(tx, listingTitle, borrowerFirstName, payoutTotal, 
   const title = listingTitle || 'your listing';
   const formattedPayout = payoutTotal ? formatMoneyServerSide(payoutTotal) : null;
   
-  // Build message with dynamic values
+  // Build message with dynamic values.
+  //
+  // 10.0 PR-4: operator-approved copy surfaces the 24h acceptance window at
+  // first contact, matching the v5 process.edn expire clause. Note the
+  // comma (not period) after the title — technical comma-splice but the
+  // approved template (April 23, 2026).
+  //
+  // Example final composed message:
+  //   Sherbrt 🍧: Monica wants to borrow your "Faille Halter Mini Dress",
+  //   You'll earn $48 💸🤑. You have 24hrs to accept: https://sherbrt.com/r/abc
   let message = `Sherbrt 🍧: ${firstName} wants to borrow your "${title}"`;
-  
+
   if (formattedPayout) {
-    message += `. You'll earn ${formattedPayout} 💸🤑`;
+    message += `, You'll earn ${formattedPayout} 💸🤑`;
   }
-  
-  message += `. Tap to review & accept: ${shortUrl}`;
-  
+
+  message += `. You have 24hrs to accept: ${shortUrl}`;
+
   return message;
 }
 

@@ -133,17 +133,22 @@ async function processTransaction(tx, included, now, sdk) {
     return;
   }
 
-  // Process-version gate: transition/auto-cancel-unshipped only exists in
-  // default-booking v3 (pushed + aliased April 14, 2026). Transactions created
-  // under v1 or v2 can't accept this transition — firing it would return an
-  // "unknown transition" error. v1 txs can also have diverged booking/tx state
-  // (e.g., operator-declined booking while tx stays in accepted) because v1's
-  // state machine has no cancel-from-accepted path.
+  // Process-version gate: transition/auto-cancel-unshipped was introduced in
+  // default-booking v3 (April 14, 2026). Transactions on v1 or v2 can't accept
+  // this transition — firing it would return "unknown transition". v1 txs
+  // also have diverged booking/tx state (e.g., operator-declined booking
+  // while tx stays in accepted) because v1's state machine has no
+  // cancel-from-accepted path.
+  //
+  // 10.0 PR-4 fix: was `processVersion !== 3` (hard equality), which silently
+  // skipped every v5 transaction after the expire-tightening alias flip.
+  // Changed to `< 3` so v3, v4, v5, and any future bump all pass the gate
+  // while still excluding v1/v2.
   const processName = tx.attributes?.processName;
   const processVersion = tx.attributes?.processVersion;
-  if (processName !== TX_PROCESS || processVersion !== 3) {
+  if (processName !== TX_PROCESS || processVersion < 3) {
     console.log(
-      `${logPrefix} not on ${TX_PROCESS} v3 (process=${processName} v${processVersion}), skipping`
+      `${logPrefix} not on ${TX_PROCESS} v3+ (process=${processName} v${processVersion}), skipping`
     );
     return;
   }
