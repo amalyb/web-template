@@ -165,11 +165,45 @@ function computeChargeableLateDays(refDate, returnDate) {
   return chargeableDays;
 }
 
+/**
+ * Subtract n business days from fromDate.
+ * "Business day" = any day NOT Sunday AND NOT a USPS holiday (evaluated in PT).
+ * Saturday IS a business day by default (per 10.0 scope decision #8).
+ *
+ * Uses Pacific Time for day-of-week and holiday lookups, matching the
+ * existing `isNonChargeableDate` semantics so the whole file agrees on
+ * what "today is Jan 1" means.
+ *
+ * @param {string|Date|dayjs.Dayjs} fromDate - input date (any TZ; evaluated in PT)
+ * @param {number} n - number of business days to subtract
+ * @param {Object} [opts]
+ * @param {boolean} [opts.skipSaturday=false] - when true, Saturdays also skip
+ * @returns {dayjs.Dayjs} PT dayjs at start-of-day, n business days earlier.
+ *   Callers that need a native Date must call `.toDate()` on the result
+ *   (see the computeShipByDate consumer in server/lib/shipping.js).
+ */
+function subtractBusinessDays(fromDate, n, opts = {}) {
+  const { skipSaturday = false } = opts;
+  let d = dayjs(fromDate).tz(TZ).startOf('day');
+  let remaining = n;
+  while (remaining > 0) {
+    d = d.subtract(1, 'day');
+    const dayOfWeek = d.day(); // PT-based: 0 = Sun, 6 = Sat
+    const ymdStr = d.format('YYYY-MM-DD'); // PT-local YMD
+    if (dayOfWeek === 0) continue; // Sunday
+    if (skipSaturday && dayOfWeek === 6) continue;
+    if (USPS_HOLIDAYS.has(ymdStr)) continue;
+    remaining--;
+  }
+  return d;
+}
+
 module.exports = {
   TZ,
   ymd,
   isNonChargeableDate,
   computeChargeableLateDays,
+  subtractBusinessDays,
   USPS_HOLIDAYS,
   USPS_HOLIDAYS_EXPIRES_AT,
   NON_CHARGEABLE_WEEKDAYS,

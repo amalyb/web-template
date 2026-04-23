@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, pickCheapestPreferredRate } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink, orderUrl, saleUrl } = require('../util/url');
@@ -179,52 +179,69 @@ async function withBackoff(fn, { retries = 2, baseMs = 600 } = {}) {
 }
 // ---------------------------------------
 
+const { preferredServices: CONFIG_PREFERRED_SERVICES } = require('../config/shipping');
+const SAFETY_BUFFER_DAYS = Number(process.env.SHIP_SAFETY_BUFFER || 1);
+
 /**
- * Select the cheapest allowed shipping rate that meets the deadline, preferring Ground.
- * @param {Array} availableRates - Array of rate objects from Shippo
- * @param {Object} opts - Options { shipByDate, preferredProviders }
- * @returns {Object|null} Selected rate object or null
+ * Select the cheapest allowed shipping rate that meets the deadline,
+ * preferring UPS Ground when it fits. 10.0 PR-1 step 4 refactor:
+ *   - Drops the old `shipByDate` param; takes `daysUntilBookingStart` directly.
+ *   - Actually filters by `preferredServices` config list FIRST (was missing).
+ *   - Reads `SAFETY_BUFFER_DAYS` from env instead of hardcoded buffer=1.
+ *   - Last-resort fallback is cheapest-of-preferred, not cheapest-of-all,
+ *     so we don't accidentally select a disabled carrier.
+ *
+ * @param {Array} availableRates - Rate objects from Shippo
+ * @param {Object} opts
+ * @param {number} opts.daysUntilBookingStart - Calendar days from now to bookingStart
+ * @param {Array<string>} [opts.preferredProviders=['UPS','USPS']] - Provider preference order
+ * @returns {Object|null} Selected rate object or null if no rates
  */
-function pickCheapestAllowedRate(availableRates, { shipByDate, preferredProviders = ['UPS','USPS'] }) {
+function pickCheapestAllowedRate(availableRates, { daysUntilBookingStart, preferredProviders = ['UPS', 'USPS'] }) {
   if (!Array.isArray(availableRates) || availableRates.length === 0) return null;
 
-  const allow = (process.env.ALLOWED_UPS_SERVICES || '').split(',').map(s => s.trim()).filter(Boolean);
-  const today = new Date(); today.setHours(0,0,0,0);
-  const deadline = shipByDate ? new Date(shipByDate) : null;
-  const daysUntil = deadline ? Math.ceil((deadline - today) / 86400000) : 999;
-  const buffer = 1; // cushion to avoid cutting it too close
+  const daysUntil = daysUntilBookingStart ?? 999;
+  const buffer = SAFETY_BUFFER_DAYS;
 
-  // normalize
+  // Strip trademark symbols (® U+00AE, ™ U+2122). Shippo returns several
+  // UPS services with ® in servicelevel.name (e.g., "UPS 2nd Day Air®",
+  // "UPS Next Day Air Saver®"). Config entries are plain ASCII — without
+  // this strip, those services would fail the preferredServices filter.
+  const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.replace(/[®™]/g, '').trim();
+
   const norm = availableRates.map(r => ({
     provider: String(r.provider || '').toUpperCase(),
     token: r.servicelevel?.token || r.service?.token || '',
-    name: r.servicelevel?.name || r.service?.name || '',
+    name: nameOf(r),
     amount: Number(r.amount ?? r.amount_local ?? r.rate ?? 1e9),
     estDays: Number(r.estimated_days ?? r.duration_terms ?? 999),
-    raw: r
+    raw: r,
   }));
 
-  // provider preference order
+  // Filter to preferred services FIRST (this is what was missing)
+  const preferredFiltered = CONFIG_PREFERRED_SERVICES.length
+    ? norm.filter(n => CONFIG_PREFERRED_SERVICES.includes(n.name))
+    : norm;
+
+  // Then apply provider preference order within the preferred set
   let candidates = [];
   for (const p of preferredProviders.map(p => p.toUpperCase())) {
-    const subset = norm.filter(n => n.provider === p);
+    const subset = preferredFiltered.filter(n => n.provider === p);
     if (subset.length) { candidates = subset; break; }
   }
-  if (!candidates.length) candidates = norm;
+  if (!candidates.length) candidates = preferredFiltered.length ? preferredFiltered : norm;
 
-  // optional allow-list (e.g., "ups_ground,ups_3_day_select")
-  if (allow.length) candidates = candidates.filter(n => !n.provider || n.provider !== 'UPS' || allow.includes(n.token));
-
-  // prefer UPS Ground if it meets the deadline
-  const ground = candidates.filter(n => n.token === 'ups_ground').sort((a,b)=>a.amount-b.amount);
+  // Prefer UPS Ground if it meets the deadline
+  const ground = candidates.filter(n => n.token === 'ups_ground').sort((a, b) => a.amount - b.amount);
   if (ground.length && (ground[0].estDays + buffer) <= daysUntil) return ground[0].raw;
 
-  // otherwise: cheapest that meets the deadline
-  const feasible = candidates.filter(n => (n.estDays + buffer) <= daysUntil).sort((a,b)=>a.amount-b.amount);
+  // Otherwise cheapest that meets the deadline
+  const feasible = candidates.filter(n => (n.estDays + buffer) <= daysUntil).sort((a, b) => a.amount - b.amount);
   if (feasible.length) return feasible[0].raw;
 
-  // last resort: absolute cheapest (never choose "fastest" by default)
-  return candidates.sort((a,b)=>a.amount-b.amount)[0].raw;
+  // Last resort: cheapest within the preferred candidates set (expedited
+  // lands here for very tight bookings). Not cheapest-of-all.
+  return candidates.sort((a, b) => a.amount - b.amount)[0].raw;
 }
 
 // ---------------------------------------
@@ -474,19 +491,11 @@ async function createShippingLabels({
     console.log('📦 [SHIPPO] Outbound shipment created successfully');
     console.log('📦 [SHIPPO] Shipment ID:', shipmentRes.data.object_id);
     
-    // ──────────────────────────────────────────────────────────────────────────────
-    // COMPUTE SHIP-BY DATE ONCE (BEFORE rate selection)
-    // ──────────────────────────────────────────────────────────────────────────────
-    const computeResult = await computeShipBy(transaction, { preferLabelAddresses: false });
-    const { shipByDate, leadDays, miles, mode } = computeResult;
-    
-    console.log('[RATE-SELECT][COMPUTE]', { 
-      shipByISO: shipByDate?.toISOString?.(), 
-      leadDays, 
-      miles: miles ? Math.round(miles) : null, 
-      mode 
-    });
-    
+    // 10.0 PR-2 step 3: shipByDate is now derived from the Shippo-selected
+    // rate's estimated_days AFTER rate selection (see below, post-selectedRate).
+    // Declared here with `let` so the post-selection assignment can overwrite.
+    let shipByDate = null;
+
     // Select a shipping rate from the available rates
     let availableRates = shipmentRes.data.rates || [];
     const shipmentData = shipmentRes.data;
@@ -563,17 +572,52 @@ async function createShippingLabels({
       return { success: false, reason: 'no_shipping_rates' };
     }
     
-    // Rate selection logic: use pickCheapestAllowedRate with shipByDate
+    // 10.0 PR-2 step 6 — Option 6: ALWAYS use the locked rate at accept when
+    // one exists. No feasibility check, no fallback re-selection. Borrower
+    // preauth cost = actual label cost, always. The NO_LOCK_FALLBACK branch
+    // exists only for pre-PR-2 transactions and the edge case of a Shippo
+    // outage at checkout; after the migration tail, it should never fire.
     const preferredProviders = (process.env.SHIPPO_PREFERRED_PROVIDERS || 'UPS,USPS')
       .split(',')
       .map(p => p.trim().toUpperCase())
       .filter(Boolean);
-    
-    const selectedRate = pickCheapestAllowedRate(availableRates, { 
-      shipByDate, 
-      preferredProviders 
-    });
-    
+
+    const bookingStartISO = getBookingStartISO(transaction);
+    const daysUntilBookingStart = bookingStartISO
+      ? Math.ceil((new Date(bookingStartISO) - new Date()) / 86400000)
+      : null;
+
+    const lockedOutbound = protectedData?.outbound?.lockedRate;
+    let selectedRate;
+
+    if (lockedOutbound?.rateObjectId) {
+      // Synthesize a rate shape from the stored lock. Only `object_id` is
+      // load-bearing (Shippo validates it at purchase); the other fields are
+      // informational for logs and downstream consumers.
+      // Defensive: if estimatedDays/amountCents are missing or malformed,
+      // proceed anyway — Shippo rejects bad rate_ids at purchase time.
+      selectedRate = {
+        object_id: lockedOutbound.rateObjectId,
+        estimated_days: lockedOutbound.estimatedDays,
+        amount: Number.isFinite(Number(lockedOutbound.amountCents))
+          ? (Number(lockedOutbound.amountCents) / 100).toFixed(2)
+          : null,
+        provider: lockedOutbound.provider || null,
+        servicelevel: lockedOutbound.servicelevel || null,
+      };
+      console.log('[RATE-SELECT][OUTBOUND:LOCKED]', {
+        rateId: lockedOutbound.rateObjectId,
+        estimatedDays: lockedOutbound.estimatedDays,
+        amountCents: lockedOutbound.amountCents,
+      });
+    } else {
+      console.warn('[RATE-SELECT][OUTBOUND:NO_LOCK_FALLBACK]', { txId });
+      selectedRate = pickCheapestAllowedRate(availableRates, {
+        daysUntilBookingStart,
+        preferredProviders,
+      });
+    }
+
     if (!selectedRate) {
       console.error('❌ [SHIPPO][NO-RATES] No suitable rate found');
       return { success: false, reason: 'no_suitable_rate' };
@@ -592,7 +636,21 @@ async function createShippingLabels({
         selectedRate,
       });
     }
-    
+
+    // 10.0 PR-2 step 3: derive shipByDate from the Shippo-selected rate's
+    // estimated_days. Persisted to protectedData.outbound.shipByDate below
+    // (existing persist block), read by all downstream consumers via the
+    // persisted-first branch in computeShipByDate.
+    {
+      const rawTransit = Number(selectedRate?.estimated_days ?? selectedRate?.duration_terms);
+      const transitDays = Number.isFinite(rawTransit) ? rawTransit : undefined;
+      shipByDate = await computeShipByDate(transaction, { transitDays });
+      console.log('[ship-by:derived]', {
+        transitDays: transitDays ?? null,
+        shipByISO: shipByDate?.toISOString?.() || null,
+      });
+    }
+
     // Create the actual label by purchasing the transaction
     console.log('📦 [SHIPPO] Purchasing label for selected rate...');
     console.log('[SHIPPO][TX][CONTEXT]', {
@@ -622,12 +680,14 @@ async function createShippingLabels({
       metadata: outboundMetadata // Keep Shippo metadata short for 100-char limit
     };
     
-    // Only request QR code for USPS (UPS doesn't support it)
-    if (selectedRate.provider.toUpperCase() === 'USPS') {
+    // Only request QR code for USPS (UPS doesn't support it). Null-safe
+    // against locked-rate synthetic objects that may lack `provider`.
+    const selectedProvider = String(selectedRate?.provider || '').toUpperCase();
+    if (selectedProvider === 'USPS') {
       transactionPayload.extra = { qr_code_requested: true };
       console.log('📦 [SHIPPO] Requesting QR code for USPS label');
     } else {
-      console.log('📦 [SHIPPO] Skipping QR code request for ' + selectedRate.provider + ' (not USPS)');
+      console.log('📦 [SHIPPO] Skipping QR code request for ' + (selectedRate?.provider || 'unknown-provider') + ' (not USPS)');
     }
     
     // Log the payload (without auth headers) for debugging Shippo 400s
@@ -1120,20 +1180,22 @@ async function createShippingLabels({
         }
         
         if (returnRates.length > 0) {
-          // Use pickCheapestAllowedRate for return label (same shipByDate)
-          const returnSelectedRate = pickCheapestAllowedRate(returnRates, { 
-            shipByDate, 
-            preferredProviders 
-          });
-          
+          // 10.0 PR-1 step 5: return label is always cheapest preferred, no
+          // deadline filter. Outbound's shipByDate is irrelevant to the return
+          // shipment; the old coupling caused the last-resort branch to fire
+          // unconditionally.
+          const returnSelectedRate = pickCheapestPreferredRate(returnRates, CONFIG_PREFERRED_SERVICES);
+
           if (!returnSelectedRate) {
             console.warn('⚠️ [SHIPPO][RETURN] No suitable return rate found');
           } else {
+            const returnServiceName = `${returnSelectedRate?.provider || returnSelectedRate?.carrier || ''} ${returnSelectedRate?.servicelevel?.name || returnSelectedRate?.service?.name || returnSelectedRate?.provider_service || ''}`.trim();
             console.log('[RATE-SELECT][RETURN]', {
-              token: returnSelectedRate?.servicelevel?.token || returnSelectedRate?.service?.token,
               provider: returnSelectedRate?.provider,
+              service: returnServiceName,
+              token: returnSelectedRate?.servicelevel?.token || returnSelectedRate?.service?.token,
               amount: Number(returnSelectedRate?.amount ?? returnSelectedRate?.rate ?? 0),
-              estDays: returnSelectedRate?.estimated_days ?? returnSelectedRate?.duration_terms
+              estDays: returnSelectedRate?.estimated_days ?? returnSelectedRate?.duration_terms,
             });
           
           // Build return transaction payload - only request QR for USPS
@@ -2322,6 +2384,10 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
     });
   }
 };
+
+// Expose rate selector for unit tests (10.0 PR-1). The primary export is
+// the middleware above; attaching as a property leaves that contract intact.
+module.exports.pickCheapestAllowedRate = pickCheapestAllowedRate;
 
 // Add a top-level handler for unhandled promise rejections to help diagnose Render 'failed service' issues
 process.on('unhandledRejection', (reason, promise) => {

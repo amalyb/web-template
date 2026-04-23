@@ -130,88 +130,86 @@ async function getZips({ listingId, currentUserId, sdk }) {
   }
 }
 
+// Zero-priced placeholder used when we can't estimate (missing ZIPs, Shippo
+// down, etc.). Keeps totals math happy; Sharetribe will display
+// "calculated at checkout" to the user.
+const PLACEHOLDER_LINE_ITEM = {
+  code: LINE_ITEM_ESTIMATED_SHIPPING,
+  unitPrice: new Money(0, 'USD'),
+  quantity: 1,
+  includeFor: ['customer'],
+  calculatedAtCheckout: true,
+};
+
 /**
- * Build shipping line item with estimate or calculatedAtCheckout fallback
+ * Build shipping line item with estimate or calculatedAtCheckout fallback.
+ *
+ * 10.0 PR-2 step 4: return shape now carries `outboundRate` and `returnRate`
+ * locked-rate payloads so the caller can persist them to
+ * protectedData.{outbound,return}.lockedRate at preauth time.
+ *
  * @param {Object} params - { listing, currentUserId, sdk }
- * @returns {Promise<Object>} Line item object
+ * @returns {Promise<{lineItem: Object, outboundRate: Object|null, returnRate: Object|null}>}
  */
 async function buildShippingLine({ listing, currentUserId, sdk }) {
   try {
-    const { borrowerZip, lenderZip } = await getZips({ 
-      listingId: listing.id.uuid, 
-      currentUserId, 
-      sdk 
+    const { borrowerZip, lenderZip } = await getZips({
+      listingId: listing.id.uuid,
+      currentUserId,
+      sdk,
     });
 
     if (!borrowerZip || !lenderZip) {
-      vlog('[buildShippingLine] Missing ZIPs', { 
-        hasBorrowerZip: !!borrowerZip, 
-        hasLenderZip: !!lenderZip 
+      vlog('[buildShippingLine] Missing ZIPs', {
+        hasBorrowerZip: !!borrowerZip,
+        hasLenderZip: !!lenderZip,
       });
-      vlog('[buildShippingLine] fallback calculatedAtCheckout');
       console.log('[buildShippingLine] Missing ZIPs, using calculatedAtCheckout');
-      return {
-        code: LINE_ITEM_ESTIMATED_SHIPPING,
-        // zero-priced placeholder keeps totals math happy
-        unitPrice: new Money(0, 'USD'),
-        quantity: 1,
-        includeFor: ['customer'],
-        calculatedAtCheckout: true,
-      };
+      return { lineItem: PLACEHOLDER_LINE_ITEM, outboundRate: null, returnRate: null };
     }
 
     // Optional: read per-listing parcel from listing.publicData
     const parcel = listing?.attributes?.publicData?.parcel || null;
-    vlog('[buildShippingLine] Calling estimateRoundTrip', { 
+    vlog('[buildShippingLine] Calling estimateRoundTrip', {
       hasBorrowerZip: !!borrowerZip,
       hasLenderZip: !!lenderZip,
-      hasParcel: !!parcel 
+      hasParcel: !!parcel,
     });
 
     const est = await estimateRoundTrip({ lenderZip, borrowerZip, parcel });
     if (!est) {
-      vlog('[buildShippingLine] Estimate failed');
-      vlog('[buildShippingLine] fallback calculatedAtCheckout');
       console.log('[buildShippingLine] Estimate failed, using calculatedAtCheckout');
-      return {
-        code: LINE_ITEM_ESTIMATED_SHIPPING,
-        // zero-priced placeholder keeps totals math happy
-        unitPrice: new Money(0, 'USD'),
-        quantity: 1,
-        includeFor: ['customer'],
-        calculatedAtCheckout: true,
-      };
+      return { lineItem: PLACEHOLDER_LINE_ITEM, outboundRate: null, returnRate: null };
     }
 
     vlog('[buildShippingLine]', {
       hasBorrowerZip: !!borrowerZip,
       hasLenderZip: !!lenderZip,
       estOk: !!est,
-      amountCents: est?.amountCents
+      amountCents: est?.amountCents,
     });
-    vlog('[buildShippingLine] moneyType', { 
-      ctor: (new Money(1,'USD')).constructor?.name 
+    console.log('[buildShippingLine] Estimate successful', {
+      amountCents: est.amountCents,
+      outboundRateId: est.outboundRate?.rateObjectId || null,
+      returnRateId: est.returnRate?.rateObjectId || null,
     });
-    console.log('[buildShippingLine] Estimate successful', est);
-    return {
+    const lineItem = {
       code: LINE_ITEM_ESTIMATED_SHIPPING,
       unitPrice: new Money(est.amountCents, est.currency),
       quantity: 1,
       includeFor: ['customer'],
       calculatedAtCheckout: false,
     };
+    return {
+      lineItem,
+      outboundRate: est.outboundRate || null,
+      returnRate: est.returnRate || null,
+    };
   } catch (e) {
     vlog('[buildShippingLine] Error caught', { error: e.message });
-    vlog('[buildShippingLine] fallback calculatedAtCheckout');
     console.error('[buildShippingLine] Error:', e.message);
-    // keep UI resilient - zero-priced placeholder keeps totals math happy
-    return {
-      code: LINE_ITEM_ESTIMATED_SHIPPING,
-      unitPrice: new Money(0, 'USD'),
-      quantity: 1,
-      includeFor: ['customer'],
-      calculatedAtCheckout: true,
-    };
+    // Keep UI resilient — placeholder keeps totals math happy.
+    return { lineItem: PLACEHOLDER_LINE_ITEM, outboundRate: null, returnRate: null };
   }
 }
 
@@ -470,15 +468,26 @@ exports.transactionLineItems = async (listing, orderData, providerCommission, cu
       }]
     : [];
 
-  // Build shipping line item if we have the necessary context
+  // Build shipping line item if we have the necessary context.
+  //
+  // 10.0 PR-2 step 4: if `options.shippingLock` is an object, buildShippingLine's
+  // outbound/return rate payloads are mirrored into it. Callers (e.g.,
+  // initiate-privileged.js) use this to persist `protectedData.{outbound,
+  // return}.lockedRate` at preauth time. Callers that don't care omit
+  // `shippingLock` — the function stays backward-compatible.
   let shippingLineItem = null;
   if (options.currentUserId && options.sdk) {
     console.log('[transactionLineItems] Building shipping estimate');
-    shippingLineItem = await buildShippingLine({ 
-      listing, 
-      currentUserId: options.currentUserId, 
-      sdk: options.sdk 
+    const built = await buildShippingLine({
+      listing,
+      currentUserId: options.currentUserId,
+      sdk: options.sdk,
     });
+    shippingLineItem = built.lineItem;
+    if (options.shippingLock && typeof options.shippingLock === 'object') {
+      options.shippingLock.outboundRate = built.outboundRate;
+      options.shippingLock.returnRate = built.returnRate;
+    }
   } else {
     console.log('[transactionLineItems] No currentUserId/sdk, skipping shipping estimate');
   }

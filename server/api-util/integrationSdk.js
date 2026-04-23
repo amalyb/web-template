@@ -54,8 +54,17 @@ function deepMerge(base, patch) {
 }
 
 /**
- * Whitelist of allowed protectedData keys for Integration API
- * Only these keys will be sent to updateMetadata
+ * Whitelist of allowed protectedData keys for Integration API.
+ * Only these keys will be sent to updateMetadata.
+ *
+ * 10.0 PR-2 note: `lockedRate` is written at nested paths
+ * `outbound.lockedRate` and `return.lockedRate`. Both parent keys are
+ * already whitelisted below, and `pruneProtectedData` copies entire
+ * top-level values wholesale, so nested `lockedRate` passes through
+ * intact without needing its own entry. All writers to nested `outbound`
+ * or `return` keys MUST spread the existing value to preserve siblings
+ * (Sharetribe's updateMetadata replaces top-level keys wholesale — the
+ * merge is client-side).
  */
 const ALLOWED_PROTECTED_DATA_KEYS = [
   'providerStreet',

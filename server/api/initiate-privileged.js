@@ -133,13 +133,18 @@ module.exports = (req, res) => {
         console.log('[initiate-privileged] Could not fetch current user:', err.message);
       }
 
+      // 10.0 PR-2 step 4: capture the Shippo rate-lock at checkout so the
+      // accept flow can purchase the exact same rate (zero-delta). Passed
+      // through via mutable `shippingLock`; merged into protectedData below.
+      const shippingLock = {};
+
       // Calculate line items (now async with shipping estimation)
       const lineItems = await transactionLineItems(
         listing,
         { ...orderData, ...bodyParams.params },
         providerCommission,
         customerCommission,
-        { currentUserId, sdk }
+        { currentUserId, sdk, shippingLock }
       );
 
       // Prepare transaction body
@@ -173,6 +178,33 @@ module.exports = (req, res) => {
       
       // Use the safely extracted protectedData from req.body and clean empty strings
       const finalProtectedData = clean({ ...(protectedData || {}), bookingStartISO });
+
+      // 10.0 PR-2 step 4: persist the checkout-time rate lock under
+      // protectedData.outbound.lockedRate and protectedData.return.lockedRate.
+      // Spread existing nested values (if any) so we don't clobber siblings
+      // — Sharetribe updateMetadata replaces top-level keys wholesale.
+      if (shippingLock.outboundRate?.rateObjectId) {
+        finalProtectedData.outbound = {
+          ...(finalProtectedData.outbound || {}),
+          lockedRate: shippingLock.outboundRate,
+        };
+        console.log('[initiate] locked outbound rate', {
+          rateObjectId: shippingLock.outboundRate.rateObjectId,
+          estimatedDays: shippingLock.outboundRate.estimatedDays,
+          amountCents: shippingLock.outboundRate.amountCents,
+        });
+      }
+      if (shippingLock.returnRate?.rateObjectId) {
+        finalProtectedData.return = {
+          ...(finalProtectedData.return || {}),
+          lockedRate: shippingLock.returnRate,
+        };
+        console.log('[initiate] locked return rate', {
+          rateObjectId: shippingLock.returnRate.rateObjectId,
+          estimatedDays: shippingLock.returnRate.estimatedDays,
+          amountCents: shippingLock.returnRate.amountCents,
+        });
+      }
       
       if (bookingStartISO) {
         console.log('[initiate] Added bookingStartISO to protectedData:', bookingStartISO);
