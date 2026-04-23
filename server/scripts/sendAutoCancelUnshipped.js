@@ -31,6 +31,7 @@ const TX_PROCESS = 'default-booking';
 const TRANSITION = 'transition/auto-cancel-unshipped';
 const DRY_RUN = process.env.AUTO_CANCEL_DRY_RUN === '1' || process.env.AUTO_CANCEL_DRY_RUN === 'true';
 const DEFAULT_LENDER_TZ = 'America/Los_Angeles';
+const SCAN_LAG_GRACE_HOURS = 12;
 
 // ============================================================
 // SDK
@@ -197,6 +198,16 @@ async function processTransaction(tx, included, now, sdk) {
     return;
   }
 
+  // Scan-lag grace: don't cancel within the first 12 hours past deadline.
+  // Carriers (especially USPS) can take 4-12 hours to register a scan, so a
+  // lender drop at 11:50pm lender-local on D may not show a scan until 6-8am
+  // D+1. Structurally parallel to overdue's daysLate <= 1 guard (lateFees.js:294).
+  const hoursPastDeadline = moment(now).diff(deadline, 'hours', true);
+  if (hoursPastDeadline < SCAN_LAG_GRACE_HOURS) {
+    console.log(`${logPrefix} SKIP reason=scan-lag-grace hoursPastDeadline=${hoursPastDeadline.toFixed(1)}`);
+    return;
+  }
+
   // Skip if package already in motion
   if (hasOutboundScan(tx)) {
     console.log(`${logPrefix} outbound scan present — package in motion, skipping`);
@@ -343,6 +354,7 @@ module.exports = {
   isPastCancelDeadline,
   getCancelDeadline,
   findIncluded,
+  SCAN_LAG_GRACE_HOURS,
 };
 
 // ============================================================
