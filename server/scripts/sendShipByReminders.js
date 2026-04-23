@@ -132,8 +132,11 @@ async function sendShipByReminders() {
         continue;
       }
       
-      // Use centralized ship-by calculation
-      const shipByDate = computeShipByDate(tx);
+      // Use centralized ship-by calculation (PR-3: fixed missing await —
+      // computeShipByDate is async; without the await, the truthy check
+      // passes a Promise through and downstream diffDays/addDays calls
+      // mis-behave silently).
+      const shipByDate = await computeShipByDate(tx);
       if (!shipByDate) {
         console.warn(`⚠️ Could not compute ship-by date for tx ${tx?.id?.uuid || '(no id)'}`);
         continue;

@@ -128,34 +128,13 @@ function isOutboundScanned(protectedData, metadata) {
   return false;
 }
 
-/**
- * Get shipBy date from transaction
- * Priority: metadata.shipBy → protectedData.outbound.shipByDate → computed
- */
-async function getShipByDate(tx) {
-  const metadata = tx?.attributes?.metadata || {};
-  const protectedData = tx?.attributes?.protectedData || {};
-  const outbound = protectedData.outbound || {};
-  
-  // Try metadata first (from transition/accept)
-  if (metadata.shipBy) {
-    const date = new Date(metadata.shipBy);
-    if (!Number.isNaN(+date)) {
-      return date;
-    }
-  }
-  
-  // Try protectedData
-  if (outbound.shipByDate) {
-    const date = new Date(outbound.shipByDate);
-    if (!Number.isNaN(+date)) {
-      return date;
-    }
-  }
-  
-  // Fallback to computed shipBy date
-  return await computeShipByDate(tx);
-}
+// 10.0 PR-3: the local getShipByDate helper is retired. Its three-branch
+// priority (metadata.shipBy → protectedData.outbound.shipByDate → computed)
+// is collapsed into the shared computeShipByDate (lib/shipping.js), which
+// now reads protectedData.outbound.shipByDate first and falls back to
+// transitDays/LEAD_FLOOR. metadata.shipBy was vestigial (no writer exists
+// in the codebase); dropping it is safe per the operator note that all
+// prior prod txs are operator/test (April 23, 2026).
 
 /**
  * Get outbound label URL from transaction
@@ -335,7 +314,7 @@ async function sendShippingReminders() {
       }
       
       // Get shipBy date
-      const shipByDate = await getShipByDate(tx);
+      const shipByDate = await computeShipByDate(tx);
       if (!shipByDate) {
         if (VERBOSE) {
           console.log(`[shipping-reminder] Skipping tx ${txId} - no shipBy date`);
