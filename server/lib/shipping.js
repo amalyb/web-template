@@ -489,7 +489,11 @@ async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
     if (!allRates.length) return null;
 
     const { preferredServices = [] } = require('../config/shipping');
-    const nameOf = r => ((r.carrier || r.provider || '') + ' ' + (r.service || r.provider_service || '')).trim();
+    // Shippo modern SDK returns `{ provider, servicelevel: { name, token } }`.
+    // The previous builder read `r.service` (usually undefined with modern
+    // SDK), so the filter matched nothing and the fallback silently picked
+    // cheapest-of-all. Fix per 10.0 PR-1 step 2.
+    const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.trim();
     const filtered = preferredServices.length
       ? allRates.filter(r => preferredServices.includes(nameOf(r)))
       : allRates;
@@ -587,6 +591,29 @@ async function estimateRoundTrip({ lenderZip, borrowerZip, parcel }) {
     returnCents: ret.amountCents
   });
   return result;
+}
+
+/**
+ * Select the cheapest rate whose provider + service-name is in the
+ * preferredServices whitelist. If none match, falls back to cheapest
+ * rate overall. Returns null only on empty input.
+ *
+ * Used by the return-label purchase flow (10.0 PR-1 step 5). Returns
+ * always want cheapest preferred — no deadline filtering — because by
+ * the time a return ships, outbound's shipByDate is in the past.
+ *
+ * @param {Array} rates - Rate objects from Shippo
+ * @param {Array<string>} preferredServices - Strings like "USPS Priority Mail"
+ * @returns {Object|null} Selected rate or null
+ */
+function pickCheapestPreferredRate(rates, preferredServices = []) {
+  if (!Array.isArray(rates) || rates.length === 0) return null;
+  const nameOf = r => `${r.provider || r.carrier || ''} ${r.servicelevel?.name || r.service?.name || r.provider_service || ''}`.trim();
+  const filtered = preferredServices.length
+    ? rates.filter(r => preferredServices.includes(nameOf(r)))
+    : rates;
+  const source = filtered.length ? filtered : rates;
+  return source.slice().sort((a, b) => parseFloat(a.amount) - parseFloat(b.amount))[0] || null;
 }
 
 // -- Keep street2 if a validator/normalizer dropped it ------------------------
@@ -723,17 +750,18 @@ function formatPhoneE164(phone) {
   return cleaned;
 }
 
-module.exports = { 
+module.exports = {
   shippingClient,
   shippo,
   computeShipBy,
-  computeShipByDate, 
-  formatShipBy, 
+  computeShipByDate,
+  formatShipBy,
   getBookingStartISO,
   resolveZipsFromTx,
   computeLeadDaysDynamic,
   estimateOneWay,
   estimateRoundTrip,
+  pickCheapestPreferredRate,
   keepStreet2,
   logShippoPayload,
   getSandboxCarrierAccounts,
