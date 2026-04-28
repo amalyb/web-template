@@ -234,9 +234,13 @@ Base URL: `https://flex-api.sharetribe.com`
 Build: `yarn install --frozen-lockfile && yarn build`
 Health check: `/healthz`
 
-**Note:** `lender-request-reminders` and `shipping-reminders` are also configured
-as Render cron jobs (every 15 min) but may be set up directly in the Render
-dashboard rather than in `render.yaml`.
+**Note:** `lender-request-reminders` and `auto-cancel-unshipped` are documented
+in `render.yaml` but the file is NOT auto-synced to Render in this project —
+both services were created manually as Cron Jobs in the Render UI. The
+`render.yaml` blocks are documentation of intended config; live config edits
+must happen in the Render dashboard. `shipping-reminders` (separate from
+`shipby-reminders` worker) is also configured directly in the dashboard and
+does not yet have a documentation block in `render.yaml`.
 
 ## Key Environment Variables
 

@@ -70,3 +70,31 @@ services:
         value: production
       - key: AUTO_CANCEL_DRY_RUN
         value: "1"
+
+  # Lender request reminders — 2-phase escalation SMS (60m + 22h) sent to the
+  # lender if a booking request is still unanswered.
+  # NOTE: Same as auto-cancel-unshipped — this file is NOT auto-synced to
+  # Render in this project. The service was created manually as a Cron Job in
+  # the Render UI. This block is documentation of intended config.
+  # Matches live service:
+  #   schedule: every 15 min (*/15 * * * *)
+  #   command: --once (cron restarts the process each run; script exits cleanly)
+  # 60m phase respects 8am–11pm PT quiet-hours; 22h phase bypasses quiet-hours
+  # by design (phase window is only 2h wide, can't afford a quiet-hours skip).
+  # Per-phase Redis dedupe keys: lenderReminder:{txId}:{60m|22h}:sent.
+  # MISSED_FINAL watchdog logs [MISSED_FINAL] tx=X if 22h fails to fire before
+  # the v5 24h transition/expire — steady-state count should be 0.
+  # Integration SDK credentials (INTEGRATION_CLIENT_ID/SECRET) and Twilio
+  # credentials must be present in the Render env. SendGrid keys are NOT
+  # needed (this cron sends SMS only, no email).
+  - type: cron
+    name: lender-request-reminders
+    env: node
+    plan: starter
+    schedule: "*/15 * * * *"
+    buildCommand: yarn install && yarn run render-build
+    startCommand: node server/scripts/sendLenderRequestReminders.js --once
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production
