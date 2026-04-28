@@ -25,7 +25,7 @@ const getFlexSdk = require('../util/getFlexSdk');
 const { upsertProtectedData, hasOutboundScan } = require('../lib/txData');
 const { voidShippoLabel } = require('../lib/shippo');
 let { sendSMS } = require('../api-util/sendSMS');
-const { shortLink } = require('../api-util/shortlink');
+const { calculateLenderPayoutTotal, formatMoneyServerSide } = require('../api-util/lenderEarnings');
 
 const TX_PROCESS = 'default-booking';
 const TRANSITION = 'transition/auto-cancel-unshipped';
@@ -281,7 +281,7 @@ async function sendCancelSMSes(tx, { listing, customer, provider }) {
     pd.providerPhone;
 
   if (borrowerPhone) {
-    const msg = `Sherbrt here 🍧 Your borrow of "${truncate(itemTitle, 40)}" was auto-cancelled because the lender didn't ship in time. You've been fully refunded — it'll show up in 5-10 business days.`;
+    const msg = `🚫 Sherbrt 🍧: Your borrow request for "${truncate(itemTitle, 40)}" was auto-cancelled because the lender didn't ship in time. Full refund will hit your card in 5–10 business days. Browse other looks: https://sherbrt.com/s`;
     await sendSMS(borrowerPhone, msg, {
       role: 'borrower',
       tag: 'auto_cancel_to_borrower',
@@ -293,8 +293,19 @@ async function sendCancelSMSes(tx, { listing, customer, provider }) {
 
   if (lenderPhone) {
     const listingId = listing?.id?.uuid || listing?.id;
-    const relistUrl = listingId ? await shortLink(`https://sherbrt.com/l/${listingId}`) : 'https://sherbrt.com';
-    const msg = `Sherbrt here 🍧 Your listing "${truncate(itemTitle, 40)}" was cancelled because it wasn't shipped in time. No charge to you. Relist anytime: ${relistUrl}`;
+    // 3.2b copy update (April 28 2026):
+    //   - Static ManageListingsPage URL (https://sherbrt.com/listings) so
+    //     lenders land on their availability/edit dashboard, not a single
+    //     listing relist link.
+    //   - Earnings amount uses the same helper as 1-SMS / 1a-SMS / 1b-SMS so
+    //     the four lender-side messages can never drift on the figure shown.
+    const lineItems = tx?.attributes?.lineItems || [];
+    const payoutTotal = calculateLenderPayoutTotal(lineItems);
+    const formattedPayout = payoutTotal ? formatMoneyServerSide(payoutTotal) : null;
+    const earningsClause = formattedPayout
+      ? `You missed out on ${formattedPayout}.`
+      : `You missed out on those earnings.`;
+    const msg = `⚠️ Sherbrt 🍧: Your listing "${truncate(itemTitle, 40)}" was auto-cancelled because it wasn't shipped in time. ${earningsClause} Update your listing availability for future requests: https://sherbrt.com/listings`;
     await sendSMS(lenderPhone, msg, {
       role: 'lender',
       tag: 'auto_cancel_to_lender',
