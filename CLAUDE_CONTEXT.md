@@ -227,20 +227,27 @@ Base URL: `https://flex-api.sharetribe.com`
 | Service | Type | Start Command |
 |---------|------|--------------|
 | shop-on-sherbet | Web | `node server/index.js` |
-| shipby-reminders | Worker | `node server/scripts/sendShipByReminders.js --daemon` |
 | return-reminders | Worker | `node server/scripts/sendReturnReminders.js --daemon` |
 | overdue-reminders | Worker | `node server/scripts/sendOverdueReminders.js --daemon` |
+| auto-cancel-unshipped | Cron `0 * * * *` | `node server/scripts/sendAutoCancelUnshipped.js --once` |
+| lender-request-reminders | Cron `*/15 * * * *` | `node server/scripts/sendLenderRequestReminders.js --once` |
+| shipping-reminders | Cron `0 * * * *` | `node server/scripts/sendShippingReminders.js --once` |
 
 Build: `yarn install --frozen-lockfile && yarn build`
 Health check: `/healthz`
 
-**Note:** `lender-request-reminders` and `auto-cancel-unshipped` are documented
-in `render.yaml` but the file is NOT auto-synced to Render in this project —
-both services were created manually as Cron Jobs in the Render UI. The
-`render.yaml` blocks are documentation of intended config; live config edits
-must happen in the Render dashboard. `shipping-reminders` (separate from
-`shipby-reminders` worker) is also configured directly in the dashboard and
-does not yet have a documentation block in `render.yaml`.
+**Important: `render.yaml` is documentation-only for the three Cron Jobs above.**
+The file is NOT auto-synced to Render in this project — `auto-cancel-unshipped`,
+`lender-request-reminders`, and `shipping-reminders` were all created manually
+as Cron Jobs in the Render UI. The `render.yaml` blocks are kept in sync as
+intended-config documentation; **live config edits must happen in the Render
+dashboard**, not by editing `render.yaml`. The three Worker services
+(`return-reminders`, `overdue-reminders`, and the web service `shop-on-sherbet`)
+ARE managed via `render.yaml`.
+
+**Legacy:** `sendShipByReminders.js` lives in the repo but is intentionally
+NOT deployed — its functionality was superseded by `sendShippingReminders.js`.
+Safe to delete in a future cleanup PR.
 
 ## Key Environment Variables
 

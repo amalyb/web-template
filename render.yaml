@@ -11,19 +11,14 @@ services:
       - key: NODE_ENV
         value: production
 
-  # Background workers for SMS reminders
-  # These run as daemons with internal scheduling
-  
-  - type: worker
-    name: shipby-reminders
-    env: node
-    plan: starter
-    buildCommand: yarn install && yarn run render-build
-    startCommand: node server/scripts/sendShipByReminders.js --daemon
-    nodeVersion: 20.10.0
-    envVars:
-      - key: NODE_ENV
-        value: production
+  # Background workers for SMS reminders.
+  # These run as long-lived daemons with internal scheduling (setInterval).
+  #
+  # NOTE: `sendShipByReminders.js` was previously deployed as the
+  # `shipby-reminders` worker but is now LEGACY and intentionally not
+  # deployed — its functionality was superseded by `sendShippingReminders.js`
+  # (the `shipping-reminders` cron documented further below). The legacy
+  # script still lives in the repo but should be deleted in a future cleanup PR.
 
   - type: worker
     name: return-reminders
@@ -94,6 +89,38 @@ services:
     schedule: "*/15 * * * *"
     buildCommand: yarn install && yarn run render-build
     startCommand: node server/scripts/sendLenderRequestReminders.js --once
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  # Lender shipping reminders — outbound ship-by lender SMS:
+  #   3.1-SMS  (T-24h "ship by tomorrow") — tag: shipping_reminder_24h
+  #   3.1b-SMS (end-of-day "not scanned") — tag: shipping_reminder_end_of_day
+  # NOTE: Same as auto-cancel-unshipped and lender-request-reminders — this
+  # file is NOT auto-synced to Render in this project. The service was
+  # created manually as a Cron Job in the Render UI. This block is
+  # documentation of intended config.
+  # Matches live service:
+  #   schedule: hourly (0 * * * *)
+  #   command: --once (cron restarts the process each run)
+  # Reads `protectedData.outbound.shipByDate` persisted at label-purchase
+  # time (10.0 PR-3) — no longer recomputes per-cron with its own
+  # `SHIP_LEAD_DAYS` env var (env-drift class of bug eliminated).
+  # Per-phase Redis dedupe keys: shippingReminder:{txId}:{24h|eod}:sent.
+  # 24h reminder anchored to outbound.acceptedAt time-of-day, not UTC midnight.
+  # B3 deletion (April 21 2026): the legacy 48h auto-cancel branch in this
+  # script is gone — sendAutoCancelUnshipped.js owns cancel policy now.
+  # Integration SDK credentials (INTEGRATION_CLIENT_ID/SECRET) and Twilio
+  # credentials must be present in the Render env. SendGrid keys are NOT
+  # needed (this cron sends SMS only, no email).
+  - type: cron
+    name: shipping-reminders
+    env: node
+    plan: starter
+    schedule: "0 * * * *"
+    buildCommand: yarn install && yarn run render-build
+    startCommand: node server/scripts/sendShippingReminders.js --once
     nodeVersion: 20.10.0
     envVars:
       - key: NODE_ENV
