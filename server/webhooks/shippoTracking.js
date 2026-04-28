@@ -1223,7 +1223,7 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         
         // Use short link for even more compact SMS
         const shortTrackingUrl = await shortLink(publicTrackingUrl);
-        message = `✈ Your Sherbrt borrow "${listingTitle}" is on its way! 🍧 Tracking info: ${shortTrackingUrl}.`;
+        message = `🚚 Sherbrt 🍧: "${listingTitle}" is on its way! Tracking info: ${shortTrackingUrl}.`;
         smsType = 'first scan';
         
         console.log(`[STEP-4] Sending borrower SMS for tracking ${trackingNumber}, txId=${transaction.id}`);
@@ -1468,7 +1468,7 @@ if (process.env.TEST_ENDPOINTS) {
         const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
         
         const shortTrackingUrl = await shortLink(publicTrackingUrl);
-        message = `✈ Your Sherbrt borrow "${listingTitle}" is on its way! 🍧 Tracking info: ${shortTrackingUrl}.`;
+        message = `🚚 Sherbrt 🍧: "${listingTitle}" is on its way! Tracking info: ${shortTrackingUrl}.`;
         tag = SMS_TAGS.ITEM_SHIPPED_TO_BORROWER;
         
         console.log(`[SMS:OUT] tag=item_shipped_to_borrower to=${borrowerPhone} msg="${message}"`);
