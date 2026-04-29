@@ -98,6 +98,14 @@ const LayoutWrapperAccountSettingsSideNav = props => {
       },
     },
     {
+      text: <FormattedMessage id="LayoutWrapperAccountSettingsSideNav.shippingAddressTabTitle" />,
+      selected: currentPage === 'AccountShippingAddressPage',
+      id: 'AccountShippingAddressPageTab',
+      linkProps: {
+        name: 'AccountShippingAddressPage',
+      },
+    },
+    {
       text: <FormattedMessage id="LayoutWrapperAccountSettingsSideNav.passwordTabTitle" />,
       selected: currentPage === 'PasswordChangePage',
       id: 'PasswordChangePageTab',

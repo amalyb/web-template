@@ -15,6 +15,7 @@ const pageDataLoadingAPI = getPageDataLoadingAPI();
 const AuthenticationPage = loadable(() => import(/* webpackChunkName: "AuthenticationPage" */ '../containers/AuthenticationPage/AuthenticationPage'));
 const CheckoutPage = loadable(() => import(/* webpackChunkName: "CheckoutPage" */ '../containers/CheckoutPage/CheckoutPage'));
 const CMSPage = loadable(() => import(/* webpackChunkName: "CMSPage" */ '../containers/CMSPage/CMSPage'));
+const AccountShippingAddressPage = loadable(() => import(/* webpackChunkName: "AccountShippingAddressPage" */ '../containers/AccountShippingAddressPage/AccountShippingAddressPage'));
 const ContactDetailsPage = loadable(() => import(/* webpackChunkName: "ContactDetailsPage" */ '../containers/ContactDetailsPage/ContactDetailsPage'));
 const EditListingPage = loadable(() => import(/* webpackChunkName: "EditListingPage" */ '../containers/EditListingPage/EditListingPage'));
 const EmailVerificationPage = loadable(() => import(/* webpackChunkName: "EmailVerificationPage" */ '../containers/EmailVerificationPage/EmailVerificationPage'));
@@ -43,6 +44,7 @@ const StyleguidePage = loadable(() => import(/* webpackChunkName: "StyleguidePag
 
 export const ACCOUNT_SETTINGS_PAGES = [
   'ContactDetailsPage',
+  'AccountShippingAddressPage',
   'PasswordChangePage',
   'StripePayoutPage',
   'PaymentMethodsPage',
@@ -295,6 +297,14 @@ const routeConfiguration = (layoutConfig, accessControlConfig) => {
       authPage: 'LoginPage',
       component: ContactDetailsPage,
       loadData: pageDataLoadingAPI.ContactDetailsPage.loadData,
+    },
+    {
+      path: '/account/shipping-address',
+      name: 'AccountShippingAddressPage',
+      auth: true,
+      authPage: 'LoginPage',
+      component: AccountShippingAddressPage,
+      loadData: pageDataLoadingAPI.AccountShippingAddressPage.loadData,
     },
     {
       path: '/account/change-password',

@@ -5,6 +5,7 @@ import { loadData as AuthenticationPageLoader } from './AuthenticationPage/Authe
 import { loadData as LandingPageLoader } from './LandingPage/LandingPage.duck';
 import { setInitialValues as CheckoutPageInitialValues } from './CheckoutPage/CheckoutPage.duck';
 import { loadData as CMSPageLoader } from './CMSPage/CMSPage.duck';
+import { loadData as AccountShippingAddressPageLoader } from './AccountShippingAddressPage/AccountShippingAddressPage.duck';
 import { loadData as ContactDetailsPageLoader } from './ContactDetailsPage/ContactDetailsPage.duck';
 import { loadData as EditListingPageLoader } from './EditListingPage/EditListingPage.duck';
 import { loadData as EmailVerificationPageLoader } from './EmailVerificationPage/EmailVerificationPage.duck';
@@ -38,6 +39,9 @@ const getPageDataLoadingAPI = () => {
     },
     ContactDetailsPage: {
       loadData: ContactDetailsPageLoader,
+    },
+    AccountShippingAddressPage: {
+      loadData: AccountShippingAddressPageLoader,
     },
     EditListingPage: {
       loadData: EditListingPageLoader,

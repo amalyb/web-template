@@ -1,0 +1,29 @@
+@import '../../../styles/customMediaQueries.css';
+
+.root {
+}
+
+.field {
+  margin-top: 24px;
+
+  @media (--viewportMedium) {
+    margin-top: 32px;
+  }
+}
+
+.bottomWrapper {
+  margin-top: 46px;
+
+  @media (--viewportMedium) {
+    margin-top: 96px;
+  }
+}
+
+.error {
+  composes: h4 from global;
+  color: var(--colorFail);
+  text-align: center;
+  display: inline-block;
+  width: 100%;
+  margin: 24px 0;
+}
