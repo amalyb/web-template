@@ -484,28 +484,35 @@
 
 .saveAsDefaultRow {
   margin: 12px 0 4px 0;
-  padding: 0 24px;
-
-  @media (--viewportLarge) {
-    padding: 0;
-  }
+  padding: 0;
 }
 
 .saveAsDefaultLabel {
-  display: flex;
-  align-items: center;
+  display: inline-flex;
+  align-items: flex-start;
   gap: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #333;
   cursor: pointer;
+  font-size: 14px;
+  font-weight: var(--fontWeightMedium);
+  color: var(--colorGrey700);
+  line-height: 20px;
+}
+
+.saveAsDefaultLabel input[type='checkbox'] {
+  margin: 2px 0 0 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.saveAsDefaultLabel span {
+  display: inline-block;
 }
 
 .saveAsDefaultHelp {
   margin: 4px 0 0 24px;
-  font-size: 12px;
-  color: #666;
-  line-height: 1.4;
+  font-size: 13px;
+  color: var(--colorGrey600);
+  line-height: 18px;
 }
 
 .supportBox {
