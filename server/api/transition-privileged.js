@@ -1739,7 +1739,12 @@ module.exports = async (req, res) => {
       listingId: listingId,
       url: '/v1/api/listings/show'
     });
-    return sdk.listings.show({ id: listingId });
+    // include: ['author'] populates listing.relationships.author.data.id,
+    // which the Step 3 accept-time provider hydration helper relies on
+    // (see hydrateProviderFieldsFromProfile call below). Without this, the
+    // relationship is null and hydration silently skips, blocking mobile
+    // accepts that send empty params.
+    return sdk.listings.show({ id: listingId, include: ['author'] });
   };
 
   try {
