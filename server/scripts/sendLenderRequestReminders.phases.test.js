@@ -5,7 +5,7 @@
  *   - PHASES array structure (60m + 22h, bypassQuietHours only on 22h)
  *   - MAX_AGE_MS widened from 13h to 24h
  *   - per-phase Redis keys (lenderReminder:{txId}:60m:sent vs :22h:sent)
- *   - 22h SMS copy contains "Final call" and 2-hour expiration language
+ *   - 22h SMS copy contains "Final call" and "about to expire" (no literal time claim)
  *   - 60m SMS copy has the updated "before it expires" wording
  *   - quiet-hours bypass only for 22h phase
  *   - MISSED_FINAL watchdog query exists
@@ -108,9 +108,12 @@ describe('PR-4: SMS copy', () => {
     expect(src).not.toMatch(/Just tap to accept:\s*\$\{shortUrl\}/);
   });
 
-  test('22h message contains "Final call" and "expires in 2 hours"', () => {
+  test('22h message contains "Final call" and "about to expire" (no literal "2 hours" claim)', () => {
     expect(src).toMatch(/Final call/);
-    expect(src).toMatch(/expires in 2 hours/);
+    expect(src).toMatch(/about to expire/);
+    // Old copy claimed "expires in 2 hours" which was misleading — actual
+    // remaining time at first tick is ~1h47m, shrinking on later ticks.
+    expect(src).not.toMatch(/expires in 2 hours/);
   });
 });
 

@@ -17,7 +17,7 @@
  *
  * If the lender doesn't act, this worker nudges them twice:
  *   - 60m: "Don't leave ${first} hanging! ... Just tap before it expires"
- *   - 22h: "⚠️ Final call — ${first}'s request expires in 2 hours."
+ *   - 22h: "⚠️ Final call — your ${payout} payout is about to expire."
  *
  * ──────────────────────────────────────────────────────────────────────────
  * PHASE WINDOWS
@@ -405,10 +405,13 @@ async function sendLenderRequestReminders() {
         console.warn(`[lender-request-reminder] shortLink failed for tx ${txId}, using full URL:`, e.message);
       }
 
-      // Per-phase SMS copy (operator-approved, 2026-04-23).
+      // Per-phase SMS copy. 22h refresh 2026-04-29: dropped explicit "in
+      // 2 hours" — actual time-to-expire at the first tick is ~1h47m and
+      // shrinks on each subsequent tick, so the literal claim was wrong.
+      // New copy reframes around the payout being lost, no time mention.
       const message = phase.key === '60m'
         ? `Sherbrt 🍧: Don't leave ${borrowerFirstName} hanging! ${formattedPayout} is waiting for you! 🤑🤑🤑 Just tap before it expires: ${shortUrl}.`
-        : `Sherbrt 🍧: ⚠️ Final call — ${borrowerFirstName}'s request expires in 2 hours. After that, ${formattedPayout} is gone. Tap to accept now: ${shortUrl}`;
+        : `Sherbrt 🍧: ⚠️ Final call — your ${formattedPayout} payout is about to expire. Accept ${borrowerFirstName}'s borrow request now: ${shortUrl}`;
 
       const listingRef = tx?.relationships?.listing?.data;
       const listingId = listingRef?.id?.uuid || listingRef?.id || null;
