@@ -92,29 +92,79 @@ const displayNames = (currentUser, provider, customer, intl) => {
 export class TransactionPanelComponent extends Component {
   constructor(props) {
     super(props);
+    const emptyAddress = {
+      streetAddress: '',
+      streetAddress2: '',
+      city: '',
+      state: '',
+      zipCode: '',
+      phoneNumber: '',
+    };
     this.state = {
       sendMessageFormFocused: false,
-      addressValues: {
-        streetAddress: '',
-        streetAddress2: '',
-        city: '',
-        state: '',
-        zipCode: '',
-        phoneNumber: '',
-      },
+      // `addressInitialValues` is the seed handed to FinalForm. It changes
+      // only when prefill fires — keeping it stable prevents the form from
+      // reinitializing on every keystroke (which races useEffect-fired
+      // onChange with stale values, causing an infinite render loop).
+      addressInitialValues: emptyAddress,
+      // `addressValues` mirrors the form's live state for the accept
+      // handler and the "edited from prefill" check.
+      addressValues: emptyAddress,
+      saveAsDefault: false,
     };
     this.isMobSaf = false;
     this.sendMessageFormName = 'TransactionPanel.SendMessageForm';
+
+    // Prefill from profile.protectedData.lenderShippingAddress runs at most
+    // once, after currentUser arrives via a prop update. The instance flag
+    // (not state) avoids re-prefilling after the user edits a field.
+    this.hasPrefilledFromProfile = false;
+    this.prefilledSnapshot = null;
 
     this.onSendMessageFormFocus = this.onSendMessageFormFocus.bind(this);
     this.onSendMessageFormBlur = this.onSendMessageFormBlur.bind(this);
     this.onMessageSubmit = this.onMessageSubmit.bind(this);
     this.scrollToMessage = this.scrollToMessage.bind(this);
     this.handleAddressFormChange = this.handleAddressFormChange.bind(this);
+    this.handleSaveAsDefaultChange = this.handleSaveAsDefaultChange.bind(this);
+    this.maybePrefillFromProfile = this.maybePrefillFromProfile.bind(this);
   }
 
   componentDidMount() {
     this.isMobSaf = isMobileSafari();
+    this.maybePrefillFromProfile();
+  }
+
+  componentDidUpdate() {
+    this.maybePrefillFromProfile();
+  }
+
+  maybePrefillFromProfile() {
+    if (this.hasPrefilledFromProfile) return;
+
+    const { currentUser } = this.props;
+    const saved = currentUser?.attributes?.profile?.protectedData?.lenderShippingAddress;
+    if (!saved) return;
+
+    const hasAnyValue = Object.values(saved).some(v => v != null && String(v).trim() !== '');
+    if (!hasAnyValue) return;
+
+    const prefilled = {
+      streetAddress: saved.streetAddress ?? '',
+      streetAddress2: saved.streetAddress2 ?? '',
+      city: saved.city ?? '',
+      state: saved.state ?? '',
+      zipCode: saved.zipCode ?? '',
+      phoneNumber: saved.phoneNumber ?? '',
+    };
+
+    this.hasPrefilledFromProfile = true;
+    this.prefilledSnapshot = prefilled;
+    this.setState({ addressInitialValues: prefilled, addressValues: prefilled });
+  }
+
+  handleSaveAsDefaultChange(e) {
+    this.setState({ saveAsDefault: e.target.checked });
   }
 
   onSendMessageFormFocus() {
@@ -158,8 +208,24 @@ export class TransactionPanelComponent extends Component {
   }
 
   handleAddressFormChange(updatedValues) {
-    console.log('🏠 [handleAddressFormChange] Address form values updated:', updatedValues);
-    this.setState({ addressValues: updatedValues });
+    // ProviderAddressForm's useEffect fires `onChange(values)` whenever
+    // FinalForm reinitializes — even when nothing actually changed. Guarding
+    // against no-op updates here prevents an infinite render loop:
+    //   parent setState → new initialValues ref → FinalForm reinitializes →
+    //   new values ref → useEffect → onChange → setState → ...
+    this.setState(prev => {
+      const cur = prev.addressValues || {};
+      const next = updatedValues || {};
+      const keys = new Set([...Object.keys(cur), ...Object.keys(next)]);
+      let changed = false;
+      for (const k of keys) {
+        if ((cur[k] ?? '') !== (next[k] ?? '')) {
+          changed = true;
+          break;
+        }
+      }
+      return changed ? { addressValues: next } : null;
+    });
   }
 
   render() {
@@ -190,9 +256,14 @@ export class TransactionPanelComponent extends Component {
       config,
       hasViewingRights,
       onTransition,
+      onSaveShippingAddress,
     } = this.props;
 
-    const { nextTransitions, listing: stateDataListing, transaction: stateDataTransaction } = stateData;
+    const {
+      nextTransitions,
+      listing: stateDataListing,
+      transaction: stateDataTransaction,
+    } = stateData;
     const transaction = stateDataTransaction || this.props.transaction;
 
     const isCustomer = transactionRole === 'customer';
@@ -215,15 +286,15 @@ export class TransactionPanelComponent extends Component {
       id: 'TransactionPanel.deletedListingTitle',
     });
 
-    const listingTitle = listingDeleted ? deletedListingTitle : stateDataListing?.attributes?.title || '';
+    const listingTitle = listingDeleted
+      ? deletedListingTitle
+      : stateDataListing?.attributes?.title || '';
     const listingBrand = listingDeleted
       ? null
-      : getListingFieldLabel(
-          config,
-          'brand',
-          stateDataListing?.attributes?.publicData?.brand
-        );
-    const listingImages = stateDataListing?.images?.length ? stateDataListing.images : listing?.images || [];
+      : getListingFieldLabel(config, 'brand', stateDataListing?.attributes?.publicData?.brand);
+    const listingImages = stateDataListing?.images?.length
+      ? stateDataListing.images
+      : listing?.images || [];
     const firstImage = listingImages.length > 0 ? listingImages[0] : null;
 
     let listingTitleNode;
@@ -255,10 +326,17 @@ export class TransactionPanelComponent extends Component {
               transactionId: transaction?.id || '',
               listingId: stateDataListing?.id || '',
             };
-            
+
             if (isProvider && this.state.addressValues) {
               console.log('🏠 [onAction] addressValues before merge:', this.state.addressValues);
-              const { streetAddress, streetAddress2, city, state, zipCode, phoneNumber } = this.state.addressValues;
+              const {
+                streetAddress,
+                streetAddress2,
+                city,
+                state,
+                zipCode,
+                phoneNumber,
+              } = this.state.addressValues;
               // Validate that all required address fields are filled
               const requiredFields = { streetAddress, city, state, zipCode, phoneNumber };
               const missingFields = Object.entries(requiredFields)
@@ -308,7 +386,7 @@ export class TransactionPanelComponent extends Component {
                 providerName,
               };
               console.log('[accept] outgoingPD keys:', Object.keys(mergedProtectedData));
-              
+
               // --- FRONTEND FIX: Add all required fields at top-level of params as well ---
               Object.assign(params, {
                 protectedData: mergedProtectedData,
@@ -331,14 +409,22 @@ export class TransactionPanelComponent extends Component {
               });
               console.log('🔀 [onAction] mergedProtectedData:', mergedProtectedData);
             }
-            
+
             console.log('🔥 Transition name:', stateData.primaryButtonProps?.transitionName);
             console.log('🔥 Params before transition:', params);
             console.log('🧪 isProvider:', isProvider);
-            console.log('🧪 acceptTransitionAvailable:', (nextTransitions || []).some(t => t.attributes && t.attributes.name === 'transition/accept'));
+            console.log(
+              '🧪 acceptTransitionAvailable:',
+              (nextTransitions || []).some(
+                t => t.attributes && t.attributes.name === 'transition/accept'
+              )
+            );
             console.log('🧪 transactionId:', transaction?.id);
             console.log('🧪 listingId:', stateDataListing?.id);
-            console.log('🎯 nextTransitions:', nextTransitions?.map(t => t?.attributes?.name));
+            console.log(
+              '🎯 nextTransitions:',
+              nextTransitions?.map(t => t?.attributes?.name)
+            );
             console.log('🔐 protectedData received in TransactionPanel:', protectedData);
             console.log('📦 Customer shipping info in protectedData:', {
               customerName: protectedData?.customerName,
@@ -351,14 +437,63 @@ export class TransactionPanelComponent extends Component {
             });
             console.log('[TransactionPanel] addressValues in state:', this.state.addressValues);
             console.log('[onAction] FINAL params sent to onTransition:', params);
-            
-            if (transaction?.id && stateDataListing?.id && stateData.primaryButtonProps?.transitionName) {
-              onTransition(transaction.id, stateData.primaryButtonProps.transitionName, params);
+
+            const fireTransition = () => {
+              if (
+                transaction?.id &&
+                stateDataListing?.id &&
+                stateData.primaryButtonProps?.transitionName
+              ) {
+                onTransition(transaction.id, stateData.primaryButtonProps.transitionName, params);
+              } else {
+                console.error('❌ Cannot call onTransition: Missing transactionId or listingId', {
+                  transactionId: transaction?.id,
+                  listingId: stateDataListing?.id,
+                });
+              }
+            };
+
+            // If lender ticked "Save as default", first persist the values to
+            // their profile, then fire the accept transition. The duck swallows
+            // errors and resolves with `undefined`; treat that as a failure and
+            // skip the transition so we don't leave profile and tx out of sync.
+            if (
+              isProvider &&
+              this.state.saveAsDefault &&
+              typeof onSaveShippingAddress === 'function'
+            ) {
+              const {
+                streetAddress,
+                streetAddress2,
+                city,
+                state,
+                zipCode,
+                phoneNumber,
+              } = this.state.addressValues;
+              Promise.resolve(
+                onSaveShippingAddress({
+                  streetAddress,
+                  streetAddress2,
+                  city,
+                  state,
+                  zipCode,
+                  phoneNumber,
+                })
+              )
+                .then(result => {
+                  if (!result) {
+                    console.error(
+                      '❌ saveShippingAddress did not return a user — skipping accept transition'
+                    );
+                    return;
+                  }
+                  fireTransition();
+                })
+                .catch(err => {
+                  console.error('❌ saveShippingAddress threw — skipping accept transition', err);
+                });
             } else {
-              console.error('❌ Cannot call onTransition: Missing transactionId or listingId', {
-                transactionId: transaction?.id,
-                listingId: stateDataListing?.id,
-              });
+              fireTransition();
             }
           },
         }
@@ -375,7 +510,11 @@ export class TransactionPanelComponent extends Component {
                 ...stateData.secondaryButtonProps,
                 onAction: () => {
                   if (typeof onTransition === 'function') {
-                    onTransition(transaction?.id || '', stateData.secondaryButtonProps.transitionName, stateData.secondaryButtonProps.params);
+                    onTransition(
+                      transaction?.id || '',
+                      stateData.secondaryButtonProps.transitionName,
+                      stateData.secondaryButtonProps.params
+                    );
                   }
                 },
               }
@@ -416,11 +555,25 @@ export class TransactionPanelComponent extends Component {
 
     const { addressValues } = this.state;
 
+    // Show the "Save as default" checkbox only when prefill happened AND the
+    // user has changed at least one field away from the prefilled snapshot.
+    // No prefill (no saved address) → no checkbox; nothing edited → no
+    // decision needed yet.
+    const editedFromPrefill =
+      !!this.prefilledSnapshot &&
+      Object.keys(this.prefilledSnapshot).some(
+        k => (addressValues[k] ?? '') !== (this.prefilledSnapshot[k] ?? '')
+      );
+    const showSaveAsDefaultCheckbox = !!this.prefilledSnapshot && editedFromPrefill;
+
     console.log('🧪 isProvider:', isProvider);
     console.log('🧪 acceptTransitionAvailable:', acceptTransitionAvailable);
     console.log('🧪 transactionId:', transaction?.id);
     console.log('🧪 listingId:', stateDataListing?.id);
-    console.log('🎯 nextTransitions:', nextTransitions?.map(t => t?.attributes?.name));
+    console.log(
+      '🎯 nextTransitions:',
+      nextTransitions?.map(t => t?.attributes?.name)
+    );
     console.log('🔐 protectedData received in TransactionPanel:', protectedData);
     console.log('📦 Customer shipping info in protectedData:', {
       customerName: protectedData?.customerName,
@@ -570,12 +723,28 @@ export class TransactionPanelComponent extends Component {
                   acceptTransitionAvailable,
                   transactionId: transaction?.id,
                   listingId: stateDataListing?.id,
-                  addressValues: this.state.addressValues
+                  addressValues: this.state.addressValues,
                 })}
                 <ProviderAddressForm
-                  initialValues={this.state.addressValues}
+                  initialValues={this.state.addressInitialValues}
                   onChange={this.handleAddressFormChange}
                 />
+                {showSaveAsDefaultCheckbox ? (
+                  <div className={css.saveAsDefaultRow}>
+                    <label className={css.saveAsDefaultLabel}>
+                      <input
+                        type="checkbox"
+                        checked={this.state.saveAsDefault}
+                        onChange={this.handleSaveAsDefaultChange}
+                      />
+                      <span>Save these as my default shipping address</span>
+                    </label>
+                    <p className={css.saveAsDefaultHelp}>
+                      Updates your saved address on your account. Future bookings will use the new
+                      values.
+                    </p>
+                  </div>
+                ) : null}
               </>
             )}
           </div>

@@ -54,6 +54,7 @@ import {
   fetchTimeSlots,
   fetchTransactionLineItems,
 } from './TransactionPage.duck';
+import { saveShippingAddress } from '../AccountShippingAddressPage/AccountShippingAddressPage.duck';
 import css from './TransactionPage.module.css';
 import { hasPermissionToViewData } from '../../util/userHelpers.js';
 
@@ -157,6 +158,7 @@ export const TransactionPageComponent = props => {
     transitionInProgress,
     transitionError,
     onTransition,
+    onSaveShippingAddress,
     nextTransitions,
     callSetInitialValues,
     onInitializeCardPaymentData,
@@ -165,9 +167,12 @@ export const TransactionPageComponent = props => {
 
   const { listing, provider, customer, booking } = transaction || {};
   const txTransitions = transaction?.attributes?.transitions || [];
-  
+
   // Quick sanity hooks
-  console.log('[tx page] tx protectedData keys:', Object.keys(transaction?.attributes?.protectedData || {}));
+  console.log(
+    '[tx page] tx protectedData keys:',
+    Object.keys(transaction?.attributes?.protectedData || {})
+  );
   const isProviderRole = transactionRole === PROVIDER;
   const isCustomerRole = transactionRole === CUSTOMER;
 
@@ -541,6 +546,7 @@ export const TransactionPageComponent = props => {
         />
       }
       onTransition={onTransition}
+      onSaveShippingAddress={onSaveShippingAddress}
     />
   ) : (
     loadingOrFailedFetching
@@ -551,10 +557,11 @@ export const TransactionPageComponent = props => {
     if (transitionName === 'transition/accept' && isProviderRole) {
       const providerProfile = provider?.attributes?.profile || {};
       const providerProtected = providerProfile.protectedData || {};
-      const hasAddress = providerProtected.providerStreet && 
-                        providerProtected.providerCity && 
-                        providerProtected.providerState && 
-                        providerProtected.providerZipCode;
+      const hasAddress =
+        providerProtected.providerStreet &&
+        providerProtected.providerCity &&
+        providerProtected.providerState &&
+        providerProtected.providerZipCode;
 
       if (!hasAddress) {
         return;
@@ -666,6 +673,7 @@ const mapDispatchToProps = dispatch => {
   return {
     onTransition: (txId, transitionName, params) =>
       dispatch(makeTransition(txId, transitionName, params)),
+    onSaveShippingAddress: values => dispatch(saveShippingAddress(values)),
     onShowMoreMessages: (txId, config) => dispatch(fetchMoreMessages(txId, config)),
     onSendMessage: (txId, message, config) => dispatch(sendMessage(txId, message, config)),
     onManageDisableScrolling: (componentId, disableScrolling) =>
@@ -683,10 +691,7 @@ const mapDispatchToProps = dispatch => {
 
 const TransactionPage = compose(
   withRouter,
-  connect(
-    mapStateToProps,
-    mapDispatchToProps
-  )
+  connect(mapStateToProps, mapDispatchToProps)
 )(TransactionPageComponent);
 
 export default TransactionPage;
