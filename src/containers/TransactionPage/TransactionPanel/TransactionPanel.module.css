@@ -273,7 +273,10 @@
 }
 
 .detailCardSubtitle {
-  composes: h5 from global;
+  composes: marketplaceTinyFontStyles from global;
+
+  font-weight: var(--fontWeightMedium);
+  color: var(--colorGrey700);
 
   margin-top: 0;
   margin-bottom: 0;
