@@ -273,8 +273,9 @@
 }
 
 .detailCardSubtitle {
-  composes: marketplaceTinyFontStyles from global;
-
+  font-family: var(--fontFamily);
+  font-size: 16px;
+  line-height: 22px;
   font-weight: var(--fontWeightMedium);
   color: var(--colorGrey700);
 
