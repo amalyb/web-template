@@ -129,7 +129,7 @@ async function processTransaction(tx, included, now, sdk) {
 
   // Idempotency
   if (tx.attributes?.protectedData?.autoCancel?.sent) {
-    console.log(`${logPrefix} already auto-cancelled, skipping`);
+    console.log(`${logPrefix} already auto-canceled, skipping`);
     return;
   }
 
@@ -281,7 +281,7 @@ async function sendCancelSMSes(tx, { listing, customer, provider }) {
     pd.providerPhone;
 
   if (borrowerPhone) {
-    const msg = `🚫 Sherbrt 🍧: Your borrow request for "${truncate(itemTitle, 40)}" was auto-cancelled because the lender didn't ship in time. Full refund will hit your card in 5–10 business days. Browse other looks: https://sherbrt.com/s`;
+    const msg = `🚫 Sherbrt 🍧: Your borrow request for "${truncate(itemTitle, 40)}" was auto-canceled because the lender didn't ship in time. Full refund will hit your card in 5–10 business days. Browse other looks: https://sherbrt.com/s`;
     await sendSMS(borrowerPhone, msg, {
       role: 'borrower',
       tag: 'auto_cancel_to_borrower',
@@ -305,7 +305,7 @@ async function sendCancelSMSes(tx, { listing, customer, provider }) {
     const earningsClause = formattedPayout
       ? `You missed out on ${formattedPayout}.`
       : `You missed out on those earnings.`;
-    const msg = `⚠️ Sherbrt 🍧: Your listing "${truncate(itemTitle, 40)}" was auto-cancelled because it wasn't shipped in time. ${earningsClause} Update your listing availability for future requests: https://sherbrt.com/listings`;
+    const msg = `⚠️ Sherbrt 🍧: Your listing "${truncate(itemTitle, 40)}" was auto-canceled because it wasn't shipped in time. ${earningsClause} Update your listing availability for future requests: https://sherbrt.com/listings`;
     await sendSMS(lenderPhone, msg, {
       role: 'lender',
       tag: 'auto_cancel_to_lender',
