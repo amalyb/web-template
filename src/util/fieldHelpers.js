@@ -70,6 +70,32 @@ export const getFieldValue = (data, key) => {
 };
 
 /**
+ * Resolves a stored enum option value (e.g. 'helsa') to its display label
+ * (e.g. 'Helsa') using the listing field configuration.
+ *
+ * Falls back to the raw option key when no matching label is found, and
+ * returns null when no option key is provided. Safe to call with missing
+ * config — never throws.
+ *
+ * @param {Object} config marketplace config (expects config.listing.listingFields)
+ * @param {String} fieldKey the listing field key (e.g. 'brand')
+ * @param {String} optionKey the stored enum option (e.g. publicData.brand)
+ * @returns {String|null} display label, raw option, or null
+ */
+export const getListingFieldLabel = (config, fieldKey, optionKey) => {
+  if (!optionKey) return null;
+  try {
+    const listingFields = config?.listing?.listingFields;
+    if (!listingFields) return optionKey;
+    const field = listingFields.find(f => f.key === fieldKey);
+    const option = field?.enumOptions?.find(o => o.option === optionKey);
+    return option?.label || optionKey;
+  } catch (e) {
+    return optionKey;
+  }
+};
+
+/**
  * Picks current values for listing categories based on provided public data and configuration.
  * This function validates if the initial values match with the configuration received via assets.
  * If a categoryLevel value doesn't match with the category configuration, it is not passed on to the form.

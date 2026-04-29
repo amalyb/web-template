@@ -3,6 +3,7 @@ import classNames from 'classnames';
 
 import { FormattedMessage, injectIntl, intlShape } from '../../../util/reactIntl';
 import { displayPrice } from '../../../util/configHelpers';
+import { getListingFieldLabel } from '../../../util/fieldHelpers';
 import { propTypes } from '../../../util/types';
 import { userDisplayNameAsString } from '../../../util/data';
 import { isMobileSafari } from '../../../util/userAgent';
@@ -217,7 +218,11 @@ export class TransactionPanelComponent extends Component {
     const listingTitle = listingDeleted ? deletedListingTitle : stateDataListing?.attributes?.title || '';
     const listingBrand = listingDeleted
       ? null
-      : stateDataListing?.attributes?.publicData?.brand || null;
+      : getListingFieldLabel(
+          config,
+          'brand',
+          stateDataListing?.attributes?.publicData?.brand
+        );
     const listingImages = stateDataListing?.images?.length ? stateDataListing.images : listing?.images || [];
     const firstImage = listingImages.length > 0 ? listingImages[0] : null;
 
