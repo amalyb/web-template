@@ -326,22 +326,99 @@ Mid-session, attempted Day 9's mobile lender accept via Expo Go on a fresh `prea
 4. ⏳ **Mobile settings screen** — `app/account/shipping-address.tsx` alongside existing `app/account/email.tsx` and `password.tsx`. Six-field form. `useFocusEffect` dispatches `currentUser/show` on focus to pick up cross-platform saves. Wire entry into `app/account/index.tsx`.
 5. ⏳ **Mobile lender-actions fallback + no-addr prompt** — Update `lib/lender-actions.ts` `acceptBookingRequest` to read profile address as fallback when `tx.protectedData` lacks fields. On `app/lending/[id].tsx`, when error code = `transition/accept-missing-provider` AND profile address also empty, show inline "Set up shipping address" prompt with deep-link to `/account/shipping-address`.
 
-**Open / pending items for next session:**
-1. **Step 2 prompt is drafted and ready to paste into CC.** Web prefill + "Save as default" checkbox in `TransactionPanel.js`. Includes the `componentDidUpdate` race-safe pattern, Promise-chain ordering for accept, and 6 enumerated test cases (especially the cross-tx-update test that proves prefill doesn't keep firing on every render). After CC ships Step 2, the booking page will auto-fill from the saved address — biggest UX win of the feature.
-2. **Steps 3 (server), 4 (mobile settings), 5 (mobile fallback) prompts not yet drafted** — write them after Step 2 ships and verifies clean.
-3. **End-to-end verify** (Step 6) — save on web, confirm appears on mobile; save on mobile, confirm appears in web prefill; mobile accept succeeds without re-entry; partial-save + server fallback tests pass.
-4. **Sharetribe Console microcopy update for `OrderBreakdown.providerTotal*` keys** — bundled change shipped in `97f44b3a4` but Console-hosted translations may still have old "You'll make" / "You made" strings overriding it for production reads. Verify in Console → Build → Content → Microcopy. Same gotcha will apply to any future user-facing copy change touching `en.json`.
-5. **Cleanup PR (after Option A all ships):** delete the `claude/ecstatic-varahamihira-2ea2ec` worktree + branch (`git worktree remove .claude/worktrees/ecstatic-varahamihira-2ea2ec && git branch -d claude/ecstatic-varahamihira-2ea2ec`).
-6. **Follow-up task #25:** add proper format validators (5-digit US ZIP, US phone, 2-letter state) to a shared helper used by both `ProviderAddressForm` and `AccountShippingAddressForm`. Not blocking; safe to defer until after Option A.
-7. **`ListingCard.js` migration to use `getListingFieldLabel` helper** — currently has the duplicate inline `getBrandLabel` (lines 129-139). Migrate when convenient; not blocking.
+**End-of-day update — Steps 2, 3, 4, 5 all shipped same session.**
+
+**Step 2 shipped — `adab92493` + Step-2 follow-up CSS commits `0bc2b9834`, `c0194730b`, `3f05af329`.** Web booking-page prefill + "Save as default" checkbox.
+- `componentDidUpdate` with `hasPrefilledFromProfile` instance flag fires prefill exactly once when `currentUser` arrives (race-safe vs `componentDidMount` which would have fired before currentUser loaded).
+- "Save as default" checkbox renders only when prefill happened AND user has edited a prefilled field (per-key compare against snapshot stored on instance, not in state). Reverting an edit re-hides the checkbox automatically.
+- On Accept with checkbox checked: `Promise.resolve(onSaveShippingAddress(values)).then(result => { if (!result) skip; else fireTransition() })`. Save first, conditional transition on truthy result. Prevents profile/tx desync if save fails.
+- **CC discovered + fixed a latent infinite-render-loop in the existing form contract.** `<ProviderAddressForm initialValues={state.addressValues} onChange={handleAddressFormChange}>` had been passing the same value back as `initialValues` that the form mutated via `onChange` — Final Form would reinitialize on every onChange-triggered setState. Dormant because state.addressValues rarely changed in the no-prefill flow; the prefill setState woke it up. CC's fix: split `state.addressInitialValues` (only changes on prefill, what Final Form receives) from `state.addressValues` (live mirror for the accept handler), plus a no-op guard in `handleAddressFormChange`. Step 1 tests confirmed no regression.
+- **CSS battle for the "Save as default" checkbox** took three iterations across `0bc2b9834` → `c0194730b` → `3f05af329`. Root cause: `marketplaceDefaults.css:523-528` has an unqualified `input, textarea { display: block; width: 100%; padding: 6px 12px 4px 12px }` rule that applies to ALL inputs including checkboxes, forcing them to render as full-width blocks on their own line. Fix required explicit overrides at the checkbox class level: `display: inline-block; width: auto; padding: 0`. The `<label>` itself uses `display: block` with `vertical-align: middle` on the input + span (avoiding `display: flex` entirely; flex was misbehaving in this parent context). **Lesson logged:** the global `input` rule is a hidden trap for any future inline-checkbox usage in this codebase — the `[VERIFY][ACCEPT]` task #30 triage might surface similar gotchas elsewhere.
+
+**Step 3 shipped — `3cc15394a`** + critical follow-up `0bc2b9834`. Server-side fallback in `transition-privileged.js`.
+- New helper `hydrateProviderFieldsFromProfile(params, lenderShippingAddress, providerEmail)` (line 38). Decoupled from SDK shape, easy to unit-test.
+- Wired into the existing `if (transition === ACCEPT_TRANSITION)` validation block at line 1991, immediately before the `missingProvider` filter at line 2006. Empty/whitespace strings in profile do NOT hydrate. Client-supplied values always win. Mutates both `params[k]` and `params.protectedData[k]` to match the existing flattened-params pattern.
+- Provider user fetched via integration SDK (`iSdk.users.show`) using the listing's `relationships.author.data.id`. Marketplace SDK can't read another user's `profile.protectedData` even with `include` — same pattern as `initiate-privileged.js:288`.
+- Try/catch wrapper around the whole hydration block. Transient integration SDK failures fall through to the existing `missingProvider` check rather than 500ing the request.
+- **Critical follow-up:** initial Step 3 ship logged `[ACCEPT][HYDRATE] No provider id on listing.relationships.author; skipping hydration` on every accept. Root cause: `sdk.listings.show({ id: listingId })` was called WITHOUT `include: ['author']`, so the relationship object was empty. Web flow happened to still work (clients send full params, hydration was a no-op anyway) but mobile would have been blocked since mobile relies on hydration to fill in provider fields. One-line fix at line 1742: `sdk.listings.show({ id: listingId, include: ['author'] })`. Verified post-deploy via Render logs: hydrate log changed from "No provider id on listing.relationships.author; skipping hydration" to `[ACCEPT][HYDRATE] No provider fields needed hydration` (helper now executes successfully but has nothing to do because client sent everything).
+- **22 hydration tests added** in `transition-privileged.hydrate-provider.test.js`: empty params + saved address (hydrates all), partial client params (client wins), empty strings in profile (don't hydrate), no profile address (existing 422 unchanged), email from `prov.attributes.email`, hydrated values flow to `tx.protectedData`. All 30 server tests pass (8 existing pick-rate + 22 new). Step 1 + Step 2 tests still pass.
+
+**Step 4 shipped — mobile commit `b529975`** (cross-repo: `~/sherbrt-mobile`). New `app/account/shipping-address.tsx` settings screen mirrors web's settings page. See mobile CLAUDE_CONTEXT for full details.
+
+**Step 5 shipped — mobile commit `c33203e` merged via `01a1b1a`** (cross-repo). Mobile `lib/lender-actions.ts` now calls accept with empty params, trusts server to hydrate. Lender detail screen shows inline "Set up shipping address" prompt with deep-link to settings on `transition/accept-missing-provider`. See mobile CLAUDE_CONTEXT for full details.
+
+**Other commits same session (not part of Option A):**
+- `4ac20d6`/`9c8267e8`/related — Listing brand display below title in TransactionPanel sidebar. Reads `publicData.brand` (slug) → `getListingFieldLabel(config, 'brand', slug)` lookup → render display label ("Helsa" not "helsa"). Helper extracted to `src/util/fieldHelpers.js` — generic for any enum listing field. Brand styling: 16px / medium weight / `colorGrey700`. Web hide-when-listing-deleted; visible at both `/order/*` (borrower) and `/sale/*` (lender) views.
+- `d8315bf` — 1b-SMS copy refresh (already documented above).
+
+**Two side-issues surfaced from accept logs — NOT introduced by Option A, NOT blockers, but worth tracking:**
+1. **Shippo label still failing on a customer (recipient) address validation:** `[SHIPPO] Label purchase failed: failed_address_validation: Recipient address invalid: Address not found.` for `1795 Chestnut Street, apt 7, San Francisco, CA, 94123`. The accept transition completes successfully and the borrower SMS fires, but the actual outbound USPS label never gets generated. The lender therefore won't get a label-delivery SMS, and the borrower won't get tracking. Address validates fine in Google Maps so this is a USPS/Shippo normalization quirk. Worth trying: abbreviate `Street` → `St`, change `apt 7` → `Apt 7` or `Suite 7`, append ZIP+4. Tracked as **task #29**. Pre-existing; not introduced by Option A.
+2. **`[VERIFY][ACCEPT] Missing providerZip after upsert!` false-positive log.** After the integration SDK protectedData upsert at accept time, the verification check fires this warning even though the upsert clearly included `providerZip` in its keys (see `[INT][PD] updateMetadata` bodyKeys log adjacent). The verification re-fetches the tx but reads from a stale source OR checks the wrong path. Tracked as **task #30**. Pre-existing; cosmetic noise in production logs.
 
 **Architectural learnings worth carrying forward:**
 - **Sharetribe Console hosted translations override bundled `en.json`.** Any user-facing copy change in `en.json` requires a parallel Console microcopy update for the change to render in production. Bundled file = dev fallback.
-- **Sharetribe SDK `updateProfile` semantics:** top-level `protectedData` keys merge shallowly across calls (independent updates preserve each other), but the value of a single key is REPLACED wholesale. Always send the full nested object on save.
+- **Sharetribe SDK `updateProfile` semantics:** top-level `protectedData` keys merge shallowly across calls (independent updates preserve each other), but the value of a single key is REPLACED wholesale. Always send the full nested object on save. Web duck and mobile `updateLenderShippingAddress` helper both do this correctly with `?? ''` fallbacks.
+- **Sharetribe `sdk.listings.show` does NOT populate `relationships.*` unless you pass `include: ['author']` (or whatever entity you need).** This was the Step 3 follow-up bug — listing was fetched, author relationship was empty, hydration helper bailed early. If any future code reads `listing.relationships.X.data.id`, ensure the listing fetch includes that entity.
+- **Marketplace SDK can't read another user's `profile.protectedData` even with `include`.** Cross-user profile reads (e.g. provider's saved address from a non-provider session) require integration SDK (`iSdk.users.show`).
 - **Cron timing nuance:** SMS phases with windows like `[22h, 24h)` paired with `*/15` cron schedules mean actual fire time = "first 15-min tick at or after the lower bound" — not "exactly at the lower bound". Avoid SMS copy that makes literal time claims (e.g. "expires in 2 hours") because actual delta varies by tick alignment. Use directional language ("about to expire") instead.
 - **Render Manual Deploy footgun:** the dashboard's deploy list lets you click any historical commit and it will re-deploy from THAT snapshot — effectively a rollback. Today's session lost ~11 minutes to a `686f602` (April 28 docs commit) accidentally re-deployed at 8:12 AM, wiping the 8:04 + 8:11 fix deploys. Going forward: only ever click "Deploy latest commit" from the top of the Manual Deploy dropdown, never click rows in the historical deploys list unless you specifically want to roll back.
+- **`marketplaceDefaults.css` global `input, textarea` rule applies to checkboxes.** When adding any inline checkbox UI, override `display`, `width`, AND `padding` explicitly at the class level. The Step 2 CSS battle (3 iterations) traces directly to this trap.
+- **Zsh history expansion footgun:** double-quoted heredoc commit messages containing `!word` (e.g. `!isDirty` documenting a code reference) cause zsh to bail with `event not found: word`, silently aborting the `git commit` chain. Workaround: use single quotes (`git commit -m '...'`) which disable history expansion, or avoid `!` characters entirely in commit messages. Today's session lost ~30 min to this when a commit message referenced `!isDirty` from the React code being shipped.
 
-**Where we left off:** Step 1 of Option A is live on `f37f8acfd`. User saved their lender shipping address via the new `/account/shipping-address` page (confirmed working — saved + reload + prefilled). Then placed a borrow request from a borrower account against that lender; clicked Accept on the lender side; the booking-page form was empty (Step 2 not yet shipped — expected behavior). Step 2 prompt is ready to give to CC. Next session: paste Step 2 prompt → review CC output → merge → write Step 3-5 prompts in turn.
+---
+
+## 🟢 Pickup Tomorrow — Where We Are + What To Do Next
+
+**State of the world (end of April 29 session):**
+- ✅ Web side of Option A fully shipped. Settings page, prefill, server fallback, brand display, banner gating, copy refreshes — all on `origin/main`, all deployed via Render.
+- ✅ Mobile side of Option A fully shipped. Settings screen + lender-actions empty-params + inline prompt on `origin/main` for `~/sherbrt-mobile`.
+- ⏳ Mobile end-to-end verification NOT yet performed — that's the first thing to do tomorrow.
+- ⏳ Two side-issues from accept logs are tracked (task #29 Shippo, task #30 verify-after-upsert) but not yet investigated.
+
+**Day 1 morning task (~30 min): mobile smoke test.**
+
+Three scenarios to run through on the iOS simulator. If `npx expo start --ios` complains about Xcode, run this once first: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
+
+- **Scenario A — lender WITH saved address (the happy path that was previously blocked):**
+  1. Sign in as the lender account that saved an address via `/account/shipping-address` on web yesterday.
+  2. Navigate to a fresh `preauthorized` request on the Lending tab. (If yesterday's test request has expired or been accepted via web, have your borrower account submit a new one.)
+  3. Tap **Accept**.
+  4. Expected: spinner → success → action buttons disappear → tx transitions to `accepted`. No `transition/accept-missing-provider` error.
+  5. Under the hood: mobile sends `{transactionId, listingId, transition: 'transition/accept'}` only — no provider fields. Server hydrates from `prov.profile.protectedData.lenderShippingAddress`. Validation passes. Transition fires.
+
+- **Scenario B — lender WITHOUT saved address (the new graceful fallback):**
+  1. Use a different test lender account (or a freshly signed-up one) with NO saved address.
+  2. Submit a borrow request to that lender from a borrower account.
+  3. Sign into the lender account on mobile, navigate to the request on Lending tab.
+  4. Tap **Accept**.
+  5. Expected: server returns `transition/accept-missing-provider` 422. Mobile catches the error code, action buttons disappear, **inline coral-bordered sand banner renders** with bold "Add your shipping address" title, body copy, and mint full-width "Set up shipping address" button.
+  6. Tap the button. Expected: routes to `/account/shipping-address` settings screen.
+  7. Fill in the address, save, tap back.
+  8. Expected: `useFocusEffect` clears `needsShippingAddress`, action buttons re-appear.
+  9. Tap Accept again. Expected: server hydrates the now-saved address, accept succeeds.
+
+- **Scenario C — cross-platform sync (the parity test):**
+  1. Save an address via `/account/shipping-address` on **mobile**.
+  2. Open the same account in a **web** browser, navigate to web's `/account/shipping-address`.
+  3. Expected: form is pre-populated with the values you just saved on mobile.
+  4. Edit something on web, save, return to the mobile shipping-address screen.
+  5. Expected: when the mobile screen re-focuses, `useFocusEffect` fires `refreshUser()` and the form picks up the web edit.
+
+If A passes, mobile accept finally works end-to-end and Option A is complete. Mark **task #20** as completed.
+
+**Day 1 next priority (after smoke test): task #29 — Shippo address validation blocker.** This is blocking actual Scenario 1 testing flow — without a working label, even successful accepts don't produce a shippable transaction. Suggested investigation order: (a) try abbreviating `Street` → `St` in customer profile address; (b) try `Apt 7` → `Apt 7` (capital A) or `Suite 7`; (c) probe Shippo's address-validation endpoint directly with the failing address to see what error detail comes back; (d) check whether ZIP+4 (`94123-XXXX`) is needed for that specific San Francisco micro-area. Test transaction IDs that hit this: `69f28897`, `69f0f9a8`. Pre-existing — not introduced by Option A.
+
+**After task #29 is unblocked, priority order for remaining work:**
+1. **Task #30** verify-after-upsert false-positive log — small fix, makes future debugging cleaner.
+2. **Task #31** consolidate the three-way phone field sprawl. Mobile now has `protectedData.phoneNumber` (existing inline editor at /account), `protectedData.phone` (legacy write-through, used by `sendShipByReminders.js:159`), and `protectedData.lenderShippingAddress.phoneNumber` (new). Pick one canonical, write through to others, deprecate the rest. Both web duck and mobile `lib/account.ts` `updateLenderShippingAddress` need to participate.
+3. **Task #25** add proper format validators (5-digit US ZIP, US phone, 2-letter state) shared between `ProviderAddressForm` (web) and `AccountShippingAddressForm` + new mobile shipping-address screen. Reuse the same shared helper.
+4. **Sharetribe Console microcopy update for `OrderBreakdown.providerTotal*` keys** — verify in Console → Build → Content → Microcopy that the three keys (`providerTotalDefault`, `providerTotalReceived`, `providerTotalRefunded`) all read "Your earnings" so the bundled change in `97f44b3a4` actually renders in production. Recall: bundled `en.json` is fallback; Console hosted translations override at runtime.
+5. **`ListingCard.js` migration** to use `getListingFieldLabel` helper — currently has the duplicate inline `getBrandLabel` (lines 129-139). Migrate when convenient.
+6. **Worktree cleanup PR** after all Option A surfaces are confirmed: `git worktree remove .claude/worktrees/<name>` + `git branch -d claude/<name>` for each shipped worktree (web: `ecstatic-varahamihira-2ea2ec`, `elegant-hofstadter-d51e81`, `happy-shannon-9b3315`; mobile: `awesome-cerf-ae3ed5`, `sharp-merkle-b860a0`).
+
+**Then resume Scenario 1 → 2 → 3 → 4 → 5 → 6 in the v12 Test Scenarios workbook.** Scenario 1 was in flight before Option A intercepted; the Shippo address fix (task #29) unblocks it. All comms are wired and deployed; no other blockers known.
+
+**Where we left off literally:** Both Step 4 and Step 5 mobile commits successfully on `origin/main` after a recovery from a zsh-history-expansion-induced commit failure. Mobile `~/sherbrt-mobile/main` HEAD is `01a1b1a` (Step 5 merge commit). Web `~/shop-on-sherbet-cursor/main` HEAD is the verified Step 3 follow-up commit. No uncommitted changes pending. Ready for mobile smoke testing first thing tomorrow.
 
 ### April 28, 2026 — Comms wiring audit + 3.2/3.2b copy refresh + render.yaml drift cleanup + workbook v12 + Scenario 1 testing started
 
