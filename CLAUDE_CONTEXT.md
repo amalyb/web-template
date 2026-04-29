@@ -287,6 +287,48 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### April 28, 2026 — Comms wiring audit + 3.2/3.2b copy refresh + render.yaml drift cleanup + workbook v12 + Scenario 1 testing started
+
+**Status at end of session:** Mid-Scenario 1 (IDEAL) live testing. All 9.2 + 9.2.1 + 10.0 work confirmed deployed and live in production. Workbook is at v12 (saved locally, NOT yet uploaded to Drive). 5 commits pushed to main today.
+
+**Session goal:** Verify everything scoped in CLAUDE_CONTEXT was actually deployed; align Log-tab copy with shipped code; close `render.yaml` drift; resume QA testing on the v12 plan.
+
+**Comprehensive deployment audit (verified live in `main` + Render dashboard):**
+- All 9.2 pre-QA fixes (B1, B2, B3, H1, H2, H3) shipped in PR #53 (`bb51f1f`).
+- 9.2.1 overdue-cron clean exit shipped in PR #54 (`9b764e1`).
+- All 10.0 PRs shipped: PR-5 (#55, scan-lag grace) → `46c80638e`, PR-1/2/3 bundle (#56) → `ea1bc3bf8`, PR-4 (#57, 24h expire + watchdog + version-gate blocker fix) → `d922669d2`.
+- Sharetribe alias `default-booking/release-1` → version 5, confirmed via Console screenshot. Transactions count = 0 on v5 (next request will be the first).
+- Render env vars verified: `SENDGRID_API_KEY` + `EMAIL_FROM_ADDRESS` set on overdue + auto-cancel crons. SMS-only crons (`lender-request-reminders`, `shipping-reminders`) correctly do NOT have SendGrid keys.
+- `AUTO_CANCEL_DRY_RUN=0` flipped to live mode — intentional, only operator/test transactions exist in prod.
+- 64 historical v1 transactions still in `:state/accepted` show in auto-cancel cron logs as `not on default-booking v3+, skipping`. Operational debt; harmless. Version-gate working correctly (10.0 PR-4 fix `>= 3` not `=== 3` is doing its job).
+
+**Code commits (5, all on `main` and deployed):**
+- `5fc6712bf` — 3.2-SMS borrower + 3.2b-SMS lender copy refresh in `sendAutoCancelUnshipped.js`. Switched 3.2b URL from per-listing `shortLink` to static `https://sherbrt.com/listings` (ManageListingsPage). Lender earnings amount now uses `calculateLenderPayoutTotal` + `formatMoneyServerSide` from `api-util/lenderEarnings` — same source of truth as 1-SMS / 1a-SMS / 1b-SMS so the four lender-side messages can never drift on the figure shown.
+- `ccfc9dd0e` — 4-SMS outbound-shipped copy aligned to workbook in `webhooks/shippoTracking.js` lines 1226 (production webhook) + 1471 (test/diagnostic path). New copy: `🚚 Sherbrt 🍧: "[item]" is on its way! Tracking info: [link].`
+- `7813c380f` — Added `lender-request-reminders` cron block to `render.yaml` (documentation-only — service was already live in Render UI). Updated CLAUDE_CONTEXT note.
+- `78ae68858` — `render.yaml` drift cleanup: removed legacy `shipby-reminders` worker block (script not deployed, superseded by `sendShippingReminders.js`); added `shipping-reminders` cron block (3.1 + 3.1b SMS); rebuilt the deployment-config note. CLAUDE_CONTEXT deployment table now matches Render dashboard 1:1 (1 web + 2 workers + 3 cron jobs = 6 active services).
+- `43655e552` — Switched user-facing `cancelled` → `canceled` (American spelling) in 3.2 + 3.2b SMS copy + the matching internal log line. Sharetribe API state-string checks (`state === 'cancelled'`) intentionally retained — must match upstream API.
+
+**Workbook v12** (saved locally at `/Users/amaliabornstein/shop-on-sherbet-cursor/sherbrt_transaction_comms_v12.xlsx`):
+- **Log tab:** new row 1b-SMS (22h final warning to lender, bypasses quiet-hours, tag `lender_request_reminder_22h`); 1-SMS / 1a-SMS copy refreshed to match shipped code (`You have 24hrs to accept`, `Just tap before it expires`); 3-SMS / 3.1 / 3.1b notes refreshed for Shippo-anchored ship-by; 3.2 / 3.2b copy + timing rewritten (anchored to bookingStart + 12h scan-lag, NOT shipByDate; ManageListingsPage URL; earnings via shared helper; American spelling); deprecated 5-SMS row deleted; 4-SMS copy aligned with deployed code; 6-SMS copy aligned with deployed code.
+- **Legend tab:** Ship-by-logic row rewritten for Shippo-anchored model; new entries for Lender accept window (24h, 2-phase escalation, quiet-hours rules) + Auto-cancel scan-lag grace (12h buffer + Monday-shift math).
+- **Test Scenarios tab:** dropped Pre-Test Blockers + Post-Deploy Findings sections (all work shipped); rebuilt all 6 scenarios in Log-aligned column format with separate "Expected to FIRE" + "Must NOT fire" sub-tables; Scenario 2 now expects 1b-SMS at 22h; Scenario 4 reflects `AUTO_CANCEL_DRY_RUN=0` + scan-lag-grace observable.
+- **PR-4 Instructions tab** renamed to `Late-Fee Charging Dry-Run` (content unchanged).
+
+**Listing-specific calendar quirk surfaced during Scenario 1 setup (NOT a code bug):**
+- One specific listing blocks all May 2026 dates when start = Apr 30 selected.
+- Confirmed by code trace: `BookingDatesForm.js:168` `getBookableRange` correctly clamps end-date picker to the time slot's `end` attribute. The listing's Sharetribe time slot covering Apr 30 ends on May 1 (exclusive) → all May correctly blocked.
+- Lender confirmed availability is open in Console UI, but symptom persists. Likely cause: stale time-slots cache or stale `protectedData` on the listing from a one-off script in the past. Did NOT investigate further.
+- **Workaround:** use a different listing for IDEAL testing. Class of issue is listing-specific data, not global code.
+
+**Open / pending items for next session:**
+1. **Sharetribe Console → Content → Email templates → review `booking-expired-request`** for stale "6 days" / "within a week" language before testing Scenario 2 (the borrower receives this email when the v5 24h auto-expire fires). The in-repo template is generic ("didn't respond on time, so your request expired") — but Sharetribe Console can have a marketplace-specific override that may be stale.
+2. **Future cleanup PR:** delete legacy `sendShipByReminders.js` + its `.persist.test.js` test file (functionality fully superseded by `sendShippingReminders.js`; service no longer deployed; flagged in `render.yaml` comments).
+3. **Workbook v12 → Drive:** local copy still needs uploading.
+4. **Continue Scenario 1 → 2 → 3 → 4 → 5 → 6** in the v12 Test Scenarios tab order. All comms verified wired and deployed. No blockers.
+
+**Where we left off:** Scenario 1 (IDEAL) is in flight. The test transaction will be the first booking on Sharetribe v5 (alias just shows 0 transactions). Borrower side encountered the listing-specific calendar quirk above — switched to a different listing to continue.
+
 ### 10.0 — Shippo-Anchored Ship-By + 24h Lender Expire + Acceptance Hardening (April 23, 2026)
 
 **Status:** ✅ Shipped end-to-end same day as the env-drift incident (below) that triggered it. All 5 atomic PRs merged, process.edn v5 alias flipped live, deploy verified.
