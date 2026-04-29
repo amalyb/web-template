@@ -120,7 +120,7 @@ export const OrderBreakdownComponent = props => {
         code={lineItemUnitType}
         dateType={dateType}
         timeZone={timeZone}
-        showSundayEndDateNotice={showSundayEndDateNotice}
+        showSundayEndDateNotice={showSundayEndDateNotice && isCustomer}
       />
 
       <LineItemBasePriceMaybe lineItems={lineItems} code={lineItemUnitType} intl={intl} />
