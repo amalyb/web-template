@@ -215,6 +215,9 @@ export class TransactionPanelComponent extends Component {
     });
 
     const listingTitle = listingDeleted ? deletedListingTitle : stateDataListing?.attributes?.title || '';
+    const listingBrand = listingDeleted
+      ? null
+      : stateDataListing?.attributes?.publicData?.brand || null;
     const listingImages = stateDataListing?.images?.length ? stateDataListing.images : listing?.images || [];
     const firstImage = listingImages.length > 0 ? listingImages[0] : null;
 
@@ -587,6 +590,7 @@ export class TransactionPanelComponent extends Component {
                 <DetailCardHeadingsMaybe
                   showDetailCardHeadings={showDetailCardHeadings}
                   listingTitle={listingTitleNode}
+                  subTitle={listingBrand}
                   showPrice={showPrice}
                   price={stateDataListing?.attributes?.price}
                   intl={intl}
