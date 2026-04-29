@@ -28,6 +28,47 @@ const lenderOutboundLabelEmail = require('../email/lender/lenderOutboundLabel');
 const safePick = (obj, keys = []) =>
   Object.fromEntries(keys.map(k => [k, obj && typeof obj === 'object' ? obj[k] : undefined]));
 
+// Step 3 of persistent lender shipping address: hydrate missing provider*
+// fields on the accept-transition params from the provider's saved
+// profile.protectedData.lenderShippingAddress. Mutates params in place,
+// writing to both flattened keys (params[k]) and params.protectedData[k]
+// so the downstream missingProvider validation and the SDK transition
+// call both observe the hydrated values. Empty/whitespace strings in the
+// profile do NOT hydrate, and any client-supplied value wins.
+function hydrateProviderFieldsFromProfile(params, lenderShippingAddress, providerEmail) {
+  if (!params) return [];
+  const addr = lenderShippingAddress || {};
+
+  if (!params.protectedData) params.protectedData = {};
+  const pd = params.protectedData;
+
+  const isMissing = v =>
+    v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  const nonEmpty = v => typeof v === 'string' && v.trim() !== '';
+
+  const mapping = [
+    ['providerStreet', addr.streetAddress],
+    ['providerStreet2', addr.streetAddress2],
+    ['providerCity', addr.city],
+    ['providerState', addr.state],
+    ['providerZip', addr.zipCode],
+    ['providerPhone', addr.phoneNumber],
+    ['providerEmail', providerEmail],
+  ];
+
+  const hydrated = [];
+  for (const [key, valueFromProfile] of mapping) {
+    const current = params[key] ?? pd[key];
+    if (isMissing(current) && nonEmpty(valueFromProfile)) {
+      params[key] = valueFromProfile;
+      pd[key] = valueFromProfile;
+      hydrated.push(key);
+    }
+  }
+
+  return hydrated;
+}
+
 // Helper to check if customer has complete shipping address
 const hasCustomerShipAddress = (pd) => {
   return !!(pd?.customerStreet?.trim() && pd?.customerZip?.trim());
@@ -1928,6 +1969,38 @@ module.exports = async (req, res) => {
       // Validate only PROVIDER fields on accept.
       if (transition === ACCEPT_TRANSITION) {
         console.log('🔍 [DEBUG] Validating provider fields for transition/accept');
+
+        // Server-side fallback (Step 3 of persistent lender shipping
+        // address): hydrate missing provider* fields from the provider
+        // user's saved profile.protectedData.lenderShippingAddress.
+        // Lets mobile (and any future client) accept without
+        // re-implementing the form-prefill mapping. Client-supplied
+        // values win — only empty fields get hydrated.
+        try {
+          const providerIdRel =
+            listing?.relationships?.author?.data?.id ?? null;
+          const providerIdStr =
+            (providerIdRel && typeof providerIdRel === 'object' && providerIdRel.uuid) ||
+            (typeof providerIdRel === 'string' ? providerIdRel : null);
+          if (providerIdStr) {
+            const iSdk = getIntegrationSdk();
+            const provResp = await iSdk.users.show({ id: providerIdStr });
+            const provAttrs = provResp?.data?.data?.attributes || {};
+            const lenderAddr = provAttrs?.profile?.protectedData?.lenderShippingAddress;
+            const provEmail = provAttrs?.email;
+            const hydrated = hydrateProviderFieldsFromProfile(params, lenderAddr, provEmail);
+            if (hydrated.length) {
+              console.log('[ACCEPT][HYDRATE] Hydrated provider fields from profile:', hydrated);
+            } else {
+              console.log('[ACCEPT][HYDRATE] No provider fields needed hydration');
+            }
+          } else {
+            console.warn('[ACCEPT][HYDRATE] No provider id on listing.relationships.author; skipping hydration');
+          }
+        } catch (hydrationErr) {
+          console.warn('[ACCEPT][HYDRATE] Failed to hydrate provider fields from profile:', hydrationErr.message);
+        }
+
         // Check both the flattened params and params.protectedData
         const pd = params?.protectedData || {};
         const missingProvider = requiredProviderFields.filter(
@@ -2388,6 +2461,7 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
 // Expose rate selector for unit tests (10.0 PR-1). The primary export is
 // the middleware above; attaching as a property leaves that contract intact.
 module.exports.pickCheapestAllowedRate = pickCheapestAllowedRate;
+module.exports.hydrateProviderFieldsFromProfile = hydrateProviderFieldsFromProfile;
 
 // Add a top-level handler for unhandled promise rejections to help diagnose Render 'failed service' issues
 process.on('unhandledRejection', (reason, promise) => {
