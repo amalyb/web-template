@@ -499,6 +499,11 @@
 }
 
 .saveAsDefaultLabel input[type='checkbox'] {
+  /* Override global input rule (marketplaceDefaults.css:523) which forces
+     display:block, width:100%, padding:6px 12px 4px 12px on ALL inputs. */
+  display: inline-block;
+  width: auto;
+  padding: 0;
   margin: 0 8px 0 0;
   vertical-align: middle;
   cursor: pointer;
