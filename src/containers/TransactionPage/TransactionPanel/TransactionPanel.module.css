@@ -488,28 +488,29 @@
 }
 
 .saveAsDefaultLabel {
-  display: inline-flex;
-  align-items: flex-start;
-  gap: 8px;
+  display: block;
   cursor: pointer;
   font-size: 14px;
   font-weight: var(--fontWeightMedium);
   color: var(--colorGrey700);
   line-height: 20px;
+  margin: 0;
+  padding: 0;
 }
 
 .saveAsDefaultLabel input[type='checkbox'] {
-  margin: 2px 0 0 0;
-  flex-shrink: 0;
+  margin: 0 8px 0 0;
+  vertical-align: middle;
   cursor: pointer;
 }
 
 .saveAsDefaultLabel span {
-  display: inline-block;
+  vertical-align: middle;
 }
 
 .saveAsDefaultHelp {
   margin: 4px 0 0 24px;
+  padding: 0;
   font-size: 13px;
   color: var(--colorGrey600);
   line-height: 18px;
