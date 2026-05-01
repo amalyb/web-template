@@ -161,6 +161,42 @@
    :from :state/accepted,
    :to :state/accepted,
    :privileged? true}
+  ;; ── Task #30 — operator-only self-loop transitions for protectedData updates ──
+  ;; Used by Integration SDK callers (server-side, cron, webhooks) to write
+  ;; protectedData via the transition mechanism. Replaces the broken path
+  ;; through transactions.updateMetadata which silently routed data to
+  ;; tx.attributes.metadata.protectedData (where nothing reads from).
+  ;; See CLAUDE_CONTEXT.md May 1, 2026 task #30 framing-correction entry.
+  {:name :transition/operator-update-pd-accepted,
+   :actor :actor.role/operator,
+   :actions [{:name :action/update-protected-data}],
+   :from :state/accepted,
+   :to :state/accepted}
+  {:name :transition/operator-update-pd-delivered,
+   :actor :actor.role/operator,
+   :actions [{:name :action/update-protected-data}],
+   :from :state/delivered,
+   :to :state/delivered}
+  {:name :transition/operator-update-pd-cancelled,
+   :actor :actor.role/operator,
+   :actions [{:name :action/update-protected-data}],
+   :from :state/cancelled,
+   :to :state/cancelled}
+  {:name :transition/operator-update-pd-reviewed,
+   :actor :actor.role/operator,
+   :actions [{:name :action/update-protected-data}],
+   :from :state/reviewed,
+   :to :state/reviewed}
+  {:name :transition/operator-update-pd-reviewed-by-p,
+   :actor :actor.role/operator,
+   :actions [{:name :action/update-protected-data}],
+   :from :state/reviewed-by-provider,
+   :to :state/reviewed-by-provider}
+  {:name :transition/operator-update-pd-reviewed-by-c,
+   :actor :actor.role/operator,
+   :actions [{:name :action/update-protected-data}],
+   :from :state/reviewed-by-customer,
+   :to :state/reviewed-by-customer}
   {:name :transition/review-1-by-provider,
    :actor :actor.role/provider,
    :actions [{:name :action/post-review-by-provider}],
