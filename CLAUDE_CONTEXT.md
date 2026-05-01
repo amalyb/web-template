@@ -590,6 +590,113 @@ session.
   and `metadata.protectedData` paths.
 - This entry, for blast-radius reference.
 
+### May 1, 2026 — Task #30 Phase 1 shipped (Sharetribe v6 + 6 operator-update-pd transitions); Phase 2 with CC
+
+**Phase 1 ship details.** Marketplace process `default-booking` v6 published
+to Sharetribe today at 1:29 PM PT. Alias `default-booking/release-1` moved
+from v5 to v6 minutes later. Local `process.edn` synced and committed as
+`c5f2d0b02` on `main`. Mechanical signals all green: `flex-cli process list`
+shows v6 with the alias, the EDN diff between v5-pull and the local file
+contains exactly the 6 new transitions plus pre-existing comment/whitespace
+differences (no semantic drift in pre-existing transitions).
+
+**The 6 new transitions (all self-loop, actor=operator, action=update-protected-data, no `:privileged?` flag).**
+
+```
+transition/operator-update-pd-accepted        (state/accepted)
+transition/operator-update-pd-delivered       (state/delivered)
+transition/operator-update-pd-cancelled       (state/cancelled)         ← per CC audit; sendAutoCancelUnshipped writes here
+transition/operator-update-pd-reviewed        (state/reviewed)          ← defensive (no current call sites)
+transition/operator-update-pd-reviewed-by-p   (state/reviewed-by-provider)  ← defensive
+transition/operator-update-pd-reviewed-by-c   (state/reviewed-by-customer)  ← defensive
+```
+
+**Phase 0 risk audit (CC) outcome.** PROCEED with 4 caveats, all folded in:
+1. Added `cancelled` (CC catch — `sendAutoCancelUnshipped.js:258` writes
+   AFTER the auto-cancel transition fires, so the tx is in `state/cancelled`
+   when the upsert runs — not `state/accepted`).
+2. Removed `:privileged? true` flag from the new transitions (CC: that flag
+   is for non-operator actors invoking privileged actions via the marketplace
+   `transition_privileged` endpoint; operator transitions via Integration
+   SDK don't need it).
+3. Hard-fail on unsupported state, NOT soft fallback (CC: a fallback to
+   `updateMetadata` would silently re-create the bug; loud failure is the
+   discovery mechanism for any state we missed).
+4. NO `TASK_30_FIX_ENABLED` feature flag (CC: a flag that falls back to
+   the buggy path is "a regression with telemetry, not a rollback";
+   rollback is Render deploy revert).
+
+Plus 4 risks CC raised (all folded into the Phase 2 brief): rate limits at
+scale (2 API calls per upsert vs 1), Console notification rules verification
+(self-loop transitions still trigger Console-configured emails), migration
+race during deploy (run during low-traffic window or fence with feature
+flag), per-key conflict resolution during migration (don't blanket "metadata
+wins").
+
+**Phase 1 runtime verification deferred.** Sharetribe transactions are
+pinned to the process version they were CREATED on, so existing test txs
+(all on v5) cannot exercise the v6 transitions — the integration SDK
+returns `transaction-invalid-transition` (status 409) when you try. Decided
+on Path B: skip explicit Phase 1 verification, let the first organic tx
+accept post-Phase-2-deploy verify Phase 1 + Phase 2 together. Same pattern
+as task #29 (where the live-Shippo probe proved the fix without burning a
+Stripe charge on a synthetic test transaction).
+
+**Phase 2 in progress with CC.** Brief delivered to CC: refactor
+`server/api-util/integrationSdk.js:txUpdateProtectedData` to fetch tx →
+deep-merge patch → call right `operator-update-pd-<state>` transition →
+hard-fail on unsupported state → 409-retry once. Plus update 4 existing
+test files that mock `transactions.updateMetadata`
+(`integrationSdk.lockedRate.test.js`,
+`sendShipByReminders.persist.test.js`,
+`sendReturnReminders.persist.test.js`,
+`shippoTracking.upsert.test.js` — CI breaks otherwise per CC audit), and
+add a new test file asserting data lands at `tx.attributes.protectedData.X`
+via `tx.show()` after each write (the test gap that hid the original bug).
+No feature flag. CC writes one commit, user reviews diff before merge.
+Estimated 2-3 hours of CC time.
+
+**Phase 3 deferred.** Migration script (`scripts/migrate-task-30-data.js`)
+to copy data from `tx.attributes.metadata.protectedData.*` to
+`tx.attributes.protectedData.*` for in-flight transactions. Per CC audit:
+needs maintenance window OR feature flag fence on `txUpdateProtectedData`
+during migration window; per-key conflict resolution (prompt operator
+on conflicts, don't blanket-pick); skip terminal states not in the 6
+covered. Will be a separate session after Phase 2 stabilizes.
+
+**Diag scripts written today.**
+
+- `scripts/probe-task-30.js` — verifies the bug is real and present in
+  deployed code right now. Calls existing `upsertProtectedData` on a real
+  tx with a sentinel value; checks where it landed. Run twice today
+  (against `69f3cbd6` and `69f27547`) — both confirmed bug present, both
+  showed the probe value at `metadata.protectedData.shipByISO` not
+  `protectedData.shipByISO`.
+- `scripts/diag-task-30-transition.js` — verifies a specific
+  `operator-update-pd-<state>` transition routes data correctly. Will
+  fail with `transaction-invalid-transition` against any existing v5 tx;
+  expected to pass once a v6 tx exists.
+- `scripts/diag-tx-address.js` — extended to also read
+  `tx.attributes.metadata.protectedData` so we can see where data
+  actually landed across both fields.
+
+**Files touched today.**
+
+- New: `ext/transaction-processes/default-booking/process.edn` lines 164-202
+  — 6 new operator-update-pd-<state> transitions
+- New: `scripts/probe-task-30.js`
+- New: `scripts/diag-task-30-transition.js`
+- New: `scripts/probe-shippo-live.js`
+- New: `scripts/probe-shipment-rate-binding.js`
+- Edit: `scripts/diag-tx-address.js` — extended to read both fields
+- Edit: `CLAUDE_CONTEXT.md` — task #30 framing correction (commit
+  `52e467b07`) + this entry
+- Edit (Sharetribe-side): `default-booking` v6 published
+
+**Commits on `main` today.** `5acbb2e20` (task #29 squash merge), `52e467b07`
+(docs: task #30 framing correction), `c5f2d0b02` (process.edn: 6 new
+transitions). Plus whatever Phase 2 lands as.
+
 ### April 30, 2026 — Mobile accept verified end-to-end + Cloudflare 307 gotcha
 
 **Status at end of session:** Option A's Scenario A (lender WITH saved
@@ -783,56 +890,135 @@ Mid-session, attempted Day 9's mobile lender accept via Expo Go on a fresh `prea
 
 ## 🟢 Pickup Tomorrow — Where We Are + What To Do Next
 
+**State of the world (end of May 1 session):**
+- ✅ **Task #29 SHIPPED + VERIFIED LIVE.** Squashed commit `5acbb2e20` on
+  `origin/main`. Pre-validates addresses via Shippo `/addresses/?validate=true`,
+  uses canonical (with ZIP+4) for `/shipments/`, re-rates at accept against
+  fresh-shipment rates by exact `provider+servicelevel.token` match
+  (preserves carrier neutrality, never falls back to cheapest). Verified
+  end-to-end against live USPS via `scripts/probe-shippo-live.js`
+  (tracking `9300120845500002217937`, $0 net cost via auto-void).
+  **Scenario 1 is unblocked.**
+- ✅ **Task #30 Phase 1 SHIPPED.** Sharetribe `default-booking` v6 published
+  at 1:29 PM PT today, alias `default-booking/release-1` moved from v5 to
+  v6. Local `process.edn` synced as commit `c5f2d0b02` on `main`. 6 new
+  operator-update-pd-<state> transitions added: `accepted`, `delivered`,
+  `cancelled`, `reviewed`, `reviewed-by-provider`, `reviewed-by-customer`.
+  CC's Phase 0 audit caveats all folded in (no `:privileged?` flag, no
+  feature flag, hard-fail on unsupported state, 6 not 5 — `cancelled`
+  added per CC catch).
+- 🟡 **Task #30 Phase 2 in progress with CC.** Code refactor of
+  `txUpdateProtectedData` to use the new transitions instead of
+  `transactions.updateMetadata`. Includes updates to 4 existing test files
+  + a new test asserting data lands at `tx.attributes.protectedData.X` via
+  `tx.show()`. CC report expected; user reviews diff before merging.
+- ⏳ **Task #30 Phase 3 deferred.** Migration script
+  (`scripts/migrate-task-30-data.js`) to copy data from
+  `metadata.protectedData.*` → `protectedData.*` for in-flight txs. Runs
+  AFTER Phase 2 deploys + stabilizes. Needs maintenance window OR feature
+  flag fence on `txUpdateProtectedData` during migration. Per-key conflict
+  prompts (don't blanket-pick "metadata wins").
+- 🟡 **Phase 1 runtime verification deferred to first organic accept.**
+  Existing test txs are pinned to v5 and can't exercise v6 transitions
+  (Sharetribe returns `transaction-invalid-transition`). Path B chosen:
+  the first organic tx accept after Phase 2 deploys verifies Phase 1 +
+  Phase 2 simultaneously. Same pattern as task #29 (live-probe instead
+  of synthetic Stripe charge).
+- ⏳ **Mobile launch path heads-ups still pending** from Day 12 wrap-up:
+  EAS production env-var change (`EXPO_PUBLIC_API_BASE_URL` = `sherbrt.com`
+  apex, NOT `www.sherbrt.com`) before next TestFlight ship; Sharetribe
+  Console microcopy verification for `OrderBreakdown.providerTotal*` keys
+  ("Your earnings" should render in production).
+
+**Decision log from today (anchor for future-CC):**
+
+- Failure UX for invalid addresses on accept: **hard-fail** with structured
+  error `invalid_recipient_address` / `invalid_provider_address` (NOT
+  soft-retry without unit, which would hold packages at the PO).
+- Re-rate matching: **exact `provider+servicelevel.token`** (NOT
+  cheapest fallback — cheapest would silently swap carriers from what the
+  borrower was quoted at checkout).
+- Re-rate price delta: **$2 ops alert threshold** via `OPS_ALERT_EMAIL`,
+  Sherbrt absorbs delta, borrower preauth amount preserved.
+- Task #30 architecture: **6 transitions per state** (not vector-from —
+  Sharetribe EDN doesn't support it; CC verified by grepping).
+- Task #30 unsupported-state behavior: **hard-fail** with structured
+  error and ops alert (NOT soft fallback to `updateMetadata`, which would
+  re-create the bug silently).
+- Task #30 rollback strategy: **Render deploy revert** (NOT a feature
+  flag, which would also silently re-create the bug).
+
+**Day 2 morning task (~10 min): check on CC's Phase 2.**
+
+If CC has reported back with the diff, paste it to Cowork-Claude for
+review. Mostly we're checking: `transactions.updateMetadata` is gone from
+`server/api-util/integrationSdk.js`; new helper calls
+`transactions.show` + `transactions.transition`; the 4 existing tests are
+updated; new test asserts data lands at `protectedData.X` via `tx.show()`;
+all green via `npm test`. Then merge to `main`, push, Render auto-deploys.
+
+If CC hasn't reported back: re-prompt or wait. The brief is in the chat;
+re-paste if CC's session was interrupted.
+
+**Day 2 afterwards (in priority order):**
+
+1. **Phase 2 deploy + watch first organic accept** for Render log lines
+   `[INT][PD] transition operator-update-pd-accepted` (or whichever
+   state). Confirm `[VERIFY][ACCEPT] Missing providerZip after upsert!`
+   no longer fires. That tx becomes the runtime verification of Phase 1
+   + Phase 2 together.
+2. **Phase 3: migration script** with `--dry-run` first, then real run
+   during low-traffic window. Per-key conflict prompts.
+3. **Pivot to mobile launch path:**
+   - Resume Scenario 1 → 2 → 3 → 4 → 5 → 6 in v12 Test Scenarios workbook.
+     Scenario 1 was in flight before Option A and task #29 intercepted;
+     now fully unblocked.
+   - EAS production env-var change (`EXPO_PUBLIC_API_BASE_URL`).
+   - Sharetribe Console microcopy verification.
+4. **Backlog (no order):** task #25 (format validators), task #31 (phone
+   field consolidation), worktree cleanup, `ListingCard.js` migration
+   to `getListingFieldLabel`.
+
+**Diag scripts written today (still useful for verification later).**
+
+- `scripts/probe-task-30.js <txId>` — proves the bug is real on any
+  given existing v5 tx. Run twice today against `69f3cbd6` and `69f27547`,
+  both confirmed. Will EXPECT to FAIL after Phase 2 ships (the "bug" goes
+  away once writes go to `protectedData` directly).
+- `scripts/diag-task-30-transition.js <txId>` — verifies a specific
+  `operator-update-pd-<state>` transition routes data correctly. Will
+  fail with `transaction-invalid-transition` on any v5-pinned tx; will
+  pass on v6-created txs after Phase 2 deploys.
+- `scripts/diag-tx-address.js` — extended to read both
+  `tx.attributes.protectedData` and `tx.attributes.metadata.protectedData`.
+  Useful for diagnosing "where did this data go?" on any tx.
+- `scripts/probe-shippo-live.js` — verifies Shippo+USPS works end-to-end
+  with $0 net cost via auto-void. Pattern for future verifications.
+- `scripts/probe-shipment-rate-binding.js` — proves USPS validates
+  against the rate's original shipment, not a freshly-created shipment
+  with the same rate ID. Locks in the re-rate-at-accept design rationale.
+
+**Where we left off literally:** Web `~/shop-on-sherbet-cursor/main` HEAD
+is `c5f2d0b02` (process.edn v6 transitions). Sharetribe `default-booking`
+alias on v6. CC working on Phase 2 in a worktree. No uncommitted changes
+pending on main. Ready to review CC's Phase 2 diff first thing tomorrow.
+
+---
+
+## Earlier Pickup Tomorrow notes (April 29 → April 30)
+
+(These are now superseded by the May 1 entry above. Kept for reference
+in case anything from this period needs to be re-checked.)
+
 **State of the world (end of April 29 session):**
 - ✅ Web side of Option A fully shipped. Settings page, prefill, server fallback, brand display, banner gating, copy refreshes — all on `origin/main`, all deployed via Render.
 - ✅ Mobile side of Option A fully shipped. Settings screen + lender-actions empty-params + inline prompt on `origin/main` for `~/sherbrt-mobile`.
-- ⏳ Mobile end-to-end verification NOT yet performed — that's the first thing to do tomorrow.
-- ⏳ Two side-issues from accept logs are tracked (task #29 Shippo, task #30 verify-after-upsert) but not yet investigated.
 
-**Day 1 morning task (~30 min): mobile smoke test.**
+**Day 1 morning task was the mobile smoke test (Scenarios A / B / C).**
+All three passed during the April 30 session (see entry below). Task
+#20 (Option A end-to-end) marked completed.
 
-Three scenarios to run through on the iOS simulator. If `npx expo start --ios` complains about Xcode, run this once first: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`.
-
-- **Scenario A — lender WITH saved address (the happy path that was previously blocked):**
-  1. Sign in as the lender account that saved an address via `/account/shipping-address` on web yesterday.
-  2. Navigate to a fresh `preauthorized` request on the Lending tab. (If yesterday's test request has expired or been accepted via web, have your borrower account submit a new one.)
-  3. Tap **Accept**.
-  4. Expected: spinner → success → action buttons disappear → tx transitions to `accepted`. No `transition/accept-missing-provider` error.
-  5. Under the hood: mobile sends `{transactionId, listingId, transition: 'transition/accept'}` only — no provider fields. Server hydrates from `prov.profile.protectedData.lenderShippingAddress`. Validation passes. Transition fires.
-
-- **Scenario B — lender WITHOUT saved address (the new graceful fallback):**
-  1. Use a different test lender account (or a freshly signed-up one) with NO saved address.
-  2. Submit a borrow request to that lender from a borrower account.
-  3. Sign into the lender account on mobile, navigate to the request on Lending tab.
-  4. Tap **Accept**.
-  5. Expected: server returns `transition/accept-missing-provider` 422. Mobile catches the error code, action buttons disappear, **inline coral-bordered sand banner renders** with bold "Add your shipping address" title, body copy, and mint full-width "Set up shipping address" button.
-  6. Tap the button. Expected: routes to `/account/shipping-address` settings screen.
-  7. Fill in the address, save, tap back.
-  8. Expected: `useFocusEffect` clears `needsShippingAddress`, action buttons re-appear.
-  9. Tap Accept again. Expected: server hydrates the now-saved address, accept succeeds.
-
-- **Scenario C — cross-platform sync (the parity test):**
-  1. Save an address via `/account/shipping-address` on **mobile**.
-  2. Open the same account in a **web** browser, navigate to web's `/account/shipping-address`.
-  3. Expected: form is pre-populated with the values you just saved on mobile.
-  4. Edit something on web, save, return to the mobile shipping-address screen.
-  5. Expected: when the mobile screen re-focuses, `useFocusEffect` fires `refreshUser()` and the form picks up the web edit.
-
-If A passes, mobile accept finally works end-to-end and Option A is complete. Mark **task #20** as completed.
-
-**Day 1 next priority (after smoke test): task #29 — Shippo address validation blocker.** This is blocking actual Scenario 1 testing flow — without a working label, even successful accepts don't produce a shippable transaction. Suggested investigation order: (a) try abbreviating `Street` → `St` in customer profile address; (b) try `Apt 7` → `Apt 7` (capital A) or `Suite 7`; (c) probe Shippo's address-validation endpoint directly with the failing address to see what error detail comes back; (d) check whether ZIP+4 (`94123-XXXX`) is needed for that specific San Francisco micro-area. Test transaction IDs that hit this: `69f28897`, `69f0f9a8`. Pre-existing — not introduced by Option A.
-
-**After task #29 is unblocked, priority order for remaining work:**
-1. **Task #30** verify-after-upsert false-positive log — small fix, makes future debugging cleaner.
-2. **Task #31** consolidate the three-way phone field sprawl. Mobile now has `protectedData.phoneNumber` (existing inline editor at /account), `protectedData.phone` (legacy write-through, used by `sendShipByReminders.js:159`), and `protectedData.lenderShippingAddress.phoneNumber` (new). Pick one canonical, write through to others, deprecate the rest. Both web duck and mobile `lib/account.ts` `updateLenderShippingAddress` need to participate.
-3. **Task #25** add proper format validators (5-digit US ZIP, US phone, 2-letter state) shared between `ProviderAddressForm` (web) and `AccountShippingAddressForm` + new mobile shipping-address screen. Reuse the same shared helper.
-4. **Sharetribe Console microcopy update for `OrderBreakdown.providerTotal*` keys** — verify in Console → Build → Content → Microcopy that the three keys (`providerTotalDefault`, `providerTotalReceived`, `providerTotalRefunded`) all read "Your earnings" so the bundled change in `97f44b3a4` actually renders in production. Recall: bundled `en.json` is fallback; Console hosted translations override at runtime.
-5. **`ListingCard.js` migration** to use `getListingFieldLabel` helper — currently has the duplicate inline `getBrandLabel` (lines 129-139). Migrate when convenient.
-6. **Worktree cleanup PR** after all Option A surfaces are confirmed: `git worktree remove .claude/worktrees/<name>` + `git branch -d claude/<name>` for each shipped worktree (web: `ecstatic-varahamihira-2ea2ec`, `elegant-hofstadter-d51e81`, `happy-shannon-9b3315`; mobile: `awesome-cerf-ae3ed5`, `sharp-merkle-b860a0`).
-
-**Then resume Scenario 1 → 2 → 3 → 4 → 5 → 6 in the v12 Test Scenarios workbook.** Scenario 1 was in flight before Option A intercepted; the Shippo address fix (task #29) unblocks it. All comms are wired and deployed; no other blockers known.
-
-**Where we left off literally:** Both Step 4 and Step 5 mobile commits successfully on `origin/main` after a recovery from a zsh-history-expansion-induced commit failure. Mobile `~/sherbrt-mobile/main` HEAD is `01a1b1a` (Step 5 merge commit). Web `~/shop-on-sherbet-cursor/main` HEAD is the verified Step 3 follow-up commit. No uncommitted changes pending. Ready for mobile smoke testing first thing tomorrow.
+**Then resume Scenario 1 → 2 → 3 → 4 → 5 → 6 in the v12 Test Scenarios workbook.** Scenario 1 was in flight before Option A intercepted; the Shippo address fix (task #29) unblocked it on May 1. All comms are wired and deployed; no other blockers known.
 
 ### April 28, 2026 — Comms wiring audit + 3.2/3.2b copy refresh + render.yaml drift cleanup + workbook v12 + Scenario 1 testing started
 
