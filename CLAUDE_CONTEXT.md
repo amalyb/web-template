@@ -287,6 +287,94 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 1, 2026 — Shippo address validation (task #29)
+
+**The bug.** Two production accepts on 4/29/2026 (`69f28897-…` and
+`69f0f9a8-…`) succeeded as marketplace transitions but failed at Shippo
+label-print with `failed_address_validation: Recipient address invalid:
+Address not found.` from USPS at `/transactions/`. Recipient address:
+`1795 Chestnut Street, apt 7, San Francisco, CA 94123`.
+
+**What we ruled out (do not re-investigate).** Probed Shippo's
+`/addresses/?validate=true` with all 7 plausible variants of the
+recipient's address (raw / Street→St / Apt 7 cap / packed into street1
+/ uppercase / no-apt). Every variant returned `is_valid:true` and
+normalized to the canonical `1795 Chestnut St Apt 7, San Francisco, CA
+94123-2935` (ZIP+4). So borrower-side address normalization is fine —
+the problem is downstream.
+
+**Diagnosis.** USPS in live mode at label-print is stricter than
+`/addresses/?validate=true`. Without ZIP+4, USPS can't disambiguate
+multi-unit addresses like `apt 7` against the building's
+delivery-point database, so it rejects with "Address not found." If we
+pre-normalize to the canonical (ZIP+4) before the `/shipments/` POST,
+USPS at print-time sees its own approved canonical and accepts.
+
+**The fix.** New helper `server/shippo/validateAddress.js` that POSTs
+to `/addresses/?validate=true`, returns either `{valid:true,
+normalized:{...}}` or `{valid:false, transient:bool}`. Wired into both
+label flows in `server/api/transition-privileged.js` (outbound +
+return). On `is_valid:true` (with or without soft warnings), the
+canonical address replaces the raw one for the shipment payload. On
+hard fail (`is_valid:false`), the label is skipped and a structured
+error is persisted to `protectedData.labelCreationError` (or
+`returnLabelCreationError`) plus an ops alert is sent via the existing
+`OPS_ALERT_EMAIL` channel. Transient errors (4xx/5xx/network) fall
+through with the un-normalized address — we don't block label creation
+on a Shippo-side outage.
+
+**Failure UX is hard-fail, not soft-retry.** Multi-unit USPS deliveries
+without a unit number get held at the PO, so silently retrying without
+the unit would create a worse outcome. The marketplace transition is
+NOT voided (it already happened, can't roll back); only the label is
+skipped. Ops gets the email alert and contacts the user manually.
+
+**Why error surfaces via persistence, not the HTTP response.**
+`createShippingLabels` is invoked fire-and-forget at
+[transition-privileged.js:2416](server/api/transition-privileged.js:2416)
+— the HTTP 200 response is sent at line 2444 BEFORE label creation
+even runs. So the response can't carry the error code. Instead we
+persist `labelCreationError: { code, failedSide, validationMessages,
+occurredAt }` to protectedData; the client picks it up on its next
+refresh and can render an inline banner from there.
+
+**Probe revealed pre-validation alone is insufficient — extended fix
+re-rates at accept.** Ran `scripts/probe-shipment-rate-binding.js` against
+test-mode Shippo: created a checkout-shaped shipment (`street1: 'N/A'`),
+grabbed a USPS Ground Advantage rate, posted to `/transactions/`. Result:
+`tx.status: ERROR` with `Recipient address invalid: Address not found.`
+Definitive: USPS validates against the rate's ORIGINAL shipment in
+Shippo's database. The locked rate at accept is bound to the
+checkout-time ZIP-only shipment in Shippo, so purchasing it directly
+sends USPS the 'N/A' address regardless of what the freshly-created
+accept-time shipment looks like.
+
+**Re-rate-at-accept follow-up.** Both label flows in
+`transition-privileged.js` now match the locked rate's
+`provider + servicelevel.token` against the fresh accept-time shipment's
+rates and purchase the FRESH `object_id`. The borrower-preauth amount
+stays at `lockedRate.amountCents` (Sherbrt absorbs any delta). Helper
+[`findMatchingRate(freshRates, lockedRate)`](server/api/transition-privileged.js)
+is exact-or-fail by design — never falls back to "cheapest" when the
+locked service-level is missing, since that would silently swap the
+carrier from what the borrower was quoted at checkout. Instead, hard-
+fails with `reason: 'unprintable_at_accept'`, persists the failure to
+`protectedData.labelCreationError` (or `returnLabelCreationError`), and
+fires an ops alert. A `LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS = 200`
+threshold ops-alerts when |fresh − locked| >= $2. 18 unit tests in
+[transition-privileged.rerate.test.js](server/api/transition-privileged.rerate.test.js)
+cover all 5 scenarios from the brief plus edge cases (case-insensitive
+provider, legacy `service.token` SDK shape, malformed lock payloads).
+Probe script extended with step 1.5: after step-1 reproduces the bug,
+step-1.5 creates a fresh full-address shipment, finds the matching
+service-level, and purchases that rate — expected `tx.status: SUCCESS`.
+
+**Files touched.**
+- New: [server/shippo/validateAddress.js](server/shippo/validateAddress.js) — 13 tests
+- New: [server/api/transition-privileged.rerate.test.js](server/api/transition-privileged.rerate.test.js) — 18 tests
+- New: [scripts/probe-shipment-rate-binding.js](scripts/probe-shipment-rate-binding.js) — bug repro + fix verify
+- Edit: [server/api/transition-privileged.js](server/api/transition-privileged.js) — validation in both label flows; `findMatchingRate` helper + re-rate logic in both flows; sentinel-error downgrade in return-label catch
+
 ### April 30, 2026 — Mobile accept verified end-to-end + Cloudflare 307 gotcha
 
 **Status at end of session:** Option A's Scenario A (lender WITH saved

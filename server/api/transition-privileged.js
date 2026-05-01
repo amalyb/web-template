@@ -20,6 +20,7 @@ const { getPublicTrackingUrl } = require('../lib/trackingLinks');
 const { extractArtifacts } = require('../lib/shipping/extractArtifacts');
 const { buildLenderShipByMessage } = require('../lib/sms/buildLenderShipByMessage');
 const { buildShippoAddress } = require('../shippo/buildAddress');
+const { validateAddress } = require('../shippo/validateAddress');
 const { sendTransactionalEmail } = require('../email/emailClient');
 const borrowerReturnLabelEmail = require('../email/borrower/borrowerReturnLabel');
 const lenderOutboundLabelEmail = require('../email/lender/lenderOutboundLabel');
@@ -285,6 +286,43 @@ function pickCheapestAllowedRate(availableRates, { daysUntilBookingStart, prefer
   return candidates.sort((a, b) => a.amount - b.amount)[0].raw;
 }
 
+// task #29: $2 cents threshold for ops-alerting on a re-rate price delta
+// between the checkout-time locked rate and the accept-time fresh rate.
+const LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS = 200;
+
+/**
+ * Find a fresh-shipment rate that matches the checkout-time locked rate
+ * by `provider` (case-insensitive) + `servicelevel.token` (exact). Used at
+ * accept time so we re-rate against the freshly-created shipment (with
+ * canonical, USPS-validated addresses) rather than purchasing the locked
+ * rate's object_id directly — Shippo binds rates to their original
+ * shipment, and the checkout-time shipment had ZIP-only ('N/A') addresses
+ * that USPS rejects at /transactions/.
+ *
+ * Exact-or-fail by design: never falls back to "cheapest" when the locked
+ * service-level is missing from fresh rates. A silent carrier swap would
+ * change the borrower's quote — caller must hard-fail with
+ * `unprintable_at_accept` instead.
+ *
+ * @param {Array} freshRates - Rate objects from the fresh accept-time shipment
+ * @param {Object} lockedRate - { provider, servicelevel:{token,name}, ... }
+ * @returns {Object|null} The matching fresh rate, or null if no match.
+ */
+function findMatchingRate(freshRates, lockedRate) {
+  if (!Array.isArray(freshRates) || !freshRates.length) return null;
+  if (!lockedRate) return null;
+
+  const lockedProvider = String(lockedRate.provider || '').toUpperCase();
+  const lockedToken = lockedRate?.servicelevel?.token || '';
+  if (!lockedProvider || !lockedToken) return null;
+
+  return freshRates.find(r => {
+    const provider = String(r.provider || r.carrier || '').toUpperCase();
+    const token = r?.servicelevel?.token || r?.service?.token || '';
+    return provider === lockedProvider && token === lockedToken;
+  }) || null;
+}
+
 // ---------------------------------------
 
 // Conditional import of sendSMS to prevent module loading errors
@@ -500,6 +538,111 @@ async function createShippingLabels({
     addressFrom = keepStreet2(rawProviderAddress, addressFrom);
     addressTo = keepStreet2(rawCustomerAddress, addressTo);
 
+    // ──────────────────────────────────────────────────────────────────────────────
+    // PRE-VALIDATE ADDRESSES via Shippo /addresses/?validate=true
+    // ──────────────────────────────────────────────────────────────────────────────
+    // USPS at /transactions/ (label-print) is stricter than at /addresses/ —
+    // without ZIP+4, multi-unit addresses get rejected as "Address not found".
+    // Pre-validate, then thread the canonical (with ZIP+4) into the shipment
+    // payload so USPS sees the form it just approved. Hard-fail on is_valid:false
+    // (don't print a label that USPS will reject); transient errors fall through
+    // to the un-normalized address (don't block on Shippo outage).
+    {
+      const [provValidation, custValidation] = await Promise.all([
+        validateAddress(addressFrom),
+        validateAddress(addressTo),
+      ]);
+
+      const failedSide = !provValidation.valid && !provValidation.transient
+        ? 'provider'
+        : (!custValidation.valid && !custValidation.transient ? 'customer' : null);
+
+      if (failedSide) {
+        const failed = failedSide === 'provider' ? provValidation : custValidation;
+        const reason = failedSide === 'provider' ? 'invalid_provider_address' : 'invalid_recipient_address';
+        const failedAddress = failedSide === 'provider' ? addressFrom : addressTo;
+
+        console.warn(`⚠️ [SHIPPO] ${failedSide === 'provider' ? 'Provider' : 'Customer'} address failed USPS validation`, {
+          txId,
+          messages: failed.messages,
+          address: {
+            street1: failedAddress.street1,
+            street2: failedAddress.street2,
+            city: failedAddress.city,
+            state: failedAddress.state,
+            zip: failedAddress.zip,
+          },
+        });
+
+        // Persist failure to protectedData so the client can render a banner
+        // on its next refresh (createShippingLabels is fire-and-forget — the
+        // HTTP response has already been sent at this point).
+        try {
+          await upsertProtectedData(txId, {
+            labelCreationError: {
+              code: reason,
+              failedSide,
+              validationMessages: failed.messages,
+              occurredAt: timestamp(),
+            },
+          }, { source: 'shippo' });
+        } catch (persistErr) {
+          console.error('❌ [PERSIST] Failed to save labelCreationError:', persistErr.message);
+        }
+
+        // Surface to ops via the existing OPS_ALERT_EMAIL channel.
+        try {
+          await sendTransactionalEmail({
+            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            subject: `[Sherbrt] Label blocked — ${reason} (tx ${txId?.slice(0, 8)})`,
+            text: [
+              `Label creation was blocked because USPS rejected the ${failedSide} address.`,
+              ``,
+              `tx: ${txId}`,
+              `side: ${failedSide}`,
+              `reason: ${reason}`,
+              `address: ${failedAddress.street1}${failedAddress.street2 ? ', ' + failedAddress.street2 : ''}, ${failedAddress.city}, ${failedAddress.state} ${failedAddress.zip}`,
+              ``,
+              `validation messages:`,
+              ...failed.messages.map(m => `  - ${m}`),
+              ``,
+              `The accept transition succeeded; only the label was blocked. Manually contact the user to confirm the address.`,
+            ].join('\n'),
+          });
+        } catch (emailErr) {
+          console.error('❌ [OPS-ALERT] Failed to send label-blocked email:', emailErr.message);
+        }
+
+        return { success: false, reason, validationMessages: failed.messages };
+      }
+
+      // Soft-warning pass-through: log but proceed.
+      if (provValidation.valid && provValidation.messages.length) {
+        console.info('[SHIPPO] Provider address validated with warnings:', provValidation.messages);
+      }
+      if (custValidation.valid && custValidation.messages.length) {
+        console.info('[SHIPPO] Customer address validated with warnings:', custValidation.messages);
+      }
+
+      // Use the canonical (USPS-approved, with ZIP+4) for the rest of the flow.
+      // Transient failures fall through with normalized:null, leaving addresses untouched.
+      if (provValidation.normalized) {
+        addressFrom = { ...addressFrom, ...provValidation.normalized };
+      }
+      if (custValidation.normalized) {
+        addressTo = { ...addressTo, ...custValidation.normalized };
+      }
+
+      // Defensive: re-apply street2 from raw if the canonical spread omitted it.
+      addressFrom = keepStreet2(rawProviderAddress, addressFrom);
+      addressTo = keepStreet2(rawCustomerAddress, addressTo);
+
+      console.info('[shippo][validated] outbound canonical addresses (post-/addresses/?validate=true)', {
+        from: { street1: addressFrom.street1, street2: addressFrom.street2, city: addressFrom.city, state: addressFrom.state, zip: addressFrom.zip },
+        to:   { street1: addressTo.street1,   street2: addressTo.street2,   city: addressTo.city,   state: addressTo.state,   zip: addressTo.zip },
+      });
+    }
+
     // Outbound shipment payload
     // Note: QR code will be requested per-carrier at purchase time (USPS only)
     const outboundPayload = {
@@ -631,28 +774,113 @@ async function createShippingLabels({
     const lockedOutbound = protectedData?.outbound?.lockedRate;
     let selectedRate;
 
-    if (lockedOutbound?.rateObjectId) {
-      // Synthesize a rate shape from the stored lock. Only `object_id` is
-      // load-bearing (Shippo validates it at purchase); the other fields are
-      // informational for logs and downstream consumers.
-      // Defensive: if estimatedDays/amountCents are missing or malformed,
-      // proceed anyway — Shippo rejects bad rate_ids at purchase time.
-      selectedRate = {
-        object_id: lockedOutbound.rateObjectId,
-        estimated_days: lockedOutbound.estimatedDays,
-        amount: Number.isFinite(Number(lockedOutbound.amountCents))
-          ? (Number(lockedOutbound.amountCents) / 100).toFixed(2)
-          : null,
-        provider: lockedOutbound.provider || null,
-        servicelevel: lockedOutbound.servicelevel || null,
-      };
-      console.log('[RATE-SELECT][OUTBOUND:LOCKED]', {
-        rateId: lockedOutbound.rateObjectId,
-        estimatedDays: lockedOutbound.estimatedDays,
-        amountCents: lockedOutbound.amountCents,
+    if (lockedOutbound?.rateObjectId && lockedOutbound?.provider && lockedOutbound?.servicelevel?.token) {
+      // task #29: re-rate at accept. Shippo binds rates to their original
+      // shipment, so purchasing the locked rate's object_id directly would
+      // make USPS validate against the checkout-time ZIP-only ('N/A')
+      // shipment. Instead, find the same service-level in the FRESH
+      // shipment (built with canonical, USPS-validated addresses) and
+      // purchase THAT object_id. Borrower-preauth amount stays at
+      // lockedRate.amountCents — Sherbrt absorbs any delta.
+      const matched = findMatchingRate(availableRates, lockedOutbound);
+
+      if (!matched) {
+        const lockedDesc = `${lockedOutbound.provider} ${lockedOutbound?.servicelevel?.name || lockedOutbound?.servicelevel?.token}`;
+        console.error('❌ [SHIPPO][RE-RATE][NO_MATCH] Locked service-level not present in fresh shipment rates', {
+          txId,
+          lockedProvider: lockedOutbound.provider,
+          lockedToken: lockedOutbound?.servicelevel?.token,
+          freshOptions: availableRates.map(r => ({ provider: r.provider, token: r?.servicelevel?.token })),
+        });
+
+        try {
+          await upsertProtectedData(txId, {
+            labelCreationError: {
+              code: 'unprintable_at_accept',
+              failedSide: 'outbound',
+              lockedRate: {
+                provider: lockedOutbound.provider,
+                servicelevel: lockedOutbound.servicelevel,
+                amountCents: lockedOutbound.amountCents,
+              },
+              freshOptions: availableRates.map(r => ({
+                provider: r.provider,
+                token: r?.servicelevel?.token,
+                amount: r.amount,
+              })),
+              occurredAt: timestamp(),
+            },
+          }, { source: 'shippo' });
+        } catch (persistErr) {
+          console.error('❌ [PERSIST] Failed to save labelCreationError (unprintable_at_accept):', persistErr.message);
+        }
+
+        try {
+          await sendTransactionalEmail({
+            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            subject: `[Sherbrt] Label blocked — unprintable_at_accept (tx ${txId?.slice(0, 8)})`,
+            text: [
+              `Outbound label was blocked because the checkout-locked service-level (${lockedDesc}) is no longer offered for this shipment.`,
+              ``,
+              `tx: ${txId}`,
+              `locked provider: ${lockedOutbound.provider}`,
+              `locked token: ${lockedOutbound?.servicelevel?.token}`,
+              `locked amount (cents): ${lockedOutbound.amountCents}`,
+              ``,
+              `fresh-shipment options:`,
+              ...availableRates.map(r => `  - ${r.provider} ${r?.servicelevel?.token} @ $${r.amount}`),
+              ``,
+              `The accept transition succeeded; only the label was blocked. Manually contact the user to choose another service or refund.`,
+            ].join('\n'),
+          });
+        } catch (emailErr) {
+          console.error('❌ [OPS-ALERT] Failed to send unprintable_at_accept email:', emailErr.message);
+        }
+
+        return { success: false, reason: 'unprintable_at_accept' };
+      }
+
+      // Match found — use the FRESH rate's object_id. Decorate with
+      // amountCents so downstream logs continue to surface the
+      // borrower-preauth amount (lockedRate.amountCents) alongside the
+      // fresh-rate amount actually being purchased.
+      selectedRate = matched;
+
+      const freshAmountCents = Math.round(parseFloat(matched.amount ?? matched.rate ?? 0) * 100);
+      const lockedAmountCents = Number(lockedOutbound.amountCents);
+      const deltaCents = Number.isFinite(lockedAmountCents) ? freshAmountCents - lockedAmountCents : null;
+
+      console.log('[RATE-SELECT][OUTBOUND:LOCKED→FRESH]', {
+        lockedRateId: lockedOutbound.rateObjectId,
+        freshRateId: matched.object_id,
+        provider: matched.provider,
+        token: matched?.servicelevel?.token,
+        lockedAmountCents,
+        freshAmountCents,
+        deltaCents,
       });
+
+      if (deltaCents != null && Math.abs(deltaCents) >= LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS) {
+        try {
+          await sendTransactionalEmail({
+            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            subject: `[Sherbrt] Re-rate amount delta $${(deltaCents / 100).toFixed(2)} (tx ${txId?.slice(0, 8)})`,
+            text: [
+              `Outbound re-rate at accept produced a price delta of ${deltaCents} cents (>= ${LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS}c threshold).`,
+              ``,
+              `tx: ${txId}`,
+              `provider/token: ${matched.provider} / ${matched?.servicelevel?.token}`,
+              `locked (preauth): ${lockedAmountCents}c`,
+              `fresh (purchased): ${freshAmountCents}c`,
+              `delta: ${deltaCents}c (Sherbrt absorbs)`,
+            ].join('\n'),
+          });
+        } catch (emailErr) {
+          console.error('❌ [OPS-ALERT] Failed to send re-rate-delta email:', emailErr.message);
+        }
+      }
     } else {
-      console.warn('[RATE-SELECT][OUTBOUND:NO_LOCK_FALLBACK]', { txId });
+      console.warn('[RATE-SELECT][OUTBOUND:NO_LOCK_FALLBACK]', { txId, hasLockedRateId: !!lockedOutbound?.rateObjectId });
       selectedRate = pickCheapestAllowedRate(availableRates, {
         daysUntilBookingStart,
         preferredProviders,
@@ -1135,7 +1363,107 @@ async function createShippingLabels({
         // Return: from.street2 = customerStreet2, to.street2 = providerStreet2
         returnAddressFrom = keepStreet2(rawCustomerAddress, returnAddressFrom);
         returnAddressTo = keepStreet2(rawProviderAddress, returnAddressTo);
-        
+
+        // ──────────────────────────────────────────────────────────────────────────────
+        // PRE-VALIDATE RETURN-LABEL ADDRESSES via Shippo /addresses/?validate=true
+        // ──────────────────────────────────────────────────────────────────────────────
+        // Mirror the outbound validation: hard-fail on is_valid:false, use the
+        // canonical (with ZIP+4) for the return shipment payload. On hard-fail
+        // we throw a sentinel that the outer try/catch downgrades — outbound
+        // already succeeded, so we skip the return label without erroring out.
+        {
+          const [retFromVal, retToVal] = await Promise.all([
+            validateAddress(returnAddressFrom),
+            validateAddress(returnAddressTo),
+          ]);
+
+          // returnAddressFrom = customer (recipient role in marketplace).
+          // returnAddressTo   = provider.
+          const retFailedSide = !retToVal.valid && !retToVal.transient
+            ? 'provider'
+            : (!retFromVal.valid && !retFromVal.transient ? 'customer' : null);
+
+          if (retFailedSide) {
+            const failed = retFailedSide === 'provider' ? retToVal : retFromVal;
+            const reason = retFailedSide === 'provider' ? 'invalid_provider_address' : 'invalid_recipient_address';
+            const failedAddress = retFailedSide === 'provider' ? returnAddressTo : returnAddressFrom;
+
+            console.warn(`⚠️ [SHIPPO][RETURN] ${retFailedSide === 'provider' ? 'Provider' : 'Customer'} address failed USPS validation`, {
+              txId,
+              messages: failed.messages,
+              address: {
+                street1: failedAddress.street1,
+                street2: failedAddress.street2,
+                city: failedAddress.city,
+                state: failedAddress.state,
+                zip: failedAddress.zip,
+              },
+            });
+
+            try {
+              await upsertProtectedData(txId, {
+                returnLabelCreationError: {
+                  code: reason,
+                  failedSide: retFailedSide,
+                  validationMessages: failed.messages,
+                  occurredAt: timestamp(),
+                },
+              }, { source: 'shippo' });
+            } catch (persistErr) {
+              console.error('❌ [PERSIST] Failed to save returnLabelCreationError:', persistErr.message);
+            }
+
+            try {
+              await sendTransactionalEmail({
+                to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                subject: `[Sherbrt] Return label blocked — ${reason} (tx ${txId?.slice(0, 8)})`,
+                text: [
+                  `Return-label creation was blocked because USPS rejected the ${retFailedSide} address.`,
+                  ``,
+                  `tx: ${txId}`,
+                  `side: ${retFailedSide}`,
+                  `reason: ${reason}`,
+                  `address: ${failedAddress.street1}${failedAddress.street2 ? ', ' + failedAddress.street2 : ''}, ${failedAddress.city}, ${failedAddress.state} ${failedAddress.zip}`,
+                  ``,
+                  `validation messages:`,
+                  ...failed.messages.map(m => `  - ${m}`),
+                  ``,
+                  `Outbound label was created successfully; only the return label was blocked.`,
+                ].join('\n'),
+              });
+            } catch (emailErr) {
+              console.error('❌ [OPS-ALERT] Failed to send return-label-blocked email:', emailErr.message);
+            }
+
+            const sentinel = new Error(`Return-label validation hard-fail: ${reason}`);
+            sentinel.code = 'shippo_return_address_invalid';
+            throw sentinel;
+          }
+
+          if (retFromVal.valid && retFromVal.messages.length) {
+            console.info('[SHIPPO][RETURN] address_from validated with warnings:', retFromVal.messages);
+          }
+          if (retToVal.valid && retToVal.messages.length) {
+            console.info('[SHIPPO][RETURN] address_to validated with warnings:', retToVal.messages);
+          }
+
+          if (retFromVal.normalized) {
+            returnAddressFrom = { ...returnAddressFrom, ...retFromVal.normalized };
+          }
+          if (retToVal.normalized) {
+            returnAddressTo = { ...returnAddressTo, ...retToVal.normalized };
+          }
+
+          // Defensive: re-apply street2 from raw if the canonical spread omitted it.
+          returnAddressFrom = keepStreet2(rawCustomerAddress, returnAddressFrom);
+          returnAddressTo = keepStreet2(rawProviderAddress, returnAddressTo);
+
+          console.info('[shippo][validated][return] canonical addresses (post-/addresses/?validate=true)', {
+            from: { street1: returnAddressFrom.street1, street2: returnAddressFrom.street2, city: returnAddressFrom.city, state: returnAddressFrom.state, zip: returnAddressFrom.zip },
+            to:   { street1: returnAddressTo.street1,   street2: returnAddressTo.street2,   city: returnAddressTo.city,   state: returnAddressTo.state,   zip: returnAddressTo.zip },
+          });
+        }
+
         // ──────────────────────────────────────────────────────────────────────────────
         // PRE-SHIPPO DIAGNOSTIC LOGGING (RETURN)
         // ──────────────────────────────────────────────────────────────────────────────
@@ -1221,11 +1549,118 @@ async function createShippingLabels({
         }
         
         if (returnRates.length > 0) {
-          // 10.0 PR-1 step 5: return label is always cheapest preferred, no
-          // deadline filter. Outbound's shipByDate is irrelevant to the return
-          // shipment; the old coupling caused the last-resort branch to fire
-          // unconditionally.
-          const returnSelectedRate = pickCheapestPreferredRate(returnRates, CONFIG_PREFERRED_SERVICES);
+          // task #29: same re-rate-at-accept logic as outbound. If a locked
+          // return rate exists (set by initiate-privileged at checkout),
+          // match by provider+servicelevel.token in the FRESH return-shipment
+          // rates and purchase that fresh object_id. Borrower-preauth amount
+          // (lockedRate.amountCents) is preserved; Sherbrt absorbs deltas.
+          // No locked rate → existing pickCheapestPreferredRate fallback.
+          const lockedReturn = protectedData?.return?.lockedRate;
+          let returnSelectedRate;
+
+          if (lockedReturn?.rateObjectId && lockedReturn?.provider && lockedReturn?.servicelevel?.token) {
+            const matched = findMatchingRate(returnRates, lockedReturn);
+
+            if (!matched) {
+              const lockedDesc = `${lockedReturn.provider} ${lockedReturn?.servicelevel?.name || lockedReturn?.servicelevel?.token}`;
+              console.error('❌ [SHIPPO][RETURN][RE-RATE][NO_MATCH] Locked return service-level not present in fresh return rates', {
+                txId,
+                lockedProvider: lockedReturn.provider,
+                lockedToken: lockedReturn?.servicelevel?.token,
+                freshOptions: returnRates.map(r => ({ provider: r.provider, token: r?.servicelevel?.token })),
+              });
+
+              try {
+                await upsertProtectedData(txId, {
+                  returnLabelCreationError: {
+                    code: 'unprintable_at_accept',
+                    failedSide: 'return',
+                    lockedRate: {
+                      provider: lockedReturn.provider,
+                      servicelevel: lockedReturn.servicelevel,
+                      amountCents: lockedReturn.amountCents,
+                    },
+                    freshOptions: returnRates.map(r => ({
+                      provider: r.provider,
+                      token: r?.servicelevel?.token,
+                      amount: r.amount,
+                    })),
+                    occurredAt: timestamp(),
+                  },
+                }, { source: 'shippo' });
+              } catch (persistErr) {
+                console.error('❌ [PERSIST] Failed to save returnLabelCreationError (unprintable_at_accept):', persistErr.message);
+              }
+
+              try {
+                await sendTransactionalEmail({
+                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  subject: `[Sherbrt] Return label blocked — unprintable_at_accept (tx ${txId?.slice(0, 8)})`,
+                  text: [
+                    `Return-label was blocked because the checkout-locked return service-level (${lockedDesc}) is no longer offered for this shipment.`,
+                    ``,
+                    `tx: ${txId}`,
+                    `locked provider: ${lockedReturn.provider}`,
+                    `locked token: ${lockedReturn?.servicelevel?.token}`,
+                    `locked amount (cents): ${lockedReturn.amountCents}`,
+                    ``,
+                    `fresh-shipment options:`,
+                    ...returnRates.map(r => `  - ${r.provider} ${r?.servicelevel?.token} @ $${r.amount}`),
+                    ``,
+                    `Outbound label was created successfully; only the return label was blocked.`,
+                  ].join('\n'),
+                });
+              } catch (emailErr) {
+                console.error('❌ [OPS-ALERT] Failed to send return unprintable_at_accept email:', emailErr.message);
+              }
+
+              const sentinel = new Error('Return-label re-rate hard-fail: unprintable_at_accept');
+              sentinel.code = 'shippo_return_address_invalid';
+              throw sentinel;
+            }
+
+            returnSelectedRate = matched;
+
+            const freshAmountCents = Math.round(parseFloat(matched.amount ?? matched.rate ?? 0) * 100);
+            const lockedAmountCents = Number(lockedReturn.amountCents);
+            const deltaCents = Number.isFinite(lockedAmountCents) ? freshAmountCents - lockedAmountCents : null;
+
+            console.log('[RATE-SELECT][RETURN:LOCKED→FRESH]', {
+              lockedRateId: lockedReturn.rateObjectId,
+              freshRateId: matched.object_id,
+              provider: matched.provider,
+              token: matched?.servicelevel?.token,
+              lockedAmountCents,
+              freshAmountCents,
+              deltaCents,
+            });
+
+            if (deltaCents != null && Math.abs(deltaCents) >= LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS) {
+              try {
+                await sendTransactionalEmail({
+                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  subject: `[Sherbrt] Return re-rate amount delta $${(deltaCents / 100).toFixed(2)} (tx ${txId?.slice(0, 8)})`,
+                  text: [
+                    `Return re-rate at accept produced a price delta of ${deltaCents} cents (>= ${LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS}c threshold).`,
+                    ``,
+                    `tx: ${txId}`,
+                    `provider/token: ${matched.provider} / ${matched?.servicelevel?.token}`,
+                    `locked (preauth): ${lockedAmountCents}c`,
+                    `fresh (purchased): ${freshAmountCents}c`,
+                    `delta: ${deltaCents}c (Sherbrt absorbs)`,
+                  ].join('\n'),
+                });
+              } catch (emailErr) {
+                console.error('❌ [OPS-ALERT] Failed to send return re-rate-delta email:', emailErr.message);
+              }
+            }
+          } else {
+            // 10.0 PR-1 step 5 (preserved): no locked return rate → cheapest
+            // preferred. Outbound's shipByDate is irrelevant to the return
+            // shipment; the old coupling caused the last-resort branch to fire
+            // unconditionally.
+            returnSelectedRate = pickCheapestPreferredRate(returnRates, CONFIG_PREFERRED_SERVICES);
+          }
 
           if (!returnSelectedRate) {
             console.warn('⚠️ [SHIPPO][RETURN] No suitable return rate found');
@@ -1530,13 +1965,23 @@ async function createShippingLabels({
         }  // end if (returnRates.length > 0)
       }  // end if (providerStreet && providerCity...)
     } catch (returnLabelError) {
-      console.error('❌ [SHIPPO] Non-critical step failed', {
-        where: 'return-label-creation',
-        name: returnLabelError?.name,
-        message: returnLabelError?.message,
-        status: returnLabelError?.response?.status,
-        data: safePick(returnLabelError?.response?.data || {}, ['error', 'message', 'code']),
-      });
+      // Sentinel from the return-label address-validation guard above. Outbound
+      // label already succeeded; we deliberately skipped the return label.
+      // Surface as a warn rather than an error so it doesn't trigger error-rate alerts.
+      if (returnLabelError?.code === 'shippo_return_address_invalid') {
+        console.warn('⚠️ [SHIPPO] Return label skipped due to address validation', {
+          where: 'return-label-creation',
+          message: returnLabelError.message,
+        });
+      } else {
+        console.error('❌ [SHIPPO] Non-critical step failed', {
+          where: 'return-label-creation',
+          name: returnLabelError?.name,
+          message: returnLabelError?.message,
+          status: returnLabelError?.response?.status,
+          data: safePick(returnLabelError?.response?.data || {}, ['error', 'message', 'code']),
+        });
+      }
       // Do not rethrow — allow the HTTP handler to finish normally.
     }
 
@@ -2467,6 +2912,8 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
 // the middleware above; attaching as a property leaves that contract intact.
 module.exports.pickCheapestAllowedRate = pickCheapestAllowedRate;
 module.exports.hydrateProviderFieldsFromProfile = hydrateProviderFieldsFromProfile;
+module.exports.findMatchingRate = findMatchingRate;
+module.exports.LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS = LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS;
 
 // Add a top-level handler for unhandled promise rejections to help diagnose Render 'failed service' issues
 process.on('unhandledRejection', (reason, promise) => {
