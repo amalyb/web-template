@@ -356,6 +356,48 @@ same — all predate the rebrand from "Shop on Sherbet" to "Sherbrt".
 Mobile is `~/sherbrt-mobile`. No plan to rename the web side; expect
 the inconsistency to persist.
 
+**Scenarios B + C also passed end-to-end same session (continued
+testing after Cloudflare fix landed).**
+
+- **Scenario B (graceful no-saved-address fallback):** cleared the
+  lender's `lenderShippingAddress` via the new `diag-clear-lender-
+  address.js` script (which writes a `_lenderShippingAddressBackup`
+  sibling field). Borrower submitted fresh request → mobile accept
+  tap → server returned the expected `transition/accept-missing-
+  provider` 422 → mobile rendered the inline coral banner. **Bug
+  surfaced + fixed mid-test on the mobile side:** the action buttons
+  weren't gated on `!needsShippingAddress`, so banner rendered below
+  visible Decline/Accept buttons. One-line fix in
+  `app/lending/[id].tsx`, shipped in mobile commit `a4190aa`. After
+  fix: banner correctly replaced action buttons; settings screen
+  saved address; `useFocusEffect` cleared the prompt state on
+  return; second accept succeeded → tx
+  `69f40260-65b9-4632-be22-f670b8706a3d` transitioned cleanly.
+- **Scenario C (cross-platform sync):** mobile→web verified
+  (lowercase mobile values pre-populated web settings page);
+  web→mobile verified (web-edited values picked up by mobile
+  shipping-address screen on focus refetch). Both directions of
+  parity are working as designed.
+
+**Form UX gap noted for follow-up (task #25 / form polish session).**
+iOS user-level Settings → General → Keyboard → Auto-Capitalization
+overrides React Native's `autoCapitalize` prop (the native keyboard
+owns the behavior; the prop is a hint). The user has this off, so
+typed `san francisco` / `ca` saved lowercase even with proper props
+on the field. Means the matching web `AccountShippingAddressForm`
+likewise can't trust client-side casing — same defense-in-depth
+applies on the web duck save path. Future polish: state dropdown
+(both clients), title-case on blur, `textContentType` props on iOS
+side, US phone formatter shared between forms. Pairs naturally with
+task #25.
+
+**Heads-up for next mobile production build.** Mobile's
+`EXPO_PUBLIC_API_BASE_URL` was changed `www.sherbrt.com` →
+`sherbrt.com` (apex) in local `.env` and `.env.example`. The same
+must land in EAS production config (`eas.json` or project secret)
+before next TestFlight ship — otherwise the 30s-hang bug ships to
+users. Pre-flight check before `eas build --profile production`.
+
 ### April 29, 2026 — Booking-breakdown polish, 1b-SMS copy fix, lender accept architecture audit (Option A in flight)
 
 **Status at end of session:** 6 commits pushed and deployed to `main`. Scenario 1 still in flight (1-SMS yesterday 11:17 AM → 1a-SMS 12:30 PM → 1b-SMS today 9:30 AM all received as expected; lender accept completed via web). Persistent lender shipping address feature (Option A) is mid-implementation: Step 1 SHIPPED (`f37f8acfd`), Steps 2-5 + 4b queued and prompted for CC.
