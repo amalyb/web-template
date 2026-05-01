@@ -1,17 +1,25 @@
 /**
- * PR-2 step 8 (10.0): spread-requirement clobber regression.
+ * PR-2 step 8 (10.0): lockedRate preservation across protectedData writes.
  *
- * Sharetribe's updateMetadata endpoint replaces top-level keys wholesale —
- * nested merging is client-side. Every writer to `outbound` or `return`
- * keys in protectedData MUST spread the existing nested value to preserve
- * siblings. This test locks in that behavior for the new rate-lock fields.
+ * Pre-task-30: Sharetribe's updateMetadata endpoint replaced top-level
+ * protectedData keys wholesale, so every writer to nested `outbound` or
+ * `return` keys had to spread the existing nested value or sibling fields
+ * (like `lockedRate`) would be clobbered.
+ *
+ * Post-task-30 (May 1, 2026): writes route through the
+ * operator-update-pd-<state> v6 transitions. txUpdateProtectedData now
+ * fetches current protectedData via sdk.transactions.show, deep-merges
+ * the patch client-side, and writes the merged object via the transition.
+ * Siblings survive even without client-side spreads — spreads remain
+ * harmless and still recommended.
  */
 
-const mockUpdateMetadata = jest.fn(() => Promise.resolve({ data: { data: {} } }));
+const mockShow = jest.fn();
+const mockTransition = jest.fn(() => Promise.resolve({ data: { data: {} } }));
 
 jest.doMock('sharetribe-flex-integration-sdk', () => ({
   createInstance: jest.fn(() => ({
-    transactions: { updateMetadata: mockUpdateMetadata },
+    transactions: { show: mockShow, transition: mockTransition },
   })),
 }));
 
@@ -20,41 +28,41 @@ process.env.INTEGRATION_CLIENT_SECRET = 'test-client-secret';
 
 const { upsertProtectedData } = require('../lib/txData');
 
-describe('PR-2 step 8: lockedRate clobber regression', () => {
+function mockTxState(protectedData = {}, state = 'state/accepted') {
+  mockShow.mockResolvedValueOnce({
+    data: { data: { attributes: { state, protectedData } } },
+  });
+}
+
+describe('PR-2 step 8: lockedRate preservation', () => {
   beforeEach(() => {
-    mockUpdateMetadata.mockClear();
+    mockShow.mockReset();
+    mockTransition.mockClear();
   });
 
   test('outbound.lockedRate is preserved when writer spreads existing outbound', async () => {
-    // Simulate two sequential writers. First: checkout writes lockedRate.
-    // Second: accept-flow writes shipByDate while spreading the existing
-    // outbound. The updateMetadata merge is client-side, so the second
-    // write MUST spread to preserve lockedRate.
     const lockedRate = {
       rateObjectId: 'rate_abc',
       estimatedDays: 2,
       amountCents: 1250,
     };
 
-    // First writer: persist just lockedRate.
-    await upsertProtectedData('tx-1', {
-      outbound: { lockedRate },
-    });
-    expect(mockUpdateMetadata).toHaveBeenCalledTimes(1);
-    const firstWrite = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
-    expect(firstWrite.outbound).toEqual({ lockedRate });
+    // First writer: persist just lockedRate against an empty tx.
+    mockTxState({});
+    await upsertProtectedData('tx-1', { outbound: { lockedRate } });
+    expect(mockTransition).toHaveBeenCalledTimes(1);
+    const firstCall = mockTransition.mock.calls[0][0];
+    expect(firstCall.transition).toBe('transition/operator-update-pd-accepted');
+    expect(firstCall.params.protectedData.outbound).toEqual({ lockedRate });
 
-    // Second writer: pretend we fetched the tx and now write shipByDate,
-    // spreading existing outbound. This is the correct pattern used by
-    // transition-privileged.js:974 and the NEW initiate-privileged.js rate-lock writer.
+    // Second writer: spread existing outbound and write shipByDate.
     const existingOutbound = { lockedRate };
+    mockTxState({ outbound: existingOutbound });
     await upsertProtectedData('tx-1', {
       outbound: { ...existingOutbound, shipByDate: '2026-04-25T07:00:00.000Z' },
     });
-
-    expect(mockUpdateMetadata).toHaveBeenCalledTimes(2);
-    const secondWrite = mockUpdateMetadata.mock.calls[1][0].metadata.protectedData;
-    // Both lockedRate and shipByDate must survive.
+    expect(mockTransition).toHaveBeenCalledTimes(2);
+    const secondWrite = mockTransition.mock.calls[1][0].params.protectedData;
     expect(secondWrite.outbound.lockedRate).toEqual(lockedRate);
     expect(secondWrite.outbound.shipByDate).toBe('2026-04-25T07:00:00.000Z');
   });
@@ -66,54 +74,53 @@ describe('PR-2 step 8: lockedRate clobber regression', () => {
       amountCents: 1400,
     };
 
-    await upsertProtectedData('tx-2', {
-      return: { lockedRate },
-    });
-    const firstWrite = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
+    mockTxState({});
+    await upsertProtectedData('tx-2', { return: { lockedRate } });
+    const firstWrite = mockTransition.mock.calls[0][0].params.protectedData;
     expect(firstWrite.return).toEqual({ lockedRate });
 
-    // Second writer mimics sendReturnReminders.js:622 (T-1 reminder sent flag).
     const existingReturn = { lockedRate };
+    mockTxState({ return: existingReturn });
     await upsertProtectedData('tx-2', {
       return: { ...existingReturn, tMinus1SentAt: '2026-04-23T17:00:00.000Z' },
     });
-
-    const secondWrite = mockUpdateMetadata.mock.calls[1][0].metadata.protectedData;
+    const secondWrite = mockTransition.mock.calls[1][0].params.protectedData;
     expect(secondWrite.return.lockedRate).toEqual(lockedRate);
     expect(secondWrite.return.tMinus1SentAt).toBe('2026-04-23T17:00:00.000Z');
   });
 
-  test('NEGATIVE: writing without spread clobbers siblings (anti-pattern proof)', async () => {
-    // Locks in the behavior we're guarding against — if a future writer
-    // accidentally drops the spread, this test documents the failure mode.
+  test('post-task-30: server-side read-merge-write preserves siblings even without spread', async () => {
+    // Pre-refactor this would have been a footgun: writing
+    // `{ outbound: { shipByDate } }` without spreading `existingOutbound`
+    // would have wiped lockedRate. Post-refactor, txUpdateProtectedData
+    // deep-merges with the protectedData it just fetched via
+    // sdk.transactions.show, so siblings are preserved automatically.
     const lockedRate = {
       rateObjectId: 'rate_foo',
       estimatedDays: 1,
       amountCents: 900,
     };
-    await upsertProtectedData('tx-3', {
-      outbound: { lockedRate },
-    });
+    mockTxState({});
+    await upsertProtectedData('tx-3', { outbound: { lockedRate } });
 
-    // BAD: write shipByDate WITHOUT spreading existing outbound.
+    // Second write: no spread. Pre-task-30 this clobbered lockedRate.
+    mockTxState({ outbound: { lockedRate } });
     await upsertProtectedData('tx-3', {
       outbound: { shipByDate: '2026-04-25T07:00:00.000Z' },
     });
 
-    const badWrite = mockUpdateMetadata.mock.calls[1][0].metadata.protectedData;
-    expect(badWrite.outbound.shipByDate).toBe('2026-04-25T07:00:00.000Z');
-    // lockedRate is GONE — this is the bug we're guarding against.
-    expect(badWrite.outbound.lockedRate).toBeUndefined();
+    const secondWrite = mockTransition.mock.calls[1][0].params.protectedData;
+    expect(secondWrite.outbound.shipByDate).toBe('2026-04-25T07:00:00.000Z');
+    expect(secondWrite.outbound.lockedRate).toEqual(lockedRate);
   });
 
   test('top-level keys "outbound" and "return" pass through pruneProtectedData whitelist', async () => {
-    // Ensures the whitelist doesn't strip the parent keys (which would
-    // silently drop nested lockedRate).
+    mockTxState({});
     await upsertProtectedData('tx-4', {
       outbound: { lockedRate: { rateObjectId: 'a' } },
       return: { lockedRate: { rateObjectId: 'b' } },
     });
-    const write = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
+    const write = mockTransition.mock.calls[0][0].params.protectedData;
     expect(write.outbound).toBeDefined();
     expect(write.return).toBeDefined();
     expect(write.outbound.lockedRate.rateObjectId).toBe('a');

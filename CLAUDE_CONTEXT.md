@@ -695,7 +695,39 @@ covered. Will be a separate session after Phase 2 stabilizes.
 
 **Commits on `main` today.** `5acbb2e20` (task #29 squash merge), `52e467b07`
 (docs: task #30 framing correction), `c5f2d0b02` (process.edn: 6 new
-transitions). Plus whatever Phase 2 lands as.
+transitions), `42f855f84` (docs: this entry + Pickup Tomorrow refresh).
+Phase 2 commit lands as a squash from `claude/musing-sanderson-18e7fc`.
+
+**Phase 2 SHIPPED (May 1, 2026 — server refactor).**
+`txUpdateProtectedData` no longer calls `sdk.transactions.updateMetadata`;
+instead it does `sdk.transactions.show` → state→transition lookup →
+client-side `deepMerge` with existing `protectedData` →
+`pruneProtectedData` → `sdk.transactions.transition({ params: { protectedData } })`.
+Hard-fails on unsupported states (preauthorized, terminal, etc.) with
+ops-alert email + `{ success: false, reason: 'unsupported_state' }`
+envelope — explicitly NO soft fallback to the broken path. 409 conflict
+on the write is retried once with a fresh `show` re-fetch; repeated 409
+throws and fires an ops alert. No feature flag — rollback is Render
+deploy revert. Files changed: `server/api-util/integrationSdk.js`
+(rewrite `txUpdateProtectedData`, add `PD_TRANSITION_BY_STATE`),
+`server/lib/txData.js` (wrapper passes envelope through),
+`server/api-util/integrationSdk.lockedRate.test.js`,
+`server/scripts/sendShipByReminders.persist.test.js`,
+`server/scripts/sendReturnReminders.persist.test.js`,
+`server/webhooks/shippoTracking.upsert.test.js` (mock `show` +
+`transition` instead of `updateMetadata`), and new
+`server/api-util/integrationSdk.transition.test.js` (the test gap that
+hid the original bug — it now asserts `params.protectedData` shape and
+covers unsupported_state + 409-retry + whitelist + deep-merge cases).
+28 directly-affected tests pass; 4 pre-existing failures in
+`shipping-estimates.test.js` are unrelated (`getZips`/`buildShippingLine`
+not exported from `lineItems`). Runtime verification deferred to the
+first organic tx accept post-deploy: `scripts/diag-task-30-transition.js`
+will confirm the new transition routes data to
+`tx.attributes.protectedData.X` (not `metadata.protectedData.X`).
+Phase 3 (one-shot migration script to recover orphaned data from
+`tx.attributes.metadata.protectedData.*` on in-flight transactions)
+ships separately.
 
 ### April 30, 2026 — Mobile accept verified end-to-end + Cloudflare 307 gotcha
 
