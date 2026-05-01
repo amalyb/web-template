@@ -642,19 +642,13 @@ accept post-Phase-2-deploy verify Phase 1 + Phase 2 together. Same pattern
 as task #29 (where the live-Shippo probe proved the fix without burning a
 Stripe charge on a synthetic test transaction).
 
-**Phase 2 in progress with CC.** Brief delivered to CC: refactor
-`server/api-util/integrationSdk.js:txUpdateProtectedData` to fetch tx →
-deep-merge patch → call right `operator-update-pd-<state>` transition →
-hard-fail on unsupported state → 409-retry once. Plus update 4 existing
-test files that mock `transactions.updateMetadata`
-(`integrationSdk.lockedRate.test.js`,
-`sendShipByReminders.persist.test.js`,
-`sendReturnReminders.persist.test.js`,
-`shippoTracking.upsert.test.js` — CI breaks otherwise per CC audit), and
-add a new test file asserting data lands at `tx.attributes.protectedData.X`
-via `tx.show()` after each write (the test gap that hid the original bug).
-No feature flag. CC writes one commit, user reviews diff before merge.
-Estimated 2-3 hours of CC time.
+**Phase 2 SHIPPED** (commit `19f27cded` on `main`). Detailed Phase 2 ship
+report appears below this entry's diag-scripts section. tl;dr:
+`txUpdateProtectedData` now writes via `transactions.show` → deep-merge →
+state→transition lookup → `transactions.transition` (the transition path
+that actually persists to `tx.attributes.protectedData`). Hard-fail on
+unsupported state, 409-retry once, no feature flag, 28 directly-affected
+tests pass.
 
 **Phase 3 deferred.** Migration script (`scripts/migrate-task-30-data.js`)
 to copy data from `tx.attributes.metadata.protectedData.*` to
@@ -939,11 +933,14 @@ Mid-session, attempted Day 9's mobile lender accept via Expo Go on a fresh `prea
   CC's Phase 0 audit caveats all folded in (no `:privileged?` flag, no
   feature flag, hard-fail on unsupported state, 6 not 5 — `cancelled`
   added per CC catch).
-- 🟡 **Task #30 Phase 2 in progress with CC.** Code refactor of
-  `txUpdateProtectedData` to use the new transitions instead of
-  `transactions.updateMetadata`. Includes updates to 4 existing test files
-  + a new test asserting data lands at `tx.attributes.protectedData.X` via
-  `tx.show()`. CC report expected; user reviews diff before merging.
+- ✅ **Task #30 Phase 2 SHIPPED.** Squash-merged commit `19f27cded` on
+  `main`. `txUpdateProtectedData` rewritten to use the new operator-
+  update-pd-<state> transitions. 28 directly-affected tests pass. Render
+  auto-deploy in progress at end of session. Runtime verification deferred
+  to first organic tx accept post-deploy via `scripts/probe-task-30.js`
+  and Render log check (look for `[INT][PD] transition operator-update-pd-
+  <state>` line and absence of the `[VERIFY][ACCEPT] Missing providerZip`
+  warning).
 - ⏳ **Task #30 Phase 3 deferred.** Migration script
   (`scripts/migrate-task-30-data.js`) to copy data from
   `metadata.protectedData.*` → `protectedData.*` for in-flight txs. Runs
