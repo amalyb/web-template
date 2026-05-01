@@ -287,6 +287,75 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### April 30, 2026 — Mobile accept verified end-to-end + Cloudflare 307 gotcha
+
+**Status at end of session:** Option A's Scenario A (lender WITH saved
+address → mobile accept) verified end-to-end in production. Mobile tx
+`69f3cbd6-e256-420b-bc4c-1ba60deaf710` accepted at 17:22 PT today on
+mobile, confirmed via integration SDK. Diagnostic code cleaned up.
+
+**The bug.** Mobile accept tap → 20–30s spinner → app crash. Backend
+showed no `transition/accept` attempt; the request never reached the
+server. After adding diagnostic logging + a 15s `AbortController`
+timeout in mobile `lib/api.ts`, a `curl` from the host Mac surfaced:
+
+```
+$ curl -i -X POST https://www.sherbrt.com/api/transition-privileged ...
+HTTP/2 307
+location: https://sherbrt.com/api/transition-privileged
+server: cloudflare
+```
+
+Cloudflare 307-redirects `www.sherbrt.com` → `sherbrt.com` (apex).
+Browsers handle this transparently for POST. **iOS URLSession does NOT
+re-stream a POST body across a 307 redirect when the request has a
+custom Cookie header + non-standard content type
+(`application/transit+json`).** The redirect arrives, URLSession plans
+to follow it, then hangs indefinitely instead of re-issuing.
+
+**Fix.** Mobile `EXPO_PUBLIC_API_BASE_URL` changed from
+`https://www.sherbrt.com` to `https://sherbrt.com`. Documented in
+mobile `.env.example`. No web-side changes needed; this is purely a
+mobile-client config.
+
+**Side improvements bundled in (mobile only).**
+
+- **Cookie URL-encoding** in `lib/api.ts`. Web's `js-cookie`
+  URL-encodes the JSON token on write; mobile was sending raw JSON in
+  the Cookie header. RFC 6265 disallows unescaped `{`, `"`, `,`, `:`
+  in cookie values. Now URL-encoded to match. Did NOT resolve the
+  hang on its own (Cloudflare redirect was the actual cause), but
+  it's still the correct behavior.
+- **15s `AbortController` timeout** on the privileged-transition
+  fetch. iOS URLSession defaults to 60s — bad UX. Now surfaces
+  `code='timeout'` to the caller. Defensive — kept in.
+
+**Architectural learnings.**
+
+- **Cloudflare-managed apex/www redirects interact badly with iOS POST
+  bodies.** Always point native iOS clients at the canonical
+  redirect-free host. Web JS is forgiving of www→apex redirects;
+  native HTTP libraries are not.
+- **Indefinite hang ≠ server-side processing problem.** Server hangs
+  for processing reasons usually surface as 500/502/504 eventually.
+  Pure 30s+ silence with no response = the request never made it to
+  the application layer (typically a redirect, TLS handshake, or
+  proxy issue).
+- **Sharetribe Console "Last used" timestamp on apps.** Useful sanity
+  check that integration creds are working — if "Last used" updates
+  after a script run, auth handshake succeeded, and any 4xx on
+  subsequent calls is API-layer, not auth-layer. Conversely, if
+  "Last used" never updates, creds are wrong (or `dotenv` is
+  including an inline comment in the value — happened today; same
+  4xx symptom).
+
+**Operator-naming note (recorded for context).** The Render web
+service is named `shop-on-sherbet`, the local repo is
+`~/shop-on-sherbet-cursor`, and Sharetribe's web app is named the
+same — all predate the rebrand from "Shop on Sherbet" to "Sherbrt".
+Mobile is `~/sherbrt-mobile`. No plan to rename the web side; expect
+the inconsistency to persist.
+
 ### April 29, 2026 — Booking-breakdown polish, 1b-SMS copy fix, lender accept architecture audit (Option A in flight)
 
 **Status at end of session:** 6 commits pushed and deployed to `main`. Scenario 1 still in flight (1-SMS yesterday 11:17 AM → 1a-SMS 12:30 PM → 1b-SMS today 9:30 AM all received as expected; lender accept completed via web). Persistent lender shipping address feature (Option A) is mid-implementation: Step 1 SHIPPED (`f37f8acfd`), Steps 2-5 + 4b queued and prompted for CC.
