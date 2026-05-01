@@ -35,25 +35,21 @@ async function fetchTx(txId, options = {}) {
 
 /**
  * Update transaction protectedData using Integration SDK.
- * 
- * The Integration SDK's updateMetadata endpoint handles merging server-side,
- * so we just pass the patch directly without client-side read-modify-write.
- * 
+ *
+ * Routes through the v6 operator-update-pd-<state> transitions in
+ * txUpdateProtectedData (read-modify-write client-side, then the
+ * transition replaces tx.attributes.protectedData wholesale).
+ *
  * @param {string} txId - Transaction UUID (plain string)
  * @param {object} patch - Partial protectedData to merge (non-destructive)
  * @param {object} options - Optional: { source: 'shippo|accept|reminder' }
- * @returns {Promise<object>} - Transaction data from response
+ * @returns {Promise<object>} - Envelope: { success: true, data, transition }
+ *   on happy path; { success: false, reason, state, error } on unsupported
+ *   state. Throws on network errors, 5xx, or repeated 409.
  */
 async function upsertProtectedData(txId, patch, options = {}) {
-  // Extract source for logging (ignore legacy retry options)
   const { source } = options;
-  
-  // Use the simple helper from integrationSdk.js
-  // Returns transaction data directly (not wrapped in { success, data, error })
-  const data = await txUpdateProtectedData(txId, patch, { source });
-  
-  // Return success wrapper for backwards compatibility with existing code
-  return { success: true, data };
+  return await txUpdateProtectedData(txId, patch, { source });
 }
 
 /**

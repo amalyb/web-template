@@ -7,9 +7,10 @@
  * the cross-process dedupe flags (tMinus1SentAt, todayReminderSentAt,
  * returnSms.dueTodayLastSentLocalDate) never persisted.
  *
- * Migrated to upsertProtectedData() from server/lib/txData.js. The
- * whitelist in server/api-util/integrationSdk.js must allow both
- * `return` and `returnSms` through so the patch lands on the tx.
+ * Migrated to upsertProtectedData() from server/lib/txData.js. Post-task-30
+ * (May 1, 2026), upsertProtectedData routes through the v6
+ * operator-update-pd-<state> transitions instead of updateMetadata, so
+ * persistence actually lands at tx.attributes.protectedData.<key>.
  */
 
 const fs = require('fs');
@@ -39,12 +40,13 @@ describe('H2 — upsertProtectedData migration', () => {
 });
 
 describe('H2 — return + returnSms survive the whitelist prune', () => {
-  const mockUpdateMetadata = jest.fn(() => Promise.resolve({ data: { data: {} } }));
+  const mockShow = jest.fn();
+  const mockTransition = jest.fn(() => Promise.resolve({ data: { data: {} } }));
 
   beforeAll(() => {
     jest.doMock('sharetribe-flex-integration-sdk', () => ({
       createInstance: jest.fn(() => ({
-        transactions: { updateMetadata: mockUpdateMetadata },
+        transactions: { show: mockShow, transition: mockTransition },
       })),
     }));
     process.env.INTEGRATION_CLIENT_ID = 'test-client-id';
@@ -56,11 +58,19 @@ describe('H2 — return + returnSms survive the whitelist prune', () => {
   });
 
   beforeEach(() => {
-    mockUpdateMetadata.mockClear();
+    mockShow.mockReset();
+    mockTransition.mockClear();
   });
 
-  test('T-1 patch reaches updateMetadata with return.tMinus1SentAt intact', async () => {
+  test('T-1 patch reaches the operator-update-pd transition with return.tMinus1SentAt intact', async () => {
     const { upsertProtectedData } = require('../lib/txData');
+
+    // Return reminders fire while the tx sits in state/accepted (between
+    // book and delivery). Mock show accordingly.
+    mockShow.mockResolvedValueOnce({
+      data: { data: { attributes: { state: 'state/accepted', protectedData: {} } } },
+    });
+
     await upsertProtectedData(
       'tx-h2',
       {
@@ -69,13 +79,20 @@ describe('H2 — return + returnSms survive the whitelist prune', () => {
       { source: 'return-reminders' }
     );
 
-    expect(mockUpdateMetadata).toHaveBeenCalledTimes(1);
-    const sentPd = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
+    expect(mockTransition).toHaveBeenCalledTimes(1);
+    const call = mockTransition.mock.calls[0][0];
+    expect(call.transition).toBe('transition/operator-update-pd-accepted');
+    const sentPd = call.params.protectedData;
     expect(sentPd.return).toEqual({ tMinus1SentAt: '2026-04-21T17:00:00.000Z' });
   });
 
-  test('TODAY patch reaches updateMetadata with return + returnSms intact', async () => {
+  test('TODAY patch reaches the operator-update-pd transition with return + returnSms intact', async () => {
     const { upsertProtectedData } = require('../lib/txData');
+
+    mockShow.mockResolvedValueOnce({
+      data: { data: { attributes: { state: 'state/accepted', protectedData: {} } } },
+    });
+
     await upsertProtectedData(
       'tx-h2',
       {
@@ -85,8 +102,8 @@ describe('H2 — return + returnSms survive the whitelist prune', () => {
       { source: 'return-reminders' }
     );
 
-    expect(mockUpdateMetadata).toHaveBeenCalledTimes(1);
-    const sentPd = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
+    expect(mockTransition).toHaveBeenCalledTimes(1);
+    const sentPd = mockTransition.mock.calls[0][0].params.protectedData;
     expect(sentPd.return).toEqual({ todayReminderSentAt: '2026-04-21T17:00:00.000Z' });
     expect(sentPd.returnSms).toEqual({ dueTodayLastSentLocalDate: '2026-04-21' });
   });

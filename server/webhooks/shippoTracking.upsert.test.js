@@ -10,13 +10,18 @@
  * Tests here lock down the protectedData shape that now lands in Flex
  * after the upsertProtectedData migration — verifying the whitelist does
  * NOT prune the three critical keys the webhook needs to persist.
+ *
+ * Post-task-30 (May 1, 2026), upsertProtectedData routes through the v6
+ * operator-update-pd-<state> transitions instead of updateMetadata, so
+ * persistence actually lands at tx.attributes.protectedData.<key>.
  */
 
-const mockUpdateMetadata = jest.fn(() => Promise.resolve({ data: { data: {} } }));
+const mockShow = jest.fn();
+const mockTransition = jest.fn(() => Promise.resolve({ data: { data: {} } }));
 
 jest.mock('sharetribe-flex-integration-sdk', () => ({
   createInstance: jest.fn(() => ({
-    transactions: { updateMetadata: mockUpdateMetadata },
+    transactions: { show: mockShow, transition: mockTransition },
   })),
 }));
 
@@ -28,7 +33,8 @@ const { upsertProtectedData } = require('../lib/txData');
 
 describe('B2 — webhook protectedData upsert shape', () => {
   beforeEach(() => {
-    mockUpdateMetadata.mockClear();
+    mockShow.mockReset();
+    mockTransition.mockClear();
   });
 
   test('first-scan patch persists outbound.firstScanAt, shippingNotification.firstScan, lastTrackingStatus', async () => {
@@ -48,12 +54,18 @@ describe('B2 — webhook protectedData upsert shape', () => {
       },
     };
 
+    // Webhook fires while tx is in state/accepted (post-accept, pre-delivered).
+    mockShow.mockResolvedValueOnce({
+      data: { data: { attributes: { state: 'state/accepted', protectedData: {} } } },
+    });
+
     await upsertProtectedData('tx-123', patch, { source: 'webhook' });
 
-    expect(mockUpdateMetadata).toHaveBeenCalledTimes(1);
-    const sentBody = mockUpdateMetadata.mock.calls[0][0];
+    expect(mockTransition).toHaveBeenCalledTimes(1);
+    const sentBody = mockTransition.mock.calls[0][0];
     expect(sentBody.id).toBe('tx-123');
-    const sentPd = sentBody.metadata.protectedData;
+    expect(sentBody.transition).toBe('transition/operator-update-pd-accepted');
+    const sentPd = sentBody.params.protectedData;
 
     // The three critical keys from B2 must all survive the whitelist prune.
     expect(sentPd.outbound).toEqual(patch.outbound);
@@ -75,10 +87,16 @@ describe('B2 — webhook protectedData upsert shape', () => {
       },
     };
 
+    // Delivered tracking event lands while tx is in state/accepted; the
+    // mark-received transition (-> state/delivered) runs separately.
+    mockShow.mockResolvedValueOnce({
+      data: { data: { attributes: { state: 'state/accepted', protectedData: {} } } },
+    });
+
     await upsertProtectedData('tx-456', patch, { source: 'webhook' });
 
-    expect(mockUpdateMetadata).toHaveBeenCalledTimes(1);
-    const sentPd = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
+    expect(mockTransition).toHaveBeenCalledTimes(1);
+    const sentPd = mockTransition.mock.calls[0][0].params.protectedData;
     expect(sentPd.shippingNotification.delivered).toEqual({
       sent: true,
       sentAt: '2026-04-21T14:00:00.000Z',
@@ -87,6 +105,10 @@ describe('B2 — webhook protectedData upsert shape', () => {
   });
 
   test('unknown top-level keys are still pruned (whitelist remains strict)', async () => {
+    mockShow.mockResolvedValueOnce({
+      data: { data: { attributes: { state: 'state/accepted', protectedData: {} } } },
+    });
+
     await upsertProtectedData(
       'tx-789',
       {
@@ -96,7 +118,7 @@ describe('B2 — webhook protectedData upsert shape', () => {
       { source: 'webhook' }
     );
 
-    const sentPd = mockUpdateMetadata.mock.calls[0][0].metadata.protectedData;
+    const sentPd = mockTransition.mock.calls[0][0].params.protectedData;
     expect(sentPd.outbound).toBeDefined();
     expect(sentPd.totallyUnknownKey).toBeUndefined();
   });
