@@ -15,6 +15,7 @@ const loginAs = require('./api/login-as');
 const transactionLineItems = require('./api/transaction-line-items');
 const initiatePrivileged = require('./api/initiate-privileged');
 const transitionPrivileged = require('./api/transition-privileged');
+const stripeCustomerSession = require('./api/stripe-customer-session');
 const shippoWebhook = require('./webhooks/shippoTracking');
 const qrRouter = require('./api/qr');
 const smsStatus = require('./api/twilio/sms-status');
@@ -60,6 +61,12 @@ router.get('/login-as', loginAs);
 router.post('/transaction-line-items', transactionLineItems);
 router.post('/initiate-privileged', initiatePrivileged);
 router.post('/transition-privileged', transitionPrivileged);
+
+// Day 12 Phase E — saved payment methods on mobile. GET so it's
+// idempotent and uncacheable (auth is via cookie, response is a
+// short-lived ephemeral key). Mobile fetches before opening
+// PaymentSheet to wire up saved-card display.
+router.get('/stripe-customer-session', stripeCustomerSession);
 
 // Shippo webhook endpoint
 router.use('/webhooks', shippoWebhook);
