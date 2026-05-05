@@ -171,7 +171,7 @@ All SMS links go through the shortener to avoid Twilio 30019 carrier filtering:
 **File:** `server/util/getFlexSdk.js`
 
 Two SDK modes, used together in most scripts:
-1. **Trusted Marketplace SDK** — `REACT_APP_SHARETRIBE_SDK_CLIENT_ID` + `SHARETRIBE_SDK_CLIENT_SECRET` (via `exchangeToken()`). **Preferred for QUERYING transactions** because it returns resource references in `included` as a `Map` keyed `${type}/${id}` and supports richer sparse-field projections. See `getScriptSdk()` pattern in `sendShipByReminders.js` + `sendAutoCancelUnshipped.js`.
+1. **Trusted Marketplace SDK** — `REACT_APP_SHARETRIBE_SDK_CLIENT_ID` + `SHARETRIBE_SDK_CLIENT_SECRET` (via `exchangeToken()`). **Preferred for QUERYING transactions** because it returns resource references in `included` as a `Map` keyed `${type}/${id}` and supports richer sparse-field projections. See `getScriptSdk()` pattern in `sendShippingReminders.js` + `sendAutoCancelUnshipped.js`.
 2. **Integration SDK** — `INTEGRATION_CLIENT_ID` + `INTEGRATION_CLIENT_SECRET` (admin-level). **Required for calling operator-actor transitions** (`sdk.transactions.transition()`). Does NOT expose `sdk.transactions.update` — writes to `protectedData` must go through `upsertProtectedData()` in `server/lib/txData.js` or via Redis-backed idempotency keys.
 
 Most daemons mix both: trusted SDK for the accepted-tx query, Integration SDK for the privileged transition call.
@@ -244,10 +244,6 @@ intended-config documentation; **live config edits must happen in the Render
 dashboard**, not by editing `render.yaml`. The three Worker services
 (`return-reminders`, `overdue-reminders`, and the web service `shop-on-sherbet`)
 ARE managed via `render.yaml`.
-
-**Legacy:** `sendShipByReminders.js` lives in the repo but is intentionally
-NOT deployed — its functionality was superseded by `sendShippingReminders.js`.
-Safe to delete in a future cleanup PR.
 
 ## Key Environment Variables
 
@@ -460,10 +456,11 @@ write:
   `tx.protectedData.shippingNotification.firstScan.sent` — all written
   via `upsertProtectedData`. Webhook payloads from Shippo could match
   the wrong tx, miss first-scan SMS, or fail idempotency dedupe.
-- **Ship-by SMS reminders** (`scripts/sendShipByReminders.js`): reads
-  `tx.protectedData.outbound.shipByDate` and
-  `tx.protectedData.outbound.firstScanAt`. Reminders may fire for
-  packages already scanned, or skip packages that need them.
+- **Lender ship-by SMS reminders** (`scripts/sendShippingReminders.js`):
+  reads `tx.protectedData.outbound.shipByDate` and uses
+  `hasOutboundScan(tx)` to skip already-scanned packages. (Replaced the
+  legacy `sendShipByReminders.js`, which was deleted alongside the Phase D
+  task #31 phone-field deprecation.)
 - **Return-T-minus-1 reminders** (`scripts/sendReturnReminders.js`):
   reads `tx.protectedData.return.tMinus1SentAt` for dedupe. Could
   re-fire reminders.
@@ -590,6 +587,59 @@ session.
   and `metadata.protectedData` paths.
 - This entry, for blast-radius reference.
 
+### May 5, 2026 — Phase D task #31: server-side `protectedData.phone` deprecation + per-booking phone precedence
+
+**Background.** By Phase C the user profile had four phone storage slots:
+`protectedData.phoneNumber` (canonical), `protectedData.phone` (legacy
+top-level lender), `protectedData.lenderShippingAddress.phoneNumber`,
+`protectedData.customerShippingAddress.phoneNumber`. Mobile's Phase D dual-
+write kept all four aligned, but the legacy slot still drove production SMS
+routing. Web audit overturned the original premise: the named SLA-critical
+reader (`sendShipByReminders.js:159`) was already dead code (replaced by
+`sendShippingReminders.js`, not deployed since at least April), so the
+"mobile-first risks lost SMS" concern dissolved. Other readers (return-day
+cron, Shippo webhook handlers) had the legacy slot in their fallback chain.
+
+**Web PR scope (this entry):**
+
+1. Cron readers + webhook prefer canonical `phoneNumber` over legacy `phone`:
+   - `server/scripts/sendShippingReminders.js` (provider phone)
+   - `server/scripts/sendReturnReminders.js` (customer profile fallback)
+   - `server/webhooks/shippoTracking.js` (`getBorrowerPhone`, `getLenderPhone`)
+2. Per-booking phone precedence — booking-specific phone (set at checkout
+   for borrower or at accept for lender) wins over the user's account phone
+   for that booking's SMS dispatch. `tx.protectedData.{customerPhone|providerPhone}`
+   first, then `profile.phoneNumber`, then `profile.phone` (soak fallback),
+   then `tx.metadata.{customerPhone|providerPhone}`. Per-booking values do
+   NOT overwrite the user's account number — supports gifting, work phones,
+   different recipients. Same precedence applied uniformly across all three
+   dispatch paths above.
+3. Web settings page (`AccountShippingAddressPage.duck.js`) dropped its
+   write-through to legacy `protectedData.phone`. Test updated from "writes
+   both, equal" to "writes phoneNumber only, no legacy phone slot".
+4. Dead-code deletion: `sendShipByReminders.js` + `.persist.test.js` removed
+   per render.yaml notes ("Safe to delete in a future cleanup PR" — done).
+   `render.yaml` dead-code comment block removed. CLAUDE_CONTEXT.md sweeps:
+   architecture mentions past-tensed (174, 463), Phase D Option-A history
+   updated (932, 942), open-items list trimmed (1199), bug-fix history
+   past-tensed (1313, 1438), `withinSendWindow` caller-count footnote
+   trimmed (1404).
+5. New unit test file `server/webhooks/shippoTracking.phone.test.js`
+   covering the precedence rules end-to-end.
+
+**Mobile follow-up.** `lib/account.ts` still writes to legacy `phone` in
+`syncPhoneNumber` and `updateLenderShippingAddress`. Slated for a separate
+mobile PR after a 24h soak window confirms web SMS volume is unchanged
+(Twilio logs + per-cron `[shipping-reminder]` / `[RETURN-REMINDER]` lines).
+shippoTracking webhook will be exercised proactively against staging during
+the soak window via a replayed Shippo webhook event, since organic delivery
+events may be sparse.
+
+**No backfill performed.** Phone is a required signup field on web's
+`SignupForm.js`, so all profiles are expected to have `phoneNumber`. If
+post-deploy logs surface any user with `phone` set + `phoneNumber` missing,
+fix case-by-case.
+
 ### May 1, 2026 — Task #30 Phase 1 shipped (Sharetribe v6 + 6 operator-update-pd transitions); Phase 2 with CC
 
 **Phase 1 ship details.** Marketplace process `default-booking` v6 published
@@ -706,7 +756,6 @@ deploy revert. Files changed: `server/api-util/integrationSdk.js`
 (rewrite `txUpdateProtectedData`, add `PD_TRANSITION_BY_STATE`),
 `server/lib/txData.js` (wrapper passes envelope through),
 `server/api-util/integrationSdk.lockedRate.test.js`,
-`server/scripts/sendShipByReminders.persist.test.js`,
 `server/scripts/sendReturnReminders.persist.test.js`,
 `server/webhooks/shippoTracking.upsert.test.js` (mock `show` +
 `transition` instead of `updateMetadata`), and new
@@ -722,6 +771,87 @@ will confirm the new transition routes data to
 Phase 3 (one-shot migration script to recover orphaned data from
 `tx.attributes.metadata.protectedData.*` on in-flight transactions)
 ships separately.
+
+### May 1, 2026 (evening) — Task #30 Phase 2 RUNTIME-VERIFIED on first organic v6 accept
+
+**Verified.** First organic v6-process tx
+(`69f51671-7b35-4b1a-87e5-71f934856568`) accepted from mobile (Expo
+iOS via `host: sherbrt.com` apex) at 21:14 UTC. Render web-service logs
+and `scripts/probe-task-30.js` confirm Phase 1 + Phase 2 both working
+as designed.
+
+**Render log signals (all GREEN):**
+
+- `[INT][PD] transition` with `transition: 'transition/operator-update-pd-accepted'`
+  and `state: 'state/accepted'` fired 4 times during the accept (outbound
+  label persist, return label persist, `returnNotification.labelCreated`,
+  `shippingNotification.labelCreated`).
+- `[INT][PD][OK]` followed every one. All 4 writes used `attempt: 1` —
+  no 409 retries, no concurrency races.
+- The pre-existing `[VERIFY][ACCEPT] Missing providerZip after upsert!`
+  cosmetic-noise warning (the original task #30 symptom) did NOT appear.
+  Extinct on the new write path.
+- No `[INT][PD][UNSUPPORTED-STATE]`, no `[INT][PD][409]`, no
+  `[INT][PD][ERR]`. Clean.
+
+**`probe-task-30.js` proof (the definitive test):**
+
+```
+[probe-30] tx.attributes.protectedData.shipByISO:
+  "__task30_probe_aa5be777-6294-4287-8994-7bbde4a2e521"
+[probe-30] tx.attributes.metadata.protectedData.shipByISO: undefined
+```
+
+Inverse of yesterday's readings against `69f3cbd6` and `69f27547` (v5
+txs on broken code put data at `metadata.protectedData.X`, undefined at
+`protectedData.X`). Phase 2 is real, deployed, and verified on a real
+organic mobile-originated transaction.
+
+**Bonus signals verified in the same accept:**
+
+- **Task #29 working end-to-end at scale.** Outbound + return USPS
+  labels both printed via Shippo (tracking `9300120845500002315978`
+  outbound, `9300120845500002316012` return). Address validation
+  produced canonical `1795 Chestnut St Apt 7 / 94123-2935` and
+  `1745 Pacific Ave Apt 202 / 94109-2420`. Re-rate logic worked:
+  `[RATE-SELECT][RETURN:LOCKED→FRESH]` swapped lockedRate `7f7de4d6`
+  for freshRate `e94f32e6`, both `provider=USPS,
+  token=usps_ground_advantage`, delta -50¢ (carrier neutrality
+  preserved).
+- **Day 12 Cloudflare 307 fix holding.** Mobile request `host: sherbrt.com`
+  (apex), iOS reached server cleanly with `transition/accept` body intact.
+- **v6-pinned tx exercised v6 transitions cleanly** — confirms
+  Sharetribe process publish and `default-booking/release-1` alias move
+  to v6 both succeeded.
+
+**Two unrelated issues surfaced in the same logs — both backlog, gated
+on post-mobile-launch (see "Pickup Tomorrow"):**
+
+1. **Task #32 — Transactional email provider returning `Unauthorized`.**
+   Both `lenderOutboundLabelEmail` and the return-label email failed with
+   `error: 'Unauthorized', response: { errors: [...] }`. Likely
+   rotated/expired API key (SendGrid/Postmark/etc.). SMS (Twilio)
+   unaffected. The `outboundLabelUrl` / `returnLabelUrl` did persist to
+   `tx.protectedData` correctly, so a re-send mechanism could recover the
+   missed emails later. Investigate post-mobile-launch.
+2. **Task #33 — Twilio SMS-status-callback URL has duplicated query
+   params** (`?tag=...&tag=...&txId=...&txId=...`). Cosmetic — webhook
+   still 200s — but the query-string assembly logic in the callback URL
+   builder is double-appending. Fix post-mobile-launch.
+
+**Probe script cosmetic followup.** `scripts/probe-task-30.js`'s
+diagnosis branch reads `=> Task #30 is NOT a bug. Data is going to the
+correct field. => Either Sharetribe changed semantics, OR our analysis
+was wrong.` That branch was written pre-Phase-2-deploy; on the fixed
+code it's the *expected* outcome (data lands at `protectedData` because
+the new transition path puts it there). Worth a one-line patch to make
+the probe distinguish "pre-Phase-2" from "post-Phase-2" semantically.
+Cosmetic, not blocking. Same backlog batch as #32/#33.
+
+**Status overall.** Tasks #29 and #30 (Phase 1 + Phase 2) are now fully
+shipped + runtime-verified. Phase 3 (migration script for orphaned
+in-flight `metadata.protectedData.*` data) remains deferred. Mobile
+launch path can now proceed.
 
 ### April 30, 2026 — Mobile accept verified end-to-end + Cloudflare 307 gotcha
 
@@ -848,7 +978,7 @@ users. Pre-flight check before `eas build --profile production`.
 - (squashed into next commit) — `fix(TransactionPanel): show proper brand display label, not the slug`. Brand was rendering as the raw `publicData.brand` value (e.g. `helsa`) instead of the configured display label (`Helsa`). Extracted the inline `getBrandLabel` from `ListingCard.js:129-139` into a reusable `getListingFieldLabel(config, fieldKey, optionKey)` helper in `src/util/fieldHelpers.js` — generic version, falls back to raw option key, returns `null` for empty input, never throws. Used in `TransactionPanel.js`. `ListingCard.js` not migrated yet (deferred to keep diff small).
 - `d8315bf14` — `copy(1b-SMS): drop literal '2 hours' claim — reframe around payout`. The 22h final-warning SMS used to read "expires in 2 hours" but actual time-to-expire at the first cron tick is ~1h47m and shrinks on later ticks (phase window `[22h, 24h)`, cron `*/15`). New copy: `Sherbrt 🍧: ⚠️ Final call — your $X.XX payout is about to expire. Accept NAME's borrow request now: URL` — no time mention, urgency carried by "Final call" + "about to expire". `sendLenderRequestReminders.js:411` + matching test in `sendLenderRequestReminders.phases.test.js:111-114` updated to assert new phrase + explicitly forbid regression to "expires in 2 hours" string. 44 tests still passing.
 - `9c8267e82` — `style(TransactionPanel): bump brand subtitle from 13px to 16px`. Brand line was reading as fine-print at 13px; bumped to 16px (explicit `font-size` + `line-height: 22px`, kept medium weight + grey700). Sits between 13px fine-print and the 21px H4 title weight without competing.
-- `f37f8acfd` — `feat(account): add AccountShippingAddressPage settings page` (**Step 1 of Option A** — see below for full plan). 11 files / 766 insertions. New `/account/shipping-address` route, settings page modeled on `ContactDetailsPage`, six-field form (street, street2, city, state, zipCode, phoneNumber), saves nested object at `currentUser.attributes.profile.protectedData.lenderShippingAddress`, phone write-through to legacy `protectedData.phone` for `sendShipByReminders.js:159` compatibility. 7 tests passing including the regression test for shallow-merge behavior (cleared `streetAddress2` MUST be sent as `''` literal, not omitted) and the phone write-through equality test.
+- `f37f8acfd` — `feat(account): add AccountShippingAddressPage settings page` (**Step 1 of Option A** — see below for full plan). 11 files / 766 insertions. New `/account/shipping-address` route, settings page modeled on `ContactDetailsPage`, six-field form (street, street2, city, state, zipCode, phoneNumber), saves nested object at `currentUser.attributes.profile.protectedData.lenderShippingAddress`. Originally also wrote `protectedData.phone` for legacy reader compatibility; that write-through was removed alongside the Phase D task #31 phone-field deprecation (see entry below). 7 tests passing including the regression test for shallow-merge behavior (cleared `streetAddress2` MUST be sent as `''` literal, not omitted).
 
 **Mobile accept blocker discovered + Option A architecture decision:**
 
@@ -858,7 +988,7 @@ Mid-session, attempted Day 9's mobile lender accept via Expo Go on a fresh `prea
 1. Sharetribe SDK `updateProfile` shallow-merges top-level `protectedData` keys but **replaces nested object values wholesale** — verified via `ContactDetailsPage.duck.js:107-114, 217-218` where independent updates of `phoneNumber` and `shippingZip` preserve each other. Implication: every save MUST send the full six-field `lenderShippingAddress` object; partial updates silently wipe siblings. Regression test added.
 2. `componentDidMount` prefill in `TransactionPanel.js` would race the `currentUser` async load (it's `null` on first mount, arrives via later prop update). Use `componentDidUpdate` with a `hasPrefilledFromProfile` flag.
 3. Server-side fallback (Step 4b, promoted to peer step): `transition-privileged.js` accept validation should hydrate missing `provider*` fields from `prov.profile.protectedData.lenderShippingAddress` BEFORE validation runs (mirror existing phone fallback at lines 285-287). Makes server the source of truth, lets clients send empty objects and trust the server, future-proofs against new client surfaces.
-4. Phone-key sprawl: three lender phone slots would exist (`lenderShippingAddress.phoneNumber` new, `protectedData.phone` legacy used by `sendShipByReminders.js:159`, `tx.protectedData.providerPhone` written at accept). Save form's phoneNumber to BOTH new + legacy in one `updateProfile` call (one round-trip, no partial-success risk). Deprecate legacy field later.
+4. Phone-key sprawl: three lender phone slots existed (`lenderShippingAddress.phoneNumber` new, `protectedData.phone` legacy, `tx.protectedData.providerPhone` written at accept). Initial mitigation was to save form's phoneNumber to BOTH new + legacy in one `updateProfile` call. Legacy slot has since been deprecated server-side — readers prefer `phoneNumber` and the dual-write was removed (see Phase D task #31 entry below).
 
 **Locked Option A design decisions (user confirmed via clarifying questions):**
 - **Schema:** nested object at `currentUser.attributes.profile.protectedData.lenderShippingAddress = { streetAddress, streetAddress2, city, state, zipCode, phoneNumber }`. Naming uses Sherbrt's external "lender" term not server's "provider" — mapping documented inline in the duck.
@@ -933,26 +1063,30 @@ Mid-session, attempted Day 9's mobile lender accept via Expo Go on a fresh `prea
   CC's Phase 0 audit caveats all folded in (no `:privileged?` flag, no
   feature flag, hard-fail on unsupported state, 6 not 5 — `cancelled`
   added per CC catch).
-- ✅ **Task #30 Phase 2 SHIPPED.** Squash-merged commit `19f27cded` on
-  `main`. `txUpdateProtectedData` rewritten to use the new operator-
-  update-pd-<state> transitions. 28 directly-affected tests pass. Render
-  auto-deploy in progress at end of session. Runtime verification deferred
-  to first organic tx accept post-deploy via `scripts/probe-task-30.js`
-  and Render log check (look for `[INT][PD] transition operator-update-pd-
-  <state>` line and absence of the `[VERIFY][ACCEPT] Missing providerZip`
-  warning).
+- ✅ **Task #30 Phase 2 SHIPPED + RUNTIME-VERIFIED.** Squash-merged commit
+  `19f27cded` on `main`. `txUpdateProtectedData` rewritten to use the new
+  operator-update-pd-<state> transitions. 28 directly-affected tests pass.
+  Runtime verified end-of-day on first organic v6 accept (mobile-originated
+  tx `69f51671-7b35-4b1a-87e5-71f934856568`): all 4 `[INT][PD] transition
+  operator-update-pd-accepted` log lines paired with `[INT][PD][OK]`,
+  `attempt: 1` each, no 409s, no UNSUPPORTED-STATE, no ERR, no
+  `[VERIFY][ACCEPT] Missing providerZip after upsert!` warning.
+  `scripts/probe-task-30.js 69f51671` confirmed data at
+  `tx.attributes.protectedData.shipByISO` (correct), undefined at
+  `tx.attributes.metadata.protectedData.shipByISO`. See May 1 (evening)
+  entry above for full proof.
 - ⏳ **Task #30 Phase 3 deferred.** Migration script
   (`scripts/migrate-task-30-data.js`) to copy data from
   `metadata.protectedData.*` → `protectedData.*` for in-flight txs. Runs
   AFTER Phase 2 deploys + stabilizes. Needs maintenance window OR feature
   flag fence on `txUpdateProtectedData` during migration. Per-key conflict
   prompts (don't blanket-pick "metadata wins").
-- 🟡 **Phase 1 runtime verification deferred to first organic accept.**
-  Existing test txs are pinned to v5 and can't exercise v6 transitions
-  (Sharetribe returns `transaction-invalid-transition`). Path B chosen:
-  the first organic tx accept after Phase 2 deploys verifies Phase 1 +
-  Phase 2 simultaneously. Same pattern as task #29 (live-probe instead
-  of synthetic Stripe charge).
+- ✅ **Phase 1 runtime verification COMPLETE.** Path B succeeded as
+  designed: tx `69f51671` was created on v6, accepted from mobile, and
+  exercised the new `transition/operator-update-pd-accepted` transition
+  cleanly (4 successful writes, no errors). Phase 1 + Phase 2 both
+  verified in the same accept. Same pattern as task #29 worked
+  (organic verification instead of synthetic test charge).
 - ⏳ **Mobile launch path heads-ups still pending** from Day 12 wrap-up:
   EAS production env-var change (`EXPO_PUBLIC_API_BASE_URL` = `sherbrt.com`
   apex, NOT `www.sherbrt.com`) before next TestFlight ship; Sharetribe
@@ -1004,9 +1138,39 @@ re-paste if CC's session was interrupted.
      now fully unblocked.
    - EAS production env-var change (`EXPO_PUBLIC_API_BASE_URL`).
    - Sharetribe Console microcopy verification.
-4. **Backlog (no order):** task #25 (format validators), task #31 (phone
-   field consolidation), worktree cleanup, `ListingCard.js` migration
-   to `getListingFieldLabel`.
+4. **Backlog — pre-mobile-launch (no order):** task #25 (format
+   validators), task #31 (phone field consolidation), worktree
+   cleanup, `ListingCard.js` migration to `getListingFieldLabel`,
+   extract `shippoTracking.js` phone-resolution helpers
+   (`getBorrowerPhone` / `getLenderPhone`) to `server/api-util/phone.js`
+   — current pattern attaches them to the router export, works but is
+   non-idiomatic.
+5. **Backlog — post-mobile-launch (gated on TestFlight ship + first
+   real users; no order within batch):**
+   - **Task #32** — Transactional email provider returning
+     `Unauthorized`. Surfaced May 1 evening logs on tx `69f51671`:
+     both `lenderOutboundLabelEmail` and the return-label email
+     failed with `error: 'Unauthorized', response: { errors: [...] }`.
+     Likely rotated/expired API key (SendGrid/Postmark/etc.). SMS
+     unaffected. Label URLs DID persist to `tx.protectedData`, so a
+     re-send mechanism could recover the missed emails — consider
+     building one as part of the fix. Investigate: which email provider
+     are we on, when was the key rotated, can we re-send for tx
+     `69f51671` retroactively.
+   - **Task #33** — Twilio SMS-status-callback URL has duplicated query
+     params (`?tag=...&tag=...&txId=...&txId=...`). Cosmetic — webhook
+     still 200s. Fix the query-string assembly logic in the callback
+     URL builder (search for the call-site that constructs the
+     `statusCallback` URL on Twilio Messaging Service requests). Low
+     priority but trivially fixable.
+   - **Probe script cosmetic patch** — `scripts/probe-task-30.js`
+     diagnosis text reads `=> Task #30 is NOT a bug. Data is going to
+     the correct field. => Either Sharetribe changed semantics, OR our
+     analysis was wrong.` That branch was written pre-Phase-2-deploy;
+     on the fixed code it's the *expected* outcome. Update the
+     diagnosis to distinguish "pre-Phase-2" (data at metadata.X = bug
+     present) from "post-Phase-2" (data at protectedData.X = fix
+     verified). One-line patch. Bundle with #32/#33.
 
 **Diag scripts written today (still useful for verification later).**
 
@@ -1085,9 +1249,8 @@ All three passed during the April 30 session (see entry below). Task
 
 **Open / pending items for next session:**
 1. **Sharetribe Console → Content → Email templates → review `booking-expired-request`** for stale "6 days" / "within a week" language before testing Scenario 2 (the borrower receives this email when the v5 24h auto-expire fires). The in-repo template is generic ("didn't respond on time, so your request expired") — but Sharetribe Console can have a marketplace-specific override that may be stale.
-2. **Future cleanup PR:** delete legacy `sendShipByReminders.js` + its `.persist.test.js` test file (functionality fully superseded by `sendShippingReminders.js`; service no longer deployed; flagged in `render.yaml` comments).
-3. **Workbook v12 → Drive:** local copy still needs uploading.
-4. **Continue Scenario 1 → 2 → 3 → 4 → 5 → 6** in the v12 Test Scenarios tab order. All comms verified wired and deployed. No blockers.
+2. **Workbook v12 → Drive:** local copy still needs uploading.
+3. **Continue Scenario 1 → 2 → 3 → 4 → 5 → 6** in the v12 Test Scenarios tab order. All comms verified wired and deployed. No blockers.
 
 **Where we left off:** Scenario 1 (IDEAL) is in flight. The test transaction will be the first booking on Sharetribe v5 (alias just shows 0 transactions). Borrower side encountered the listing-specific calendar quirk above — switched to a different listing to continue.
 
@@ -1199,7 +1362,7 @@ Pre-QA code review on April 21 identified 3 BLOCKERS + 2 HIGH + 1 follow-on sile
 
 **H2 — Third instance of `sdk.transactions.update` silent-fail (`sendReturnReminders.js:189`):** Same pattern as the April `sendLenderRequestReminders` and `sendShippingReminders` fixes. Integration SDK doesn't expose `txApi.update` / `updateMetadata` / `updateProtectedData` for transactions — writes threw, caught at :678/:702/:739, logged as "Failed to mark...as sent." Per-day Redis lock covered single-send-per-day, but `tMinus1SentAt`, `todayReminderSentAt`, `tomorrowReminderSentAt`, `returnSms.dueTodayLastSentLocalDate` never persisted + noisy error logs on every cron tick. **Fix:** replaced the `updateTransactionProtectedData` helper with `upsertProtectedData(txId, {returnSms:{...}}, {source:'return-reminders'})`. Helper deleted.
 
-**H3 — Fourth instance (`sendShipByReminders.js:257`):** Same pattern, surfaced during the H2 fix. Added as a same-PR follow-on. **Post-fix sweep:** `grep -rE "sdk\.transactions\.update\s*\(" server/` returns zero active call sites. The pattern class is now fully retired across `server/**`.
+**H3 — Fourth instance (legacy `sendShipByReminders.js:257`, since deleted):** Same pattern, surfaced during the H2 fix. Fixed as a same-PR follow-on. **Post-fix sweep:** `grep -rE "sdk\.transactions\.update\s*\(" server/` returns zero active call sites. The pattern class is now fully retired across `server/**`.
 
 **Deviation from original fix plan:** B2 required extending `ALLOWED_PROTECTED_DATA_KEYS` in `server/api-util/integrationSdk.js` to include `shippingNotification`, `lastTrackingStatus`, and `returnSms`. Without this, `upsertProtectedData` would silently drop those keys — the exact silent-failure symptom the fix resolves. `outbound` and `return` were already on the whitelist. **Lesson:** when introducing a new `protectedData` key path via `upsertProtectedData`, always verify the top-level key is on the allow-list first.
 
@@ -1290,7 +1453,7 @@ Three shipped commits and two new scope docs. All work on return-side reminders 
 - PR-3b ✅ shipped April 16, 2026 (commit `be50062b8`). Operational emails + SMS quiet-hours:
   - §3b.1: Day-6 fire-and-forget operator email alert via SendGrid (`.catch()` wrapper, `DRY_RUN` respected, rides SMS Redis dedupe). Recipient: `OPS_ALERT_EMAIL` env var (defaults `amalyb@gmail.com`).
   - §3b.2: Daily late-fee digest email (`sendLateFeeDigest` helper). Model B buckets: `charged` + `skipped_*` only (no `day6_hard_stop`). Sent after for-loop, gated by `!DRY_RUN`.
-  - §3b.3: `withinSendWindow()` in `server/util/time.js` (8 AM – 11 PM PT, respects `getNow()`/`FORCE_NOW`). Pattern A gates on `sendReturnReminders.js` (1 gate), `sendShippingReminders.js` (3 gates: 24h/eod/cancel), `sendShipByReminders.js` (1 gate). Pattern B gate on `sendLenderRequestReminders.js` (MAX_AGE_MS widened from 80 min → 13h, `withinSendWindow(getNow())` before markInFlight).
+  - §3b.3: `withinSendWindow()` in `server/util/time.js` (8 AM – 11 PM PT, respects `getNow()`/`FORCE_NOW`). Pattern A gates on `sendReturnReminders.js` (1 gate) and `sendShippingReminders.js` (3 gates: 24h/eod/cancel). Pattern B gate on `sendLenderRequestReminders.js` (MAX_AGE_MS widened from 80 min → 13h, `withinSendWindow(getNow())` before markInFlight).
   - CC reviewed + signed off. Cleanup fixes applied: duplicate const removal (N1), JSDoc example fix (N2), stale comment update (N5).
 - PR-3c ✅ shipped April 16, 2026 (commit `e59de3c42`). Comment cleanup in `lateFees.js`: updated AUTO_REPLACEMENT_ENABLED, isScanned(), getReplacementValue() docstrings, removed stale "Scenario B" label. Comment-only diff.
 - PR-4: staging dry-run — operational step (no code change). Set `OVERDUE_FEES_CHARGING_ENABLED=true` + `LATE_FEE_CENTS_OVERRIDE=50` in Render, verify $0.50 charge in Stripe + `chargeHistory` advances. Requires an overdue test transaction. **Unblocked as of April 21 2026 after 9.2 + 9.2.1 + config drift fixes** — will run as Scenario 5 of the live QA plan (see `sherbrt_transaction_comms_v10.xlsx` → "Test Scenarios" tab).
@@ -1324,7 +1487,7 @@ Three shipped commits and two new scope docs. All work on return-side reminders 
 - `ext/transaction-processes/default-booking/process.edn` — added `transition/auto-cancel-unshipped` (operator-actor, from `:state/accepted` to `:state/cancelled`, actions: `calculate-full-refund` → `stripe-refund-payment` → `cancel-booking`)
 - `server/lib/txData.js` — added `hasOutboundScan(tx)` and `getOutboundFirstScanAt(tx)` helpers
 - `server/webhooks/shippoTracking.js` — added canonical `protectedData.outbound.firstScanAt = timestamp()` write alongside existing `shippingNotification.firstScan.sent` write (both land in the first-scan branch). New callers should read via `hasOutboundScan()`; do not read `outbound.firstScanAt` directly unless you also check the other two signals.
-- `server/scripts/sendShipByReminders.js` — replaced latent-bug `if (outbound.firstScanAt)` check (the field was never being written) with `if (hasOutboundScan(tx))`. The old check was always false, which is why the "skip if scanned" gate had been silently broken.
+- `server/scripts/sendShipByReminders.js` (since deleted) — at the time, replaced latent-bug `if (outbound.firstScanAt)` check (the field was never being written) with `if (hasOutboundScan(tx))`. The old check was always false, which is why the "skip if scanned" gate had been silently broken. File later retired in favor of `sendShippingReminders.js`.
 - `render.yaml` — added `auto-cancel-unshipped` worker entry (note: `render.yaml` is not actually synced by Render on this project; the cron was created manually in the Render UI as a **Cron Job**, not a Background Worker. `render.yaml` is documentation only.)
 
 **Deployment steps performed:**
