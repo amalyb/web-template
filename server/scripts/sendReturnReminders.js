@@ -397,7 +397,13 @@ async function sendReturnReminders(allowExitOnError = true) {
         const listing = listingKey ? included.get(listingKey) : null;
         const itemTitle = listing?.attributes?.title || 'your item';
         
-        // Prefer checkout-entered phone stored on the transaction, then fall back to profile phone
+        // Per-booking phone wins over account phone. Precedence:
+        //   1. tx.protectedData.customerPhone   (booking-specific, set at checkout)
+        //      …with several legacy aliases tried in turn for older bookings.
+        //   2. profile.protectedData.phoneNumber (canonical user-profile slot)
+        //   3. profile.protectedData.phone       (legacy slot; fallback through deprecation soak)
+        // Per-booking phone never overwrites the borrower's account number —
+        // see Phase D task #31 (gifting / different recipient phone).
         const protectedData = tx?.attributes?.protectedData || {};
         const normalizePhoneCandidate = (val) => {
           const trimmed = val && String(val).trim();
@@ -414,8 +420,8 @@ async function sendReturnReminders(allowExitOnError = true) {
         const checkoutPhone = normalizePhoneCandidate(checkoutPhoneCandidate);
 
         const profilePhoneCandidate =
-          customer?.attributes?.profile?.protectedData?.phone ||
-          customer?.attributes?.profile?.protectedData?.phoneNumber;
+          customer?.attributes?.profile?.protectedData?.phoneNumber ||
+          customer?.attributes?.profile?.protectedData?.phone;
         const profilePhone = normalizePhoneCandidate(profilePhoneCandidate);
 
         const borrowerPhone = checkoutPhone || profilePhone || null;

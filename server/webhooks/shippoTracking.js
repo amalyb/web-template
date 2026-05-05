@@ -385,67 +385,92 @@ async function findTransactionByTrackingNumber({ sdk, trackingNumber, carrier, s
   }
 }
 
-// Helper function to get borrower phone number
+// Per-booking phone wins over account phone. Precedence applied identically
+// to borrower + lender resolvers below:
+//   1. tx.protectedData.{customerPhone | providerPhone}  (booking-specific)
+//   2. profile.protectedData.phoneNumber                  (canonical account slot)
+//   3. profile.protectedData.phone                        (legacy slot, fallback through soak)
+//   4. tx.metadata.{customerPhone | providerPhone}        (legacy metadata fallback)
+//
+// Per-booking phone never overwrites the user's account number — supports
+// gifting, work phone at checkout, alternate recipient phone, etc.
+// See Phase D task #31.
 function getBorrowerPhone(transaction) {
   console.log('📱 Extracting borrower phone number...');
-  
+
   try {
-    // Method 1: transaction.customer.profile.protectedData.phone
-    if (transaction.relationships?.customer?.data?.attributes?.profile?.protectedData?.phone) {
-      const phone = transaction.relationships.customer.data.attributes.profile.protectedData.phone;
-      console.log(`📱 Found phone in customer profile: ${phone}`);
-      return normalizePhoneNumber(phone);
-    }
-    
-    // Method 2: transaction.protectedData.customerPhone
-    if (transaction.attributes?.protectedData?.customerPhone) {
-      const phone = transaction.attributes.protectedData.customerPhone;
+    const tx = transaction || {};
+    const txProtected = tx.attributes?.protectedData || {};
+    const txMetadata = tx.attributes?.metadata || {};
+    const profileProtected =
+      tx.relationships?.customer?.data?.attributes?.profile?.protectedData || {};
+
+    if (txProtected.customerPhone) {
+      const phone = txProtected.customerPhone;
       console.log(`📱 Found phone in transaction protectedData: ${phone}`);
       return normalizePhoneNumber(phone);
     }
-    
-    // Method 3: transaction.attributes.metadata.customerPhone
-    if (transaction.attributes?.metadata?.customerPhone) {
-      const phone = transaction.attributes.metadata.customerPhone;
+
+    if (profileProtected.phoneNumber) {
+      const phone = profileProtected.phoneNumber;
+      console.log(`📱 Found phone in customer profile (phoneNumber): ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+
+    if (profileProtected.phone) {
+      const phone = profileProtected.phone;
+      console.log(`📱 Found phone in customer profile (legacy phone): ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+
+    if (txMetadata.customerPhone) {
+      const phone = txMetadata.customerPhone;
       console.log(`📱 Found phone in transaction metadata: ${phone}`);
       return normalizePhoneNumber(phone);
     }
-    
+
     console.warn('⚠️ No borrower phone number found in any location');
     return null;
-    
   } catch (error) {
     console.error('❌ Error extracting borrower phone:', error.message);
     return null;
   }
 }
 
-// Helper function to get lender phone number
 function getLenderPhone(transaction) {
   console.log('📱 Extracting lender phone number...');
-  
+
   try {
-    // Method 1: transaction.provider.profile.protectedData.phone
-    if (transaction.relationships?.provider?.data?.attributes?.profile?.protectedData?.phone) {
-      const phone = transaction.relationships.provider.data.attributes.profile.protectedData.phone;
-      console.log(`📱 Found lender phone in provider profile: ${phone}`);
-      return normalizePhoneNumber(phone);
-    }
-    
-    // Method 2: transaction.protectedData.providerPhone
-    if (transaction.attributes?.protectedData?.providerPhone) {
-      const phone = transaction.attributes.protectedData.providerPhone;
+    const tx = transaction || {};
+    const txProtected = tx.attributes?.protectedData || {};
+    const txMetadata = tx.attributes?.metadata || {};
+    const profileProtected =
+      tx.relationships?.provider?.data?.attributes?.profile?.protectedData || {};
+
+    if (txProtected.providerPhone) {
+      const phone = txProtected.providerPhone;
       console.log(`📱 Found lender phone in transaction protectedData: ${phone}`);
       return normalizePhoneNumber(phone);
     }
-    
-    // Method 3: transaction.attributes.metadata.providerPhone
-    if (transaction.attributes?.metadata?.providerPhone) {
-      const phone = transaction.attributes.metadata.providerPhone;
+
+    if (profileProtected.phoneNumber) {
+      const phone = profileProtected.phoneNumber;
+      console.log(`📱 Found lender phone in provider profile (phoneNumber): ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+
+    if (profileProtected.phone) {
+      const phone = profileProtected.phone;
+      console.log(`📱 Found lender phone in provider profile (legacy phone): ${phone}`);
+      return normalizePhoneNumber(phone);
+    }
+
+    if (txMetadata.providerPhone) {
+      const phone = txMetadata.providerPhone;
       console.log(`📱 Found lender phone in transaction metadata: ${phone}`);
       return normalizePhoneNumber(phone);
     }
-    
+
     console.warn('⚠️ No lender phone number found in any expected location');
     return null;
   } catch (error) {
@@ -1167,10 +1192,11 @@ async function handleTrackingWebhook(req, res, opts = {}) {
       if (!borrowerPhone) {
         console.log(`[SHIPPO DELIVERY DEBUG] ⚠️ SKIPPING - No borrower phone number found`);
         console.log(`[SHIPPO DELIVERY DEBUG]   transactionId: ${txIdFromTransaction}`);
-        console.log(`[SHIPPO DELIVERY DEBUG]   Checked locations:`);
-        console.log(`[SHIPPO DELIVERY DEBUG]     1. customer.profile.protectedData.phone: ${transaction.relationships?.customer?.data?.attributes?.profile?.protectedData?.phone || 'NOT FOUND'}`);
-        console.log(`[SHIPPO DELIVERY DEBUG]     2. protectedData.customerPhone: ${transaction.attributes?.protectedData?.customerPhone || 'NOT FOUND'}`);
-        console.log(`[SHIPPO DELIVERY DEBUG]     3. metadata.customerPhone: ${transaction.attributes?.metadata?.customerPhone || 'NOT FOUND'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]   Checked locations (in precedence order):`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     1. tx.protectedData.customerPhone: ${transaction.attributes?.protectedData?.customerPhone || 'NOT FOUND'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     2. customer.profile.protectedData.phoneNumber: ${transaction.relationships?.customer?.data?.attributes?.profile?.protectedData?.phoneNumber || 'NOT FOUND'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     3. customer.profile.protectedData.phone (legacy): ${transaction.relationships?.customer?.data?.attributes?.profile?.protectedData?.phone || 'NOT FOUND'}`);
+        console.log(`[SHIPPO DELIVERY DEBUG]     4. tx.metadata.customerPhone: ${transaction.attributes?.metadata?.customerPhone || 'NOT FOUND'}`);
         console.warn('⚠️ No borrower phone number found - cannot send SMS');
         return res.status(400).json({ error: 'No borrower phone number found' });
       }
@@ -1517,3 +1543,5 @@ if (process.env.TEST_ENDPOINTS) {
 }
 
 module.exports = router;
+module.exports.getBorrowerPhone = getBorrowerPhone;
+module.exports.getLenderPhone = getLenderPhone;
