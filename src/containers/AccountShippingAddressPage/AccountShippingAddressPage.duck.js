@@ -93,14 +93,9 @@ export const saveShippingAddress = params => (dispatch, getState, sdk) => {
     phoneNumber: params?.phoneNumber ?? '',
   };
 
-  // Phone write-through: also save phoneNumber to protectedData.phone so
-  // existing consumers stay in sync (server/scripts/sendShipByReminders.js:159
-  // reads profile.protectedData.phone). Deprecate once all consumers have
-  // moved to lenderShippingAddress.phoneNumber.
   const profileUpdate = {
     protectedData: {
       lenderShippingAddress,
-      phone: lenderShippingAddress.phoneNumber,
     },
   };
 

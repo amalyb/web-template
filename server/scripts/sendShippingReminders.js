@@ -344,14 +344,24 @@ async function sendShippingReminders() {
         shipBy.setUTCHours(15, 0, 0, 0);
       }
       
-      // Get provider phone
+      // Get provider phone — per-booking phone wins over account phone.
+      // Precedence:
+      //   1. tx.protectedData.providerPhone   (booking-specific, written at accept)
+      //   2. profile.protectedData.phoneNumber (canonical user-profile slot)
+      //   3. profile.protectedData.phone       (legacy slot; fallback through deprecation soak)
+      // Per-booking phone never overwrites the lender's account number — see
+      // Phase D task #31 (gifting / one-off rentals / different recipient).
       const providerRef = tx?.relationships?.provider?.data;
       const providerKey = providerRef ? `${providerRef.type}/${providerRef.id?.uuid || providerRef.id}` : null;
       const provider = providerKey ? included.get(providerKey) : null;
-      
-      const providerPhone = provider?.attributes?.profile?.protectedData?.phone ||
-                           provider?.attributes?.profile?.protectedData?.phoneNumber ||
-                           null;
+
+      const txProtected = tx?.attributes?.protectedData || {};
+      const providerProtected = provider?.attributes?.profile?.protectedData || {};
+      const providerPhone =
+        txProtected.providerPhone ||
+        providerProtected.phoneNumber ||
+        providerProtected.phone ||
+        null;
       
       if (!providerPhone) {
         if (VERBOSE) {

@@ -215,8 +215,11 @@ describe('AccountShippingAddressPage duck', () => {
     );
   });
 
-  // Test 5 — phone write-through to legacy field
-  it('phone write-through: dispatched payload includes both lenderShippingAddress.phoneNumber and protectedData.phone, equal', async () => {
+  // Test 5 — payload writes phoneNumber only on the nested record, not the
+  // legacy top-level `phone` slot (Phase D task #31 — server readers now
+  // prefer the canonical `phoneNumber` slot, see sendShippingReminders /
+  // sendReturnReminders / shippoTracking).
+  it('payload writes phoneNumber on lenderShippingAddress only — no legacy protectedData.phone write', async () => {
     const updateProfile = jest.fn().mockResolvedValue(buildSdkResponse(FILLED_ADDRESS));
     const sdk = { currentUser: { updateProfile } };
     const dispatch = jest.fn();
@@ -227,9 +230,6 @@ describe('AccountShippingAddressPage duck', () => {
     expect(profileArg.protectedData.lenderShippingAddress.phoneNumber).toBe(
       FILLED_ADDRESS.phoneNumber
     );
-    expect(profileArg.protectedData.phone).toBe(FILLED_ADDRESS.phoneNumber);
-    expect(profileArg.protectedData.phone).toBe(
-      profileArg.protectedData.lenderShippingAddress.phoneNumber
-    );
+    expect(profileArg.protectedData).not.toHaveProperty('phone');
   });
 });

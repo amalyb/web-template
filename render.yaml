@@ -13,12 +13,6 @@ services:
 
   # Background workers for SMS reminders.
   # These run as long-lived daemons with internal scheduling (setInterval).
-  #
-  # NOTE: `sendShipByReminders.js` was previously deployed as the
-  # `shipby-reminders` worker but is now LEGACY and intentionally not
-  # deployed — its functionality was superseded by `sendShippingReminders.js`
-  # (the `shipping-reminders` cron documented further below). The legacy
-  # script still lives in the repo but should be deleted in a future cleanup PR.
 
   - type: worker
     name: return-reminders

@@ -182,18 +182,20 @@ async function main() {
       console.log(`  Delivered Sent: ${shippingNotification.delivered?.sent || false}`);
       console.log(`  Delivered Sent At: ${shippingNotification.delivered?.sentAt || 'NOT SET'}`);
       
-      console.log('\n📱 Borrower Phone Lookup:');
-      // Try all the same lookup paths as webhook handler
+      console.log('\n📱 Borrower Phone Lookup (precedence order matches webhook handler):');
       const customer = transaction.relationships?.customer?.data;
-      const customerPhone1 = customer?.attributes?.profile?.protectedData?.phone;
-      const customerPhone2 = protectedData.customerPhone;
-      const customerPhone3 = metadata.customerPhone;
-      
-      console.log(`  1. customer.profile.protectedData.phone: ${customerPhone1 || 'NOT FOUND'}`);
-      console.log(`  2. protectedData.customerPhone: ${customerPhone2 || 'NOT FOUND'}`);
-      console.log(`  3. metadata.customerPhone: ${customerPhone3 || 'NOT FOUND'}`);
-      
-      const borrowerPhone = customerPhone1 || customerPhone2 || customerPhone3;
+      const profileProtected = customer?.attributes?.profile?.protectedData || {};
+      const candidate1 = protectedData.customerPhone;
+      const candidate2 = profileProtected.phoneNumber;
+      const candidate3 = profileProtected.phone;
+      const candidate4 = metadata.customerPhone;
+
+      console.log(`  1. tx.protectedData.customerPhone: ${candidate1 || 'NOT FOUND'}`);
+      console.log(`  2. customer.profile.protectedData.phoneNumber: ${candidate2 || 'NOT FOUND'}`);
+      console.log(`  3. customer.profile.protectedData.phone (legacy): ${candidate3 || 'NOT FOUND'}`);
+      console.log(`  4. tx.metadata.customerPhone: ${candidate4 || 'NOT FOUND'}`);
+
+      const borrowerPhone = candidate1 || candidate2 || candidate3 || candidate4;
       console.log(`  → Final borrower phone: ${borrowerPhone || 'NOT FOUND'}`);
       
       if (!borrowerPhone) {
