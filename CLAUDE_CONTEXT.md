@@ -283,6 +283,259 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 7, 2026 — 4-issue SMS / inbox-copy fix-up (default-booking expire flows)
+
+**The bugs.** Three back-to-back transactions (`69f8e5ee-…`,
+`69f8e102-…`, `69f8db17-…`) booked end-date May 7 hit `:state/expired`
+because the lender never accepted. They surfaced four separate
+problems:
+
+1. **Spurious 8-SMS day-of-return reminder.** All three borrowers
+   received `⏰ Sherbrt 🍧: Today's the day for you to ship back …
+   Check your dashboard for return instructions.` (the
+   `return_reminder_today_no_label` branch in
+   `server/scripts/sendReturnReminders.js`). Should never fire — these
+   txns were never `:state/delivered`. The base query filters
+   `state: ONLY_STATE || 'delivered'`, but txns slipped through anyway
+   (root cause unclear; either Sharetribe state filter looser than we
+   assume, or namespaced-vs-bare state mismatch). 7-SMS T-1 reminder
+   correctly skipped because no `pd.returnQrUrl` / `pd.returnLabelUrl`
+   was ever generated (label only created on `transition/accept`).
+2. **No 1c-SMS for borrower on lender expire.** When
+   `transition/expire` fires (lender didn't accept in 24h), the
+   borrower got nothing. Borrowers were left wondering what happened.
+3. **Borrower inbox title was wrong.**
+   `customer.payment-expired.title` read "You didn't confirm the
+   payment in time" — borrower-blamey wording for a state that, while
+   technically about Stripe payment-intent timeout, often coincides
+   with operator-side workflow issues. Borrowers don't perceive
+   themselves as "confirming payment" — they tap Submit and wait.
+4. **Lender inbox title was wrong.**
+   `provider.payment-expired.title` read "Payment wasn't confirmed in
+   time" — implies the *borrower* failed, which confused lenders into
+   thinking this is a borrower-side problem. The lender perspective is
+   "I never got a chance to accept" — same outcome regardless of which
+   transition fired.
+
+**The fixes.**
+
+1. **Defensive state check inside the loop** in
+   `server/scripts/sendReturnReminders.js` (right after the ONLY_TX
+   filter). Re-checks `tx.attributes.state` against the expected state
+   (`ONLY_STATE || 'delivered'`), normalizing `state/delivered` →
+   `delivered` for Integration SDK responses. Skips with
+   `[RETURN-REMINDER][SKIP-WRONG-STATE]` log line. Belt-and-suspenders:
+   query filter remains the first line of defense; this catches
+   anything that slips past it. Cron tick on May 8+ should show this
+   skip path firing for any expired/canceled txns instead of sending.
+2. **1c-SMS borrower-expired notification** added to
+   `server/scripts/sendLenderRequestReminders.js`. The existing
+   `MISSED_FINAL` watchdog already polls
+   `lastTransitions: 'transition/expire'` every 15 min with a 30-min
+   lookback. Extended that same loop to:
+   - Add `include: ['customer']` to the watchdog query (was missing).
+   - Per tx within the lookback window, send a borrower SMS with copy:
+     `😔 Sherbrt 🍧: Your borrow request was not accepted this time.
+     Don't worry — there's still time to book another look you love!
+     Check them out now! https://www.sherbrt.com/r/lyBUNc13c1`
+   - Redis dedupe key
+     `lenderReminder:{txId}:borrowerExpired:sent` (7d TTL — outlasts
+     any reasonable retick window). DRY mode skips Redis writes.
+   - Tag: `borrower_request_expired`, smsNumber: `2c` in meta.
+   - Phone resolution mirrors the borrower-phone precedence used in
+     `sendReturnReminders.js`: checkout-protectedData phone wins over
+     profile phone (per Phase D task #31).
+   - Borrower-SMS failures are caught and logged — they must not
+     block `MISSED_FINAL` logging or subsequent txns.
+3. **`customer.payment-expired.title`** in
+   `src/translations/en.json`: `You didn't confirm the payment in
+   time.` → `Request expired.` Same change applied to the
+   `default-booking` entry only; `default-purchase` left as-is (not
+   used on Sherbrt).
+4. **`provider.payment-expired.title`** in `src/translations/en.json`:
+   `Payment wasn't confirmed in time.` → `Request not accepted.`
+   Same caveat — only the `default-booking` entry, not
+   `default-purchase`.
+
+**Why piggyback on `sendLenderRequestReminders` cron rather than a
+new transition hook.** `transition/expire` is an `:at`-driven
+transition fired by Sharetribe internally — there's no actor and no
+HTTP transition call hitting our `transition-privileged.js` handler.
+The only reliable way to react is polling, which the lender-request
+cron already does for its `MISSED_FINAL` watchdog. Reusing that loop
+keeps the moving parts to a minimum and inherits the existing 30-min
+lookback. Tradeoff: the borrower SMS lands up to ~30 min after the
+actual expire — acceptable given borrowers were waiting 24h+ already.
+
+**Note on `payment-expired` vs `expired` states.** Two separate
+states can lead to "request didn't go through":
+
+| State | Trigger | Cause |
+|-------|---------|-------|
+| `:state/payment-expired` | `transition/expire-payment` (15 min) | Stripe payment-intent confirmation timed out (borrower closed checkout / 3DS expired) |
+| `:state/expired` | `transition/expire` (24h or booking-start+1d or booking-end, whichever is earliest) | Lender didn't accept |
+
+The May 7 screenshots showed `payment-expired`-state titles, but the
+user reported lender-no-accept as the cause. Two possibilities: (a)
+borrowers actually didn't confirm Stripe in 15 min and the user
+mis-attributed the state, or (b) there's a state/title mapping issue
+worth a future investigation. Updating both `payment-expired` titles
+to the friendlier "Request expired" / "Request not accepted" copy is
+robust either way — neither blames the wrong party. The
+already-correct `expired`-state titles ("Your booking request
+expired." / "The request from {customerName} expired.") were left
+alone for now.
+
+**Future feature — 1c-EMAIL borrower-expired email.** The user
+explicitly scoped 1c-SMS only for now. Email companion (`1c-Email -
+Request expired`) is a tracked-here follow-up:
+- Source from `notification/booking-expired-request` in
+  `ext/transaction-processes/default-booking/process.edn`. Sharetribe
+  already has the notification wired (`:on :transition/expire`,
+  `:to :actor.role/customer`, template
+  `:booking-expired-request`); the *email template* itself in
+  Sharetribe Console → Content → Email templates is the place to
+  refresh copy.
+- Pending checklist item in CLAUDE_CONTEXT.md (line ~1295): "Review
+  Sharetribe Console → Content → Email templates →
+  `booking-expired-request` for stale '6 days' / 'within a week'
+  language. Update to '24 hours' or make generic." — combine with the
+  1c-EMAIL refresh.
+- Suggested copy mirroring the SMS:
+  `Subject: Your borrow request expired`
+  `Body: Your borrow request wasn't accepted this time. Don't worry —
+  more fabulous looks are waiting to be borrowed!
+  https://www.sherbrt.com/r/lyBUNc13c1`
+
+**Lender 24h auto-expire confirmed correct.** Per
+`ext/transaction-processes/default-booking/process.edn` the
+`transition/expire` `:at` clause is
+`min(firstEnteredPreauthorized + 24h, bookingStart + 1d, bookingEnd)`.
+For typical bookings (booking-start more than 1 day out) this is
+24h after the borrower confirms payment — matches the user's
+expectation. For last-minute bookings (booking-start within 24h of
+request) the window shrinks to `bookingStart + 1d` or `bookingEnd`,
+whichever is earliest, to avoid stranding the lender past their own
+booking. Already correct — no change needed.
+
+**Code commits (3, all on `main`):**
+- `<commit-1>` — `sendReturnReminders.js`: defensive
+  `[SKIP-WRONG-STATE]` check.
+- `<commit-2>` — `sendLenderRequestReminders.js`: 1c-SMS borrower
+  expired-request dispatch in watchdog loop. Extends watchdog query
+  with `include: ['customer']`. Adds Redis key
+  `lenderReminder:{txId}:borrowerExpired:sent` (7d TTL).
+- `<commit-3>` — `src/translations/en.json`: copy refresh on the two
+  `default-booking` `payment-expired.title` keys.
+
+**Verification.**
+- Local DRY run of `sendLenderRequestReminders.js` on a known expired
+  tx (e.g. one of the May 7 IDs) should show `[1c-SMS]` log lines
+  with `dryRun=true`.
+- Inspect `redis-cli get lenderReminder:69f8e5ee-…:borrowerExpired:sent`
+  after a real run — should be set.
+- Force a fake `state/canceled` tx through
+  `sendReturnReminders.js --verbose` — expect
+  `[RETURN-REMINDER][SKIP-WRONG-STATE]` log line, no SMS sent.
+- Inbox titles: visit a `payment-expired` tx as borrower and as
+  lender; confirm "Request expired." / "Request not accepted."
+
+**Open question for next session.** Why did the 8-SMS slip through
+the `state: 'delivered'` filter in the first place? The defensive
+check above prevents the symptom, but the root cause is still
+unidentified. Worth pulling production logs from the May 7 cron tick
+that sent the spurious SMS to confirm what state the Sharetribe
+query actually returned for those txns.
+
+**May 7, 2026 — addendum (Stripe forensics + workbook v13 + mobile
+sync).**
+
+*Stripe forensics on `pi_3TTQY7P9WqHTFi1C0VU20UjF` (one of the three
+May 7 txns).* PaymentIntent created May 4 10:44:55 AM, canceled May
+4 10:59:59 AM — exactly 15min04sec later. `amount_capturable=0`,
+`amount_received=0`, `payment_method=null`, `latest_charge=null`,
+`cancellation_reason=null`, `capture_method=manual`. Conclusion: the
+borrower never confirmed the PI (left checkout idle), Sharetribe
+fired `:transition/expire-payment` (PT15M from `:state/pending-payment`)
+which ran the `stripe-refund-payment` action and canceled the
+un-confirmed PI via API (no user-facing reason → `cancellation_reason`
+stays null; manual dashboard cancels would have set
+"requested_by_customer" or similar).
+
+*Implication.* These three May 7 txns died at `:state/payment-expired`
+(borrower checkout timeout), NOT `:state/expired` (lender no-accept).
+The `payment-expired` inbox titles were correctly displayed for the
+actual state. The user's mental model was off by one transition. The
+1c-SMS implemented in this fix-up fires on `:transition/expire`
+(lender-no-accept), so it would NOT have fired for the May 7 txns —
+those would need a separate "borrower abandoned checkout" SMS, which
+is out of scope for this entry. Logged as a future-feature candidate
+(see Future Comms tab in workbook v13). The defensive state check in
+`sendReturnReminders.js` IS still relevant for these txns — without
+it, future `payment-expired` txns slipping through the
+`state:'delivered'` filter would still trigger spurious 8-SMS.
+
+*Workbook v13.* Saved to
+`/Users/amaliabornstein/shop-on-sherbet-cursor/sherbrt_transaction_comms_v13.xlsx`.
+Two changes from v12:
+- Log tab: new row 1c-SMS inserted between 1b (22h final warning) and
+  2a (request accepted). 2c is already taken (return-label-provided)
+  so 1c was the cleaner numbering — extends the 1-series which is
+  the lender-accept-window flow. Summary tab COUNTIF/COUNTIFS ranges
+  bumped from `Log!C5:C29` → `Log!C5:C30` to absorb the inserted row.
+- New tab: Inbox Comms. Two-column matrix (Borrower / Lender) of
+  Sharetribe state → user-facing inbox title, sourced from
+  `src/translations/en.json` and mirrored against
+  `sherbrt-mobile/lib/transactions.ts`. 26 rows covering every
+  default-booking state for both perspectives. Includes the May 7
+  copy refresh, a column for the en.json key (so future edits know
+  what to grep for), and a column for the mobile equivalent so web
+  and mobile drift is visible at a glance.
+
+*Mobile app sync.* `sherbrt-mobile/lib/transactions.ts` had its own
+status-label dictionaries (`STATE_TO_STATUS` for borrower view,
+`STATE_TO_LENDER_STATUS` for lender view) that previously displayed
+"Payment didn't go through" for `payment-expired` on both sides.
+Updated to match web:
+- Borrower view: `Payment didn't go through` → `Request expired`
+- Lender view: `Payment didn't go through` → `Request not accepted`
+Comments added pointing back to the en.json keys + this CLAUDE_CONTEXT
+entry. The web and mobile labels will now stay in sync via the new
+Inbox Comms tab in v13.
+
+*Re-numbering ripple from 2c-SMS → 1c-SMS.* The first draft of this
+entry used 2c-SMS but 2c is already in workbook v12 (Return Label
+Provided, row 13). Renumbered everywhere: this entry's prose, the
+`smsNumber` meta field on the SMS dispatch, the doc-block comments
+in `sendLenderRequestReminders.js`, and the new workbook row
+identifier. The 1c-EMAIL future-feature companion follows the same
+naming.
+
+*Manual Stripe cancel handling — operator note.* If you ever cancel
+a Stripe PaymentIntent via the dashboard manually, you must ALSO
+cancel the corresponding Sharetribe transaction (Console →
+Transactions → tx → operator-cancel/decline) — they are independent
+systems. Canceling only in Stripe leaves Sharetribe in a stale
+`:state/preauthorized` (or `:state/pending-payment`), which means:
+later lender-accept attempts will fail at the
+`stripe-capture-payment-intent` action (PI is already canceled);
+1a-SMS / 1b-SMS reminders may still fire from the cron until the
+24h `transition/expire` lands; inbox / inbox titles will misrepresent
+the txn as live. Safest reset is decline on Sharetribe first
+(transition fires `stripe-refund-payment`, idempotent against an
+already-canceled PI), then verify Stripe matches.
+
+*Mobile rollout.* Server-side changes (`sendReturnReminders.js`
+state-skip + `sendLenderRequestReminders.js` 1c-SMS dispatch) live
+in the Render workers and fire for all clients regardless of
+platform — mobile users get the SMS just like web users. Inbox-title
+copy lives client-side, so:
+- Web (`shop-on-sherbet-cursor/src/translations/en.json`): updated.
+- Mobile (`sherbrt-mobile/lib/transactions.ts`): updated.
+The two are now in sync — but they're separate codebases, so future
+copy changes have to be made twice. The Inbox Comms tab in workbook
+v13 is the single source of truth for catching drift.
+
 ### May 1, 2026 — Shippo address validation (task #29)
 
 **The bug.** Two production accepts on 4/29/2026 (`69f28897-…` and

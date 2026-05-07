@@ -482,23 +482,42 @@ async function sendLenderRequestReminders() {
       }
     }
 
-    // MISSED_FINAL watchdog (10.0 PR-4). After the main loop, query for
-    // transactions that transitioned to :state/expired in the last 30 min
-    // (two 15-min cron ticks) and confirm their 22h:sent key exists in
-    // Redis. Missing keys mean the 22h final warning was lost — typically
-    // due to clock skew, phase-boundary miscalculation, or a cron outage.
-    // Steady-state log: [MISSED_FINAL_SUMMARY] count=0.
+    // MISSED_FINAL watchdog (10.0 PR-4) + borrower-expired SMS dispatcher
+    // (May 7, 2026 — 1c-SMS). After the main loop, query for transactions
+    // that transitioned to :state/expired in the last 30 min (two 15-min
+    // cron ticks) and:
+    //   1. Confirm their 22h:sent key exists in Redis (MISSED_FINAL log).
+    //      Missing keys mean the 22h final warning was lost — typically
+    //      due to clock skew, phase-boundary miscalculation, or a cron
+    //      outage. Steady-state log: [MISSED_FINAL_SUMMARY] count=0.
+    //   2. Send the borrower a "request not accepted" SMS (1c-SMS) once
+    //      per tx, dedupe key `lenderReminder:{txId}:borrowerExpired:sent`
+    //      (7d TTL). Fires within 30 min of transition/expire — close
+    //      enough to the moment of expire for borrowers (vs. building a
+    //      separate cron). Includes a re-shop short link to the dresses
+    //      grid so they can book another look right away.
+    //      See sherbrt_transaction_comms_v13 → Log tab → 1c-SMS row.
     const WATCHDOG_LOOKBACK_MS = 30 * 60 * 1000;
     const expireWindow = new Date(Date.now() - WATCHDOG_LOOKBACK_MS);
+    const BORROWER_EXPIRED_RESHOP_LINK = 'https://www.sherbrt.com/r/lyBUNc13c1';
 
     try {
       const expiredResp = await sdk.transactions.query({
         lastTransitions: 'transition/expire',
+        // Include customer so we can resolve borrower phone for 1c-SMS.
+        include: ['customer'],
         // Sharetribe's query API doesn't filter on lastTransitionedAt
         // server-side; we over-fetch and filter client-side below.
         per_page: 50,
       });
+      // Build included map for customer lookup (mirrors main loop pattern).
+      const expiredIncluded = new Map();
+      for (const inc of expiredResp?.data?.included || []) {
+        const key = `${inc.type}/${inc.id?.uuid || inc.id}`;
+        expiredIncluded.set(key, inc);
+      }
       let missedFinalCount = 0;
+      let borrowerExpiredSmsSent = 0;
       for (const tx of expiredResp?.data?.data || []) {
         const lastAt = tx?.attributes?.lastTransitionedAt;
         if (!lastAt || new Date(lastAt) < expireWindow) continue;
@@ -536,8 +555,105 @@ async function sendLenderRequestReminders() {
             }
           }
         }
+
+        // 1c-SMS: borrower expired-request notification. Fires once per tx
+        // when transition/expire is observed in the watchdog window.
+        // Redis dedupe key is the source of truth (7d TTL outlasts any
+        // realistic re-tick window — `transition/expire` is terminal,
+        // tx can't re-fire it). DRY mode skips Redis writes.
+        //
+        // Quiet-hours: BYPASSED, same rationale as the 22h phase above.
+        // The watchdog's lookback window is only 30 min wide (2 cron
+        // ticks). A tx that hits expire during quiet hours (11pm-8am PT)
+        // would, if deferred, fall out of the lookback before the next
+        // in-window tick and the borrower SMS would be lost forever.
+        // Tradeoff vs 22h: 1c isn't time-critical (borrower can re-shop
+        // any time), but a silent miss is worse than a brief late-night
+        // text saying "your request wasn't accepted." Operator decision
+        // — flag here so the bypass is explicit.
+        try {
+          const borrowerSentKey = redisKey(txId, 'borrowerExpired:sent');
+          let alreadySent = null;
+          try {
+            alreadySent = await redis.get(borrowerSentKey);
+          } catch (redisErr) {
+            console.warn(`[lender-request-reminder][1c-SMS] Redis read failed for tx=${txId}:`, redisErr.message);
+            continue;
+          }
+          if (alreadySent) {
+            if (VERBOSE) console.log(`[lender-request-reminder][1c-SMS] tx=${txId} already sent at ${alreadySent}`);
+            continue;
+          }
+
+          // Resolve borrower phone — checkout protectedData wins over profile,
+          // matching the precedence used in sendReturnReminders.js. Mirrors
+          // its normalizePhoneCandidate() length check (>=7 chars) and emits
+          // the same [PHONE-SELECTED] log line for ops parity.
+          const normalizePhoneCandidate = (val) => {
+            const trimmed = val && String(val).trim();
+            if (!trimmed) return null;
+            return trimmed.length >= 7 ? trimmed : null;
+          };
+          const customerRef = tx?.relationships?.customer?.data;
+          const customerKey = customerRef ? `${customerRef.type}/${customerRef.id?.uuid || customerRef.id}` : null;
+          const customer = customerKey ? expiredIncluded.get(customerKey) : null;
+          const pd = tx?.attributes?.protectedData || {};
+          const checkoutPhone = normalizePhoneCandidate(
+            pd.customerPhone ||
+            pd.phone ||
+            pd.customer_phone ||
+            pd?.checkoutDetails?.customerPhone ||
+            pd?.checkoutDetails?.phone
+          );
+          const profilePhone = normalizePhoneCandidate(
+            customer?.attributes?.profile?.protectedData?.phoneNumber ||
+            customer?.attributes?.profile?.protectedData?.phone
+          );
+          const borrowerPhone = checkoutPhone || profilePhone || null;
+
+          if (!borrowerPhone) {
+            console.warn(`[lender-request-reminder][1c-SMS] tx=${txId} no borrower phone — skipping`);
+            continue;
+          }
+          if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
+            if (VERBOSE) console.log(`[lender-request-reminder][1c-SMS] tx=${txId} ONLY_PHONE filter — skipping`);
+            continue;
+          }
+          console.log(`[lender-request-reminder][1c-SMS][PHONE-SELECTED] tx=${txId} used=${checkoutPhone ? 'checkoutPhone(protectedData)' : 'profilePhone'}`);
+
+          const borrowerExpiredMessage =
+            `😔 Sherbrt 🍧: Your borrow request was not accepted this time. ` +
+            `Don't worry — there's still time to book another look you love!  ` +
+            `Check them out now! ${BORROWER_EXPIRED_RESHOP_LINK}`;
+
+          const smsResult = await sendSMS(borrowerPhone, borrowerExpiredMessage, {
+            role: 'customer',
+            tag: 'borrower_request_expired',
+            meta: { transactionId: txId, smsNumber: '1c' },
+          });
+
+          if (smsResult?.skipped) {
+            console.log(`[lender-request-reminder][1c-SMS] tx=${txId} skipped by sendSMS (${smsResult.reason})`);
+            continue;
+          }
+
+          if (!DRY) {
+            try {
+              await redis.set(borrowerSentKey, new Date().toISOString(), 'EX', SENT_TTL_SEC);
+            } catch (redisErr) {
+              console.warn(`[lender-request-reminder][1c-SMS] Redis SET sent flag failed for tx=${txId}:`, redisErr.message);
+            }
+          }
+          borrowerExpiredSmsSent++;
+          console.log(`[lender-request-reminder][1c-SMS] sent to borrower for tx=${txId}`);
+        } catch (borrowerSmsErr) {
+          // Borrower-SMS failures must not block missed-final logging or
+          // subsequent txns. Log and move on.
+          console.error(`[lender-request-reminder][1c-SMS] failed for tx=${txId}:`, borrowerSmsErr?.message || borrowerSmsErr);
+        }
       }
       console.log(`[lender-request-reminder][MISSED_FINAL_SUMMARY] count=${missedFinalCount} lookbackMs=${WATCHDOG_LOOKBACK_MS}`);
+      console.log(`[lender-request-reminder][BORROWER_EXPIRED_SMS_SUMMARY] sent=${borrowerExpiredSmsSent} lookbackMs=${WATCHDOG_LOOKBACK_MS}`);
     } catch (watchdogErr) {
       // Watchdog failures must not block the main cron. Log and continue.
       console.warn('[lender-request-reminder][WATCHDOG_ERROR]', watchdogErr?.message || watchdogErr);
