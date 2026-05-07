@@ -536,6 +536,77 @@ The two are now in sync — but they're separate codebases, so future
 copy changes have to be made twice. The Inbox Comms tab in workbook
 v13 is the single source of truth for catching drift.
 
+**Follow-up backlog (May 7 fix-up — parked, not blocking).** All
+six items surfaced during this session; tracked here so the next
+session can pick them up without re-deriving the list from chat
+history.
+
+1. **1c-EMAIL companion.** Sharetribe `booking-expired-request`
+   email template refresh. Already fully drafted above ("Future
+   feature — 1c-EMAIL borrower-expired email"). Combine with the
+   existing pending-checklist item (line ~1295 in this file: stale
+   "6 days" / "within a week" language in the same template).
+
+2. **"Borrower abandoned checkout" SMS.** Fires on
+   `transition/expire-payment` (15-min Stripe checkout timeout) —
+   the actual cause of the May 7 txns per the Stripe forensics
+   above (PI canceled at exactly 15min04sec, lender never saw the
+   request). Distinct from 1c-SMS, which fires on the 24h
+   `transition/expire`. Mobile side already has this flagged in
+   `sherbrt-mobile/CLAUDE_CONTEXT.md` under the May 7 entry's
+   "Cross-repo follow-up" bullet. Likely dispatcher: a new poller
+   or hook on `transition/expire-payment` (no existing cron polls
+   that transition).
+
+3. **Mobile checkout retry on `confirmBookingPayment()` network
+   failures.** Already tracked in
+   `sherbrt-mobile/CLAUDE_CONTEXT.md` lines 1312-1322 (pre-
+   existing) and reinforced by the May 7 entry there — left here
+   as a cross-reference so the backend reader knows about the
+   mobile-side gap. The unprotected step 3 in
+   `app/checkout/[id].tsx` is the most likely root cause of any
+   future organic `payment-expired` traffic.
+
+4. **Env-configurable re-shop link.**
+   `https://www.sherbrt.com/r/lyBUNc13c1` is hard-coded in two
+   places: 1c-SMS in
+   `server/scripts/sendLenderRequestReminders.js` (this fix-up,
+   constant `BORROWER_EXPIRED_RESHOP_LINK`) and 2b-SMS in
+   `server/api/transition-privileged.js` (pre-existing, the
+   borrower-decline branch). Refactor both at once when convenient.
+   Suggested env var: `BORROWER_RESHOP_URL` with the current value
+   as default.
+
+5. **Lo-fi CI check for inbox-copy drift.** The new `Inbox Comms`
+   tab in `sherbrt_transaction_comms_v13.xlsx` is a manual source
+   of truth that web (`src/translations/en.json`) and mobile
+   (`sherbrt-mobile/lib/transactions.ts` STATE_TO_STATUS /
+   STATE_TO_LENDER_STATUS) must stay in sync with. Easy first
+   version: a Node script that parses the xlsx via SheetJS, reads
+   the `Inbox Comms` tab's "en.json Key" column, and verifies each
+   key exists in en.json with the workbook's expected title. Run
+   on every PR via GitHub Actions. Cross-repo version (mobile
+   labels) is harder because the labels live in a separate repo —
+   could be a manual checklist item in PR templates instead.
+
+6. **Root-cause investigation on the original 8-SMS leak.** The
+   defensive state filter in `sendReturnReminders.js` prevents the
+   symptom, but why three May 7 txns slipped past
+   `state:'delivered'` is still unanswered. CC's three concrete
+   leads (review pass, May 7):
+   - (a) Echo the literal query payload right before
+     `sdk.transactions.query(baseQuery)`. Sharetribe may want
+     `state/delivered` namespaced or an array
+     `state: ['delivered']`, and silently ignoring an invalid
+     filter would explain everything.
+   - (b) Run `RETURN_REMINDERS_FLEX_SELFTEST=1` and inspect the
+     returned tx's actual state at query time.
+   - (c) Pull one of the three May 7 txns
+     (`69f8e5ee-…`, `69f8e102-…`, `69f8db17-…`) with
+     `sdk.transactions.show` and confirm what `attributes.state`
+     actually is at query time vs. now — there may be a
+     transition race within the 15-min cron window.
+
 ### May 1, 2026 — Shippo address validation (task #29)
 
 **The bug.** Two production accepts on 4/29/2026 (`69f28897-…` and
