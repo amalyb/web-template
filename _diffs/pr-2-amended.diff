@@ -1,0 +1,265 @@
+commit edbf2e12f91b32b25a0721e9973ba7f223a06d6a
+Author: Amalia Bornstein <amalyb@gmail.com>
+Date:   Wed Apr 15 15:55:11 2026 -0700
+
+    feat(lateFees): PR-2 privileged-apply-late-fees transitions + policy skips
+
+diff --git a/ext/transaction-processes/default-booking/process.edn b/ext/transaction-processes/default-booking/process.edn
+index 4806ea88e..97552d9c9 100644
+--- a/ext/transaction-processes/default-booking/process.edn
++++ b/ext/transaction-processes/default-booking/process.edn
+@@ -121,6 +121,46 @@
+     {:name :action/cancel-booking}],
+    :from :state/accepted,
+    :to :state/cancelled}
++  ;; Privileged transition for applying late fees / replacement charges
++  ;; SCENARIO A: Returned late (transaction is in :state/delivered after return scan)
++  ;; Called by sendOverdueReminders.js script to charge additional amounts
++  ;; for transactions that were returned but scanned after the due date
++  {:name :transition/privileged-apply-late-fees,
++   :actor :actor.role/operator,
++   :actions
++   [;; Update protected data with fee/charge tracking
++    {:name :action/update-protected-data}
++    ;; Set line items from params (passed by script)
++    {:name :action/privileged-set-line-items}
++    ;; Off-session charge on the customer's saved payment method.
++    ;; :use-customer-default-payment-method? true auto-confirms the PI
++    ;; using the saved card — no separate stripe-confirm-payment-intent
++    ;; action needed, and no customer interaction required.
++    {:name :action/stripe-create-payment-intent,
++     :config {:use-customer-default-payment-method? true}}],
++   :from :state/delivered,
++   :to :state/delivered,
++   :privileged? true}
++  ;; Privileged transition for applying late fees / replacement charges
++  ;; SCENARIO B: Never returned (transaction remains in :state/accepted, no scan)
++  ;; Called by sendOverdueReminders.js script to charge additional amounts
++  ;; for transactions where borrower never shipped the return (no return scan)
++  {:name :transition/privileged-apply-late-fees-non-return,
++   :actor :actor.role/operator,
++   :actions
++   [;; Update protected data with fee/charge tracking
++    {:name :action/update-protected-data}
++    ;; Set line items from params (passed by script)
++    {:name :action/privileged-set-line-items}
++    ;; Off-session charge on the customer's saved payment method.
++    ;; :use-customer-default-payment-method? true auto-confirms the PI
++    ;; using the saved card — no separate stripe-confirm-payment-intent
++    ;; action needed, and no customer interaction required.
++    {:name :action/stripe-create-payment-intent,
++     :config {:use-customer-default-payment-method? true}}],
++   :from :state/accepted,
++   :to :state/accepted,
++   :privileged? true}
+   {:name :transition/review-1-by-provider,
+    :actor :actor.role/provider,
+    :actions [{:name :action/post-review-by-provider}],
+diff --git a/server/lib/lateFees.js b/server/lib/lateFees.js
+index bac4c8af1..0d5a6fed3 100644
+--- a/server/lib/lateFees.js
++++ b/server/lib/lateFees.js
+@@ -36,12 +36,11 @@ const LATE_FEE_CENTS = process.env.LATE_FEE_CENTS_OVERRIDE
+ const OVERDUE_FEES_CHARGING_ENABLED =
+   String(process.env.OVERDUE_FEES_CHARGING_ENABLED || 'false').toLowerCase() === 'true';
+ 
+-// Process-version floor for late-fee charging. Current live process is v3.
+-// After pushing the privileged-apply-late-fees{,-non-return} transitions
+-// via flex-cli (scope 9.0 PR-2) and flipping the alias, confirm the new
+-// version number in the Sharetribe Console and bump this constant in the
+-// same PR that flips the alias.
+-const MIN_PROCESS_VERSION_FOR_LATE_FEES = 3;
++// Process-version floor for late-fee charging. Bumped to v4 alongside the
++// 9.0 PR-2 push that added transition/privileged-apply-late-fees{,-non-return}.
++// Earlier-version transactions predate the late-fee transitions and are
++// skipped cleanly with reason 'processVersion-too-old'.
++const MIN_PROCESS_VERSION_FOR_LATE_FEES = 4;
+ 
+ // Hard cap on chargeable days. Defense-in-depth alongside the day-6
+ // SMS hard-stop in sendOverdueReminders.js.
+@@ -219,8 +218,7 @@ async function applyCharges({ sdkInstance, txId, now }) {
+     // Detect scenario based on state and firstScanAt
+     const hasScan = isScanned(returnData);
+     const scanDate = returnData.firstScanAt ? dayjs(returnData.firstScanAt) : null;
+-    const isDeliveredWithoutScan = currentState === 'delivered' && !hasScan;
+-    
++
+     let scenario, lateDays, transitionName, effectiveDate;
+     
+     // ============================================================================
+@@ -259,47 +257,63 @@ async function applyCharges({ sdkInstance, txId, now }) {
+       console.log(`[lateFees] State: ${currentState}, Scan date: ${ymd(scanDate)}, Return due: ${ymd(returnDueAt)}`);
+       console.log(`[lateFees] Days late (based on scan): ${lateDays}`);
+       
+-    } else if ((currentState === 'accepted' || currentState === 'delivered') && !hasScan) {
+-      // SCENARIO B: Never returned (no scan, accepted OR delivered state)
++    } else if (currentState === 'accepted' && !hasScan) {
++      // SCENARIO B: Never returned (no scan, still in accepted state)
+       scenario = 'non-return';
+       effectiveDate = dayjs(now);
+-      
++
+       // When no scan exists, lateDays is calculated using today vs due date.
+       // This tracks ongoing lateness for items that haven't been returned yet.
+       // Calculate late days based on today (how many days past due)
+       lateDays = computeChargeableLateDays(now, returnDueAt);
+-      
++
+       transitionName = 'transition/privileged-apply-late-fees-non-return';
+-      
++
+       console.log(`[lateFees] SCENARIO B: Never returned (state=${currentState})`);
+       console.log(`[lateFees] No scan, Return due: ${ymd(returnDueAt)}, Today: ${ymd(now)}`);
+       console.log(`[lateFees] Days late (based on today): ${lateDays}`);
+-      if (isDeliveredWithoutScan) {
+-        console.log('[lateFees][DELIVERED-WITHOUT-SCAN][PROCESSING]', {
+-          state: currentState,
+-          txId,
+-          returnDue: ymd(returnDueAt),
+-          today: ymd(now),
+-        });
+-      }
+-      
++
++    } else if (currentState === 'accepted' && hasScan) {
++      // POLICY SKIP: Borrower has shipped the return (first scan recorded) but
++      // the package is still in transit — complete-return hasn't fired yet.
++      // The late fee clock stops at first scan; we do not penalize borrowers
++      // for carrier transit time. Normal multi-day window, not an error.
++      // Log the raw ISO firstScanAt (not just the YMD date) so future
++      // staleness investigations can grep for scans older than N days.
++      console.log(`[lateFees] SKIP tx=${txId} reason=borrower-shipped-in-transit state=${currentState} firstScanAt=${returnData.firstScanAt || 'unknown'}`);
++      return {
++        charged: false,
++        reason: 'borrower-shipped-in-transit',
++        state: currentState,
++        hasScan: true,
++        firstScanAt: returnData.firstScanAt || null,
++        scanDate: scanDate ? ymd(scanDate) : null,
++      };
++
++    } else if (currentState === 'delivered' && !hasScan) {
++      // POLICY SKIP: Transaction reached :state/delivered without a scan on
++      // record. Possible causes: operator move, missed webhook, or (future)
++      // a non-scan return path such as hand-courier delivery. Policy: once
++      // state is delivered, the item is considered returned and late fees
++      // stop regardless of scan data. Logged at WARN so data anomalies still
++      // surface for investigation until non-scan return paths are formalized.
++      console.warn(`[lateFees] SKIP tx=${txId} reason=delivered-without-scan state=${currentState} — review tx for data anomaly or non-scan return path`);
++      return {
++        charged: false,
++        reason: 'delivered-without-scan',
++        state: currentState,
++        hasScan: false,
++      };
++
+     } else {
+-      // Unexpected state/scenario combination
+-      const reason = currentState === 'delivered' && !hasScan
+-        ? 'delivered-without-scan (unexpected)'
+-        : currentState === 'accepted' && hasScan
+-        ? 'accepted-with-scan (should be delivered)'
+-        : `state-${currentState}-unhandled`;
+-      
+-      console.log(`[lateFees] ⚠️ Unexpected scenario: state=${currentState}, hasScan=${hasScan}`);
+-      console.log(`[lateFees] Skipping transaction (reason: ${reason})`);
+-      
++      // Genuine unexpected state (e.g. preauthorized, cancelled, expired).
++      // Shouldn't happen inside the overdue cron's query, but guard anyway.
++      console.log(`[lateFees] SKIP tx=${txId} reason=state-${currentState}-unhandled hasScan=${hasScan}`);
+       return {
+         charged: false,
+-        reason: reason,
+-        scenario: 'unexpected',
++        reason: `state-${currentState}-unhandled`,
+         state: currentState,
+-        hasScan
++        hasScan,
+       };
+     }
+     
+@@ -418,13 +432,13 @@ async function applyCharges({ sdkInstance, txId, now }) {
+ 
+     console.log(`[lateFees] Calling ${transitionName} with ${newLineItems.length} line items...`);
+ 
+-    // Call privileged transition to apply charges
+-    // Provide both 'ctx/new-line-items' and 'lineItems' for compatibility
++    // Call privileged transition to apply charges.
++    // :action/privileged-set-line-items reads from params.lineItems; no other
++    // key is documented or consumed by any Flex action.
+     await sdkInstance.transactions.transition({
+       id: txId,
+       transition: transitionName,
+       params: {
+-        'ctx/new-line-items': newLineItems,
+         lineItems: newLineItems,
+         protectedData: {
+           ...protectedData,
+diff --git a/server/scripts/scenarioTests/deliveredWithoutScan.js b/server/scripts/scenarioTests/deliveredWithoutScan.js
+index 9b191c42c..061ffc8a3 100644
+--- a/server/scripts/scenarioTests/deliveredWithoutScan.js
++++ b/server/scripts/scenarioTests/deliveredWithoutScan.js
+@@ -1,7 +1,14 @@
+ #!/usr/bin/env node
+ /**
+  * Scenario: Delivered state without return scan.
+- * Verifies it is treated as non-return overdue and never auto-payouts.
++ *
++ * Policy (post-PR-2): once a transaction reaches :state/delivered, the item
++ * is considered returned and late fees stop regardless of scan data. This
++ * covers data anomalies (missed webhook, operator move) and — in the future —
++ * non-scan return paths like hand-courier delivery.
++ *
++ * Verifies applyCharges() returns { charged: false, reason: 'delivered-without-scan' }
++ * and that the transaction never auto-payouts.
+  */
+ require('dotenv').config();
+ 
+@@ -74,9 +81,9 @@ async function main() {
+   assertions.push(
+     assertInvariant({
+       tag: TAG,
+-      condition: lateResult.scenario === 'non-return',
+-      success: `Classified as non-return (lateDays=${lateResult.lateDays ?? 'n/a'})`,
+-      failure: `Unexpected scenario classification: ${lateResult.scenario}`,
++      condition: lateResult.charged === false && lateResult.reason === 'delivered-without-scan',
++      success: `Skipped with reason 'delivered-without-scan' (no charge attempted)`,
++      failure: `Unexpected result: charged=${lateResult.charged} reason=${lateResult.reason}`,
+     })
+   );
+ 
+@@ -89,6 +96,11 @@ async function main() {
+     })
+   );
+ 
++  // Post-PR-2: the delivered-without-scan branch returns early without
++  // computing lateDays, so this block is effectively unreachable. Left in
++  // place as a guard — if policy ever changes to resume charging in this
++  // state, we want the replacement-at-day-5 invariant re-activated
++  // automatically rather than silently dropped.
+   if (typeof lateResult.lateDays === 'number' && lateResult.lateDays >= 5) {
+     assertions.push(
+       assertInvariant({
+diff --git a/server/scripts/sendOverdueReminders.js b/server/scripts/sendOverdueReminders.js
+index 51af7f539..26ba24004 100644
+--- a/server/scripts/sendOverdueReminders.js
++++ b/server/scripts/sendOverdueReminders.js
+@@ -690,6 +690,18 @@ async function sendOverdueReminders() {
+                   };
+                   
+                   const protectedPatch = { return: updatedReturnData };
++                  // TODO(PR-follow-up, 9.x): neither transition below exists in
++                  // the live default-booking process.edn (nor in the backup).
++                  // Every SMS send today silently fails this transition call;
++                  // the error is caught + logged and SMS still dispatches, but
++                  // `lastNotifiedDay` never persists to Flex. Dedupe relies on
++                  // the in-memory `runNotificationGuard`, which means a cron
++                  // restart mid-run can re-send the same day's SMS. Options:
++                  //   (a) add these two transitions to process.edn (mirror of
++                  //       privileged-apply-late-fees shape, no Stripe actions)
++                  //   (b) migrate to Redis idempotency like lender/shipping
++                  //       reminders did in April 2026 (pattern in CLAUDE_CONTEXT)
++                  // Not touched in PR-2 to keep scope tight. Flagged by CC review.
+                   const overdueTransition =
+                     currentState === 'delivered'
+                       ? 'transition/privileged-set-overdue-notified-delivered'
