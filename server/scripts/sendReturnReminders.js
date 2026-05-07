@@ -135,6 +135,19 @@ const DISABLE_RETURN_REMINDERS_FOR_TX =
   process.env.DISABLE_RETURN_REMINDERS_FOR_TX &&
   process.env.DISABLE_RETURN_REMINDERS_FOR_TX.trim();
 
+// Terminal states that should NEVER receive a return reminder. The base
+// query filter (state=delivered) is the primary gate; this set is a
+// defensive canary to make spurious traffic obvious in cron logs. Both
+// US ('canceled') and UK ('cancelled') spellings are accepted because
+// Sharetribe's API uses UK internally while our display layer uses US.
+const TERMINAL_STATES_DENYLIST = new Set([
+  'canceled',
+  'cancelled',
+  'declined',
+  'expired',
+  'payment-expired',
+]);
+
 function safeStringify(data, maxLen) {
   try {
     const s = JSON.stringify(data);
@@ -301,6 +314,28 @@ async function sendReturnReminders(allowExitOnError = true) {
         }
         if (ONLY_TX && txId !== ONLY_TX) {
           if (VERBOSE) console.log(`[RETURN-REMINDER-DEBUG] skipping non-target tx=${txId || '(no id)'} ONLY_TX=${ONLY_TX}`);
+          continue;
+        }
+
+        // Defensive state filter (added May 7, 2026 after spurious 8-SMS
+        // reminders fired for payment-expired/expired/canceled txns).
+        // Two layers:
+        //   1. Terminal-state denylist (canceled/cancelled/declined/expired/
+        //      payment-expired) → [SKIP-TERMINAL-STATE]. Loud log; if this
+        //      ever fires repeatedly the upstream query filter is broken.
+        //   2. Allowlist (state must equal expectedState) → [SKIP-WRONG-STATE].
+        //      Catches inquiry/pending-payment/preauthorized/accepted etc.
+        // Integration SDK returns "state/delivered"; marketplace SDK may
+        // return bare "delivered" — strip the "state/" prefix to accept both.
+        const expectedState = ONLY_STATE || 'delivered';
+        const txState = tx?.attributes?.state || '';
+        const normalizedTxState = txState.replace(/^state\//, '');
+        if (TERMINAL_STATES_DENYLIST.has(normalizedTxState)) {
+          console.log(`[RETURN-REMINDER][SKIP-TERMINAL-STATE] tx=${txId || '(no id)'} state=${txState} lastTransition=${tx?.attributes?.lastTransition || 'n/a'} — terminal state should never receive a return reminder. If this fires repeatedly, investigate upstream query filter.`);
+          continue;
+        }
+        if (normalizedTxState !== expectedState) {
+          console.log(`[RETURN-REMINDER][SKIP-WRONG-STATE] tx=${txId || '(no id)'} state=${txState} expected=${expectedState} lastTransition=${tx?.attributes?.lastTransition || 'n/a'}`);
           continue;
         }
 
