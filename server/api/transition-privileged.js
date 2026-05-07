@@ -2709,12 +2709,13 @@ module.exports = async (req, res) => {
             buyerLink = fullOrderUrl;
           }
           
-          // Borrower acceptance SMS: always try if borrowerPhone exists
+          // Borrower acceptance SMS: always try if borrowerPhone exists.
+          // Copy refresh May 7, 2026 — aligned to workbook v13 2a-SMS row.
+          // Single-line, item-focused; providerName is no longer interpolated
+          // (still resolved above for any future use, but not in this string).
           if (borrowerPhone) {
             console.log('[sms] sending borrower_accept ...');
-            const borrowerMessage = `🎉 Your Sherbrt request was accepted! 🍧
-"${listingTitle}" from ${providerName} is confirmed. 
-You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
+            const borrowerMessage = `🎉 Sherbrt 🍧: Your request for "${listingTitle}" was accepted! We'll share tracking once it ships. View details: ${buyerLink}.`;
             
             // Debug: log SMS length (Note: actual SMS segmentation depends on carrier encoding, newlines, etc.)
             console.log('[sms] borrower_accept length:', borrowerMessage.length, 'chars');
@@ -2786,25 +2787,14 @@ You'll receive tracking info once it ships! ✈️👗 ${buyerLink}`;
           console.log('🔍 Transition: transition/decline');
           
           if (borrowerPhone) {
-            // Build order page URL for borrower to view declined request (resilient to different ID shapes)
-            const tx = response?.data?.data;
-            const txIdForUrl = 
-              tx?.id?.uuid ||
-              transactionId?.uuid ||
-              transactionId ||
-              bodyParams?.params?.transactionId?.uuid;
-            const fullOrderUrl = orderUrl(txIdForUrl);
-            
-            // Use shortlink with defensive fallback
-            let declineLink;
-            try {
-              declineLink = await shortLink(fullOrderUrl);
-            } catch (err) {
-              console.warn('[sms] shortLink failed, using full URL:', err.message);
-              declineLink = fullOrderUrl;
-            }
-            
-            const message = `😔 Your Sherbrt request was declined. Don't worry — more fabulous looks are waiting to be borrowed! ${declineLink}`;
+            // Copy refresh May 7, 2026 — aligned to workbook v13 2b-SMS row.
+            // Switched from per-tx order URL (declineLink) to a static
+            // browse/re-shop link so the borrower lands on more inventory
+            // rather than the dead transaction view. Same link is used by
+            // 1c-SMS in sendLenderRequestReminders.js — refactor to env
+            // var BORROWER_RESHOP_URL is tracked as a follow-up in the
+            // May 7 backlog (CLAUDE_CONTEXT.md).
+            const message = `😔 Sherbrt 🍧: Your borrow request was declined. Don't worry — new looks are waiting to be borrowed! Check them out!  https://www.sherbrt.com/r/lyBUNc13c1.`;
             
             // Debug: log SMS length (Note: actual SMS segmentation depends on carrier encoding, newlines, etc.)
             console.log('[sms] borrower_decline length:', message.length, 'chars');
