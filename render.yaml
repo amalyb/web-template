@@ -119,3 +119,33 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+
+  # Confirm-payment events poller — fires the lender booking-request SMS
+  # (1-SMS / `booking_request_to_lender_alt` tag) once a borrower's Stripe
+  # PaymentIntent is authorized (`:state/preauthorized`, transition
+  # `transition/confirm-payment`). Replaces the in-handler dispatch that
+  # used to live in initiate-privileged.js (May 8, 2026 — was firing on
+  # `request-payment` and spamming lenders for abandoned PaymentSheet
+  # sessions that died at the 15-min `payment-expired` timeout).
+  # NOTE: same as the other crons — render.yaml is NOT auto-synced in this
+  # project; service must be created manually in the Render UI to match
+  # this block. Live config target:
+  #   schedule: every 2 min (*/2 * * * *)
+  #   command: --once (process exits after each tick)
+  # 5-min lookback window (3-min overlap with prior tick); helper-side
+  # Redis dedup `lenderBookingSms:{txId}:sent` (7d TTL) suppresses
+  # duplicates from window overlap or worker restarts.
+  # Integration SDK credentials (INTEGRATION_CLIENT_ID/SECRET) and Twilio
+  # credentials must be present in the Render env. SendGrid keys are NOT
+  # needed (this cron sends SMS only, no email).
+  - type: cron
+    name: confirm-payment-events
+    env: node
+    plan: starter
+    schedule: "*/2 * * * *"
+    buildCommand: yarn install && yarn run render-build
+    startCommand: node server/scripts/processConfirmPaymentEvents.js --once
+    nodeVersion: 20.10.0
+    envVars:
+      - key: NODE_ENV
+        value: production

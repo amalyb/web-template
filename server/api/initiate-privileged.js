@@ -6,66 +6,18 @@ const {
   serialize,
   fetchCommission,
 } = require('../api-util/sdk');
-const { getIntegrationSdk } = require('../api-util/integrationSdk');
-const { maskPhone } = require('../api-util/phone');
-const { alreadySent } = require('../api-util/idempotency');
-const { attempt, sent, failed } = require('../api-util/metrics');
 const { normalizePhoneE164 } = require('../util/phone');
-const { calculateTotalForProvider } = require('../api-util/lineItemHelpers');
-const { formatMoneyServerSide } = require('../api-util/lenderEarnings');
-const { shortLink } = require('../api-util/shortlink');
-const { orderUrl, saleUrl } = require('../util/url');
 // Helper to normalize listingId to string
 const toUuidString = id =>
   typeof id === 'string' ? id : (id && (id.uuid || id.id)) || null;
 
-// Conditional import of sendSMS to prevent module loading errors
-let sendSMS = null;
-try {
-  const smsModule = require('../api-util/sendSMS');
-  sendSMS = smsModule.sendSMS;
-} catch (error) {
-  console.warn('⚠️ SMS module not available — SMS functionality disabled');
-  sendSMS = () => Promise.resolve(); // No-op function
-}
+// Lender SMS deferred to confirm-payment (preauthorized state) — see
+// server/api-util/lender-booking-sms.js. Avoids spamming lenders on
+// abandoned PaymentSheet sessions that die at payment-expired (15min).
+// Borrower request-confirmation SMS removed entirely: informational SMS
+// for a user-initiated on-screen action — adds noise without value.
 
 console.log('🚦 initiate-privileged endpoint is wired up');
-
-/**
- * Helper function to build lender SMS message with dynamic values
- * @param {Object} tx - Transaction object
- * @param {string} listingTitle - Listing title
- * @param {string} borrowerFirstName - Borrower's first name (optional)
- * @param {Money} payoutTotal - Lender's payout amount (Money object)
- * @param {string} shortUrl - Short URL for the transaction
- * @returns {string} SMS message
- */
-async function buildLenderMsg(tx, listingTitle, borrowerFirstName, payoutTotal, shortUrl) {
-  // Fallback values for graceful handling
-  const firstName = borrowerFirstName || 'Someone';
-  const title = listingTitle || 'your listing';
-  const formattedPayout = payoutTotal ? formatMoneyServerSide(payoutTotal) : null;
-  
-  // Build message with dynamic values.
-  //
-  // 10.0 PR-4: operator-approved copy surfaces the 24h acceptance window at
-  // first contact, matching the v5 process.edn expire clause. Note the
-  // comma (not period) after the title — technical comma-splice but the
-  // approved template (April 23, 2026).
-  //
-  // Example final composed message:
-  //   Sherbrt 🍧: Monica wants to borrow your "Faille Halter Mini Dress",
-  //   You'll earn $48 💸🤑. You have 24hrs to accept: https://sherbrt.com/r/abc
-  let message = `Sherbrt 🍧: ${firstName} wants to borrow your "${title}"`;
-
-  if (formattedPayout) {
-    message += `, You'll earn ${formattedPayout} 💸🤑`;
-  }
-
-  message += `. You have 24hrs to accept: ${shortUrl}`;
-
-  return message;
-}
 
 module.exports = (req, res) => {
   console.log('🚀 initiate-privileged endpoint HIT!');
@@ -105,10 +57,6 @@ module.exports = (req, res) => {
   
   // STEP 2: Log the transition type
   console.log('🔁 Transition received:', bodyParams?.transition);
-  
-  // STEP 3: Check that sendSMS is properly imported
-  console.log('📱 sendSMS function available:', !!sendSMS);
-  console.log('📱 sendSMS function type:', typeof sendSMS);
 
   // 🔧 FIXED: Remove unused state variables and client SDK usage
   // We'll get listing data and line items inside the trusted SDK chain
@@ -255,225 +203,6 @@ module.exports = (req, res) => {
         apiResponse = await sdk.transactions.initiate(body, queryParams);
       }
 
-      // 🔧 FIXED: Use fresh transaction data from the API response
-      const tx = apiResponse?.data?.data;  // Flex SDK shape
-      
-      // STEP 4: Add a forced test log
-      console.log('🧪 Inside initiate-privileged — beginning SMS evaluation');
-      
-      // 🔧 FIXED: Lender notification SMS for booking requests - ensure provider phone only
-      if (
-        bodyParams?.transition === 'transition/request-payment' &&
-        !isSpeculative &&
-        tx
-      ) {
-        try {
-          console.log('📨 [SMS][booking-request] Preparing to send lender notification SMS');
-          
-          // Provider resolution (you already have this pattern)
-          const txProviderId = tx?.relationships?.provider?.data?.id || null;
-          const listingAuthorId = listing?.relationships?.author?.data?.id || null;
-          const providerId = txProviderId || listingAuthorId;
-
-          console.log('[SMS][booking-request] Provider ID resolution:', {
-            txProviderId: txProviderId?.uuid || txProviderId,
-            listingAuthorId: listingAuthorId?.uuid || listingAuthorId,
-            chosenProviderId: providerId?.uuid || providerId,
-          });
-
-          if (!providerId) {
-            console.warn('[SMS][booking-request] No provider ID from tx/listing; skipping lender SMS');
-          } else {
-            // 🔑 Integration fetch (operator permissions) — can read profile.protectedData
-            const iSdk = getIntegrationSdk();
-            const idStr = providerId?.uuid ?? providerId; // Integration SDK expects a string UUID
-            const prov = await iSdk.users.show({ id: idStr });
-            const prof = prov?.data?.data?.attributes?.profile || null;
-
-            // Inspect what we got (avoid logging full PII)
-            console.log('[SMS][booking-request] Provider profile fields present:', {
-              hasProtected: !!prof?.protectedData,
-              hasPublic: !!prof?.publicData,
-            });
-
-            const provPhone =
-              prof?.protectedData?.phone ??
-              prof?.protectedData?.phoneNumber ??
-              prof?.publicData?.phone ??
-              prof?.publicData?.phoneNumber ??
-              null;
-
-            console.log('[SMS][booking-request] Provider phone (raw, masked):',
-              maskPhone(provPhone)
-            );
-
-            // Optional: safety — don't accidentally send to borrower's phone
-            const borrowerId = tx?.relationships?.customer?.data?.id || null;
-            if (borrowerId && (borrowerId?.uuid ?? borrowerId) === (providerId?.uuid ?? providerId)) {
-              console.warn('[SMS][booking-request] Provider equals customer; aborting lender SMS');
-            } else if (provPhone) {
-              // Fetch borrower profile to get first name
-              let borrowerFirstName = null;
-              if (borrowerId) {
-                try {
-                  // First, try to get firstName from transaction if customer data is already included
-                  borrowerFirstName = tx?.relationships?.customer?.data?.attributes?.profile?.firstName ||
-                                     tx?.relationships?.customer?.data?.attributes?.profile?.publicData?.firstName ||
-                                     tx?.relationships?.customer?.data?.attributes?.profile?.protectedData?.firstName ||
-                                     null;
-                  
-                  // If not found in transaction, fetch customer profile
-                  if (!borrowerFirstName) {
-                    const customer = await sdk.users.show({ 
-                      id: borrowerId,
-                      include: ['profile']
-                    });
-                    const customerProf = customer?.data?.data?.attributes?.profile;
-                    borrowerFirstName = customerProf?.firstName || 
-                                       customerProf?.publicData?.firstName ||
-                                       customerProf?.protectedData?.firstName ||
-                                       null;
-                  }
-                } catch (customerErr) {
-                  console.warn('[SMS][booking-request] Could not fetch borrower profile for first name:', customerErr.message);
-                }
-              }
-              
-              // Fallback: Extract first name from protectedData.customerName if profile lookup didn't find it
-              if (!borrowerFirstName) {
-                const rawName =
-                  finalProtectedData?.customerName ||
-                  protectedData?.customerName ||
-                  orderData?.customerName ||
-                  null;
-                
-                if (typeof rawName === 'string' && rawName.trim()) {
-                  borrowerFirstName = rawName.trim().split(/\s+/)[0];
-                  console.log('[SMS][booking-request] Extracted first name from customerName:', borrowerFirstName);
-                }
-              }
-              
-              // Calculate lender payout from line items
-              let payoutTotal = null;
-              try {
-                if (lineItems && lineItems.length > 0) {
-                  payoutTotal = calculateTotalForProvider(lineItems);
-                  console.log('[SMS][booking-request] Calculated payout total:', payoutTotal);
-                }
-              } catch (payoutErr) {
-                console.warn('[SMS][booking-request] Could not calculate payout:', payoutErr.message);
-              }
-              
-              // Generate short URL for the transaction (lender sees /sale/:id, not /order/:id)
-              const txId = tx?.id?.uuid || tx?.id;
-              const targetPath = `/sale/${txId}`;
-              const fullSaleUrl = txId ? saleUrl(txId) : (process.env.WEB_APP_URL || process.env.ROOT_URL || 'https://www.sherbrt.com');
-              let shortUrl = fullSaleUrl;
-              try {
-                shortUrl = await shortLink(fullSaleUrl);
-              } catch (shortLinkErr) {
-                console.warn('[SMS][booking-request] Could not generate short link, using full URL:', shortLinkErr.message);
-              }
-              
-              console.log('[SMS][booking-request][DEBUG] Lender link target:', targetPath, 'shortUrl:', shortUrl);
-              
-              const listingTitle = listing?.attributes?.title || 'your listing';
-              
-              // TODO: Remove this debug log after verifying borrowerFirstName works correctly
-              const formattedPayout = payoutTotal ? formatMoneyServerSide(payoutTotal) : null;
-              console.log('[SMS][booking-request][DEBUG] SMS values:', {
-                borrowerFirstName: borrowerFirstName || 'Someone (fallback)',
-                listingTitle,
-                formattedPayout: formattedPayout || 'N/A',
-                shortUrl
-              });
-              
-              const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:lender`;
-              if (alreadySent(key)) {
-                console.log('[SMS] duplicate suppressed (lender):', key);
-              } else {
-                try {
-                  const lenderMsg = await buildLenderMsg(tx, listingTitle, borrowerFirstName, payoutTotal, shortUrl);
-                  await sendSMS(provPhone, lenderMsg, { 
-                    role: 'lender',
-                    tag: 'booking_request_to_lender_alt',
-                    meta: { listingId: listing?.id?.uuid || listing?.id }
-                  });
-                  console.log(`📱 [SMS][booking-request] Lender notification sent to ${maskPhone(provPhone)}`);
-                } catch (e) {
-                  console.error('[SMS][booking-request] Lender SMS failed:', e.message);
-                }
-              }
-            } else {
-              console.warn('[SMS][booking-request] Provider missing phone; skipping lender SMS');
-            }
-          }
-
-          // 🔧 FIXED: Fetch customer profile if available (borrower SMS - unchanged)
-          let borrowerPhone = null;
-          const customerId = tx?.relationships?.customer?.data?.id;
-          if (customerId) {
-            try {
-              const customer = await sdk.users.show({ 
-                id: customerId,
-                include: ['profile']
-              });
-              
-              const customerProf = customer?.data?.data?.attributes?.profile;
-              borrowerPhone = customerProf?.protectedData?.phone
-                ?? customerProf?.protectedData?.phoneNumber
-                ?? customerProf?.publicData?.phone
-                ?? customerProf?.publicData?.phoneNumber
-                ?? null;
-            } catch (customerErr) {
-              console.warn('[SMS][booking-request] Could not fetch customer profile:', customerErr.message);
-            }
-          }
-
-          // Send customer confirmation SMS
-          if (customerId && borrowerPhone) {
-            try {
-              console.log('📨 [SMS][customer-confirmation] Preparing to send customer confirmation SMS');
-              
-                              const listingTitle = listing?.attributes?.title || 'your listing';
-                // Carrier-friendly borrower message - use order URL for borrower
-                const txIdForBorrower = tx?.id?.uuid || tx?.id;
-                const fullOrderUrl = txIdForBorrower ? orderUrl(txIdForBorrower) : (process.env.WEB_APP_URL || process.env.ROOT_URL || 'https://www.sherbrt.com');
-                let borrowerLink = fullOrderUrl;
-                try {
-                  borrowerLink = await shortLink(fullOrderUrl);
-                } catch (shortLinkErr) {
-                  console.warn('[SMS][customer-confirmation] Could not generate short link, using full URL:', shortLinkErr.message);
-                }
-                const borrowerMsg = `Sherbrt: your booking request for "${listingTitle}" was sent. Track: ${borrowerLink}`;
-              
-              const key = `${tx?.id?.uuid || 'no-tx'}:transition/request-payment:borrower`;
-              if (alreadySent(key)) {
-                console.log('[SMS] duplicate suppressed (borrower):', key);
-              } else {
-                try {
-                  await sendSMS(borrowerPhone, borrowerMsg, { 
-                    role: 'borrower',
-                    tag: 'booking_confirmation_to_borrower',
-                    meta: { listingId: listing?.id?.uuid || listing?.id }
-                  });
-                  console.log(`✅ [SMS][customer-confirmation] Customer confirmation sent to ${maskPhone(borrowerPhone)}`);
-                } catch (e) {
-                  console.error('[SMS][customer-confirmation] Customer SMS failed:', e.message);
-                }
-              }
-              
-            } catch (customerSmsErr) {
-              console.error('[SMS][customer-confirmation] Customer SMS failed:', customerSmsErr.message);
-            }
-          } else {
-            console.log('[SMS][customer-confirmation] Skipping customer SMS - missing customerId or phone:', { customerId, borrowerPhone });
-          }
-        } catch (err) {
-          console.error('❌ [SMS][booking-request] Error in SMS logic:', err.message);
-        }
-      }
-      
       // 🔧 FIXED: Return the API response to be handled by the final .then()
       return apiResponse;
     })
