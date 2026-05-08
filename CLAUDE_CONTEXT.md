@@ -283,6 +283,186 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 8, 2026 — Lender SMS deferred to preauthorized via Integration API events poller; borrower request-confirmation SMS removed
+
+**Surfaced.** Mobile dogfood on TestFlight build 0.1.0 (4): the lender
+1-SMS fired the moment the borrower tapped Pay in the Stripe
+PaymentSheet — i.e. on `transition/request-payment` — even when the
+PaymentSheet was abandoned and the tx died at `:state/payment-expired`
+(15min Stripe timeout). Lenders saw "Faille Halter Mini Dress —
+$48 💸🤑" notifications for bookings that never reached
+`:state/preauthorized`, eroding trust in the channel. Same dogfood
+also re-confirmed that the borrower confirmation SMS at
+`request-payment` (`booking_confirmation_to_borrower` tag) had been a
+silent no-op in practice — production logs show
+`customerId: undefined, borrowerPhone: null skip` consistently — so
+borrowers were never receiving an SMS confirming an action they had
+just taken on-screen anyway.
+
+**Industry pattern.** Airbnb / DoorDash / Uber Eats all defer
+host/lender notifications until payment authorization succeeds, not
+when the customer first taps the pay button. The
+`:state/pending-payment → :state/preauthorized` transition (via
+`transition/confirm-payment`, customer-actor, `stripe-confirm-payment-intent`)
+is the natural fire point: at that moment the card has been
+authorized but not yet captured, exactly the state in which the
+lender should be asked to accept.
+
+**Why polling, not in-handler dispatch.** First attempt added the
+helper call to `transition-privileged.js` in the confirm-payment
+branch; got vetoed before commit. Both web and mobile clients fire
+`transition/confirm-payment` via `sdk.transactions.transition`
+directly (web `CheckoutPage.duck.js:399`; mobile
+`lib/checkout.ts:189`), and `confirm-payment` is not in
+`isPrivileged()` allowlist
+(`src/transactions/transactionProcessBooking.js:216` — only
+REQUEST_PAYMENT + REQUEST_PAYMENT_AFTER_INQUIRY). The transition
+never hits our `/api/transition-privileged` endpoint, so an in-handler
+dispatch would be a no-op. Sharetribe Flex doesn't expose webhooks
+either — the only reliable way to react to a customer-actor transition
+fired straight through the SDK is to poll the Integration API events
+endpoint. That's the established pattern in this repo
+(`sendShippingReminders.js`, `sendLenderRequestReminders.js`,
+`sendAutoCancelUnshipped.js` all do it).
+
+**The poller — `server/scripts/processConfirmPaymentEvents.js`.**
+- `sdk.events.query({ eventTypes: 'transaction/transitioned',
+  createdAtStart })` with `createdAtStart = now - 5min`. The 5-min
+  lookback creates a 3-min overlap with the prior tick (cron runs
+  every 2 min) so late or skipped ticks don't drop events.
+- In-code filter: `event.attributes.resource.attributes.lastTransition
+  === 'transition/confirm-payment'`. Sharetribe events stream emits
+  one event type for all transitions; the SDK doesn't support filtering
+  on `lastTransition` server-side, so the post-fetch filter is the
+  documented approach (per Integration SDK README).
+- For each matching event: `sdk.transactions.show({ id, include:
+  ['listing','customer','provider'] })` to get the full tx, then call
+  `sendLenderBookingRequestSMS({ tx, listing, lineItems, sdk })`.
+- Per-event try/catch — one bad event (Sharetribe 500 on `show`,
+  Twilio rate limit, etc.) doesn't kill the batch.
+- Structured logs at every level: `[confirm-payment-events] Querying
+  events stream` (entry), `Event summary` (fetched / matched counts),
+  per-event failures with `txId` + `eventId` + `message`,
+  `Run complete` summary `{ fetched, matched, attempted, succeeded,
+  failed }`. Mirrors the existing cron logging style.
+- `--dry-run` flag and `DRY_RUN=1` env honor — logs the would-dispatch
+  list without calling the helper. `--verbose` for skip-path detail.
+- Process exits 0 on success / 1 on fatal so the cron container can
+  shut down cleanly.
+
+**Idempotency lives in the helper.** `server/api-util/lender-booking-sms.js`
+now uses Redis (`getRedis()`) instead of the in-process
+`alreadySent()` cache. Key `lenderBookingSms:{txId}:sent` (7d TTL),
+set only AFTER a successful `sendSMS` call so a Twilio failure
+mid-flight doesn't lock out a retry. `alreadySent()`'s 2-min TTL
+in-memory map was useless across cron-tick processes (each tick is
+its own Node process — Map state doesn't survive). Per-tx (not
+per-tx-per-transition) granularity is intentional: a lender SMS for
+this transaction either has been sent or hasn't, regardless of which
+event observation triggered it. If Redis is unreachable, the helper
+falls through to send (warn-and-proceed pattern matching
+`sendShippingReminders.js`) — better an occasional dup than a
+permanent miss.
+
+**Refactor of the source code (initiate-privileged.js cleanup).**
+Stripped the entire SMS dispatch block (lines 264-475 in the
+pre-change file):
+- Lender SMS section (271-410) → moved to
+  `server/api-util/lender-booking-sms.js`.
+- Borrower SMS section (433-471) → deleted outright (silent no-op in
+  production; informational SMS for a user-initiated on-screen action
+  adds noise without value).
+- Wrapping `if (transition === 'transition/request-payment' &&
+  !isSpeculative && tx)` guard, surrounding try/catch, and
+  `🧪 Inside initiate-privileged — beginning SMS evaluation` marker
+  log (grep confirmed marker was only used by this block).
+- Eight imports that became unused after the strip: `getIntegrationSdk`,
+  `maskPhone`, `alreadySent`, `attempt/sent/failed` from metrics
+  (already unused at HEAD), `calculateTotalForProvider`,
+  `formatMoneyServerSide`, `shortLink`, `orderUrl`/`saleUrl`. Plus
+  the conditional `sendSMS` import block and the inline
+  `buildLenderMsg` function.
+- `server/api/transition-privileged.js` is UNTOUCHED. The first-pass
+  dispatch wired into the confirm-payment branch was reverted (it
+  would never have fired — see "why polling" above).
+
+The `server/api-util/lender-booking-sms.copy.test.js` regression test
+was renamed from `server/api/initiate-privileged.copy.test.js`
+(matches the helper's new home). Same regex assertions, just an
+updated `path.resolve(__dirname, …)` target.
+
+**User-side action required.** The Render cron job must be created
+manually in the Render UI to match the new `render.yaml` block —
+this project does NOT auto-sync `render.yaml` to Render (per the
+existing comments on `auto-cancel-unshipped`, `lender-request-reminders`,
+`shipping-reminders`). Create job:
+- Name: `confirm-payment-events`
+- Type: Cron Job
+- Schedule: `*/2 * * * *`
+- Build: `yarn install && yarn run render-build`
+- Start: `node server/scripts/processConfirmPaymentEvents.js --once`
+- Env: same `INTEGRATION_CLIENT_ID/SECRET`, Twilio creds, `REDIS_URL`
+  as the other lender-side crons. SendGrid not needed.
+
+**Latency expectation.** Borrower confirms payment → up to ~2 min
+until lender SMS (cron interval). Acceptable for booking flow:
+lender has a 24h window to accept after preauthorized, so a 2-min
+notification delay is invisible in practice. Compare to the previous
+in-handler dispatch which was sub-second — the latency increase is
+the cost of moving the trigger to the right state.
+
+**Soak window plan (24h, mirrors PR #58 pattern).** Watch for:
+- Render cron logs for `confirm-payment-events` show non-zero
+  `matched` counts during normal traffic windows; zero `failed`.
+- Twilio outbound volume on tag `booking_request_to_lender_alt`
+  matches the rate of completed bookings (PaymentIntent status
+  `requires_capture` from Stripe, NOT just `requires_confirmation`).
+  Pre-change baseline included abandoned-PaymentSheet noise; new
+  baseline should be lower-and-cleaner.
+- No new Sharetribe API rate-limit errors in Render logs — the new
+  cron adds ~30 events.query calls/hour, well under the limit.
+- "Lender didn't get SMS for a real booking" complaints in the
+  operator inbox or dogfood Slack channel.
+After 24h with no incidents, mark soak-complete in the next session
+entry. If `matched` count stays at 0 across normal-traffic windows,
+re-check the Render cron is actually scheduled and that
+`INTEGRATION_CLIENT_ID/SECRET` are wired in the cron's env.
+
+**Files touched.**
+- New: [server/api-util/lender-booking-sms.js](server/api-util/lender-booking-sms.js)
+  (Redis-backed dedup, helper signature
+  `sendLenderBookingRequestSMS({ tx, listing, lineItems, sdk })`)
+- New: [server/scripts/processConfirmPaymentEvents.js](server/scripts/processConfirmPaymentEvents.js)
+  (cron poller — entry point + module export)
+- New: [server/scripts/processConfirmPaymentEvents.test.js](server/scripts/processConfirmPaymentEvents.test.js)
+  (6 unit tests: filter behavior, helper invocation, error
+  isolation, missing-id skip, lookback-window math)
+- Renamed: `server/api/initiate-privileged.copy.test.js` →
+  [server/api-util/lender-booking-sms.copy.test.js](server/api-util/lender-booking-sms.copy.test.js)
+  (path constant updated; test bodies unchanged)
+- Edit: [server/api/initiate-privileged.js](server/api/initiate-privileged.js)
+  — strip SMS block + 8 imports + sendSMS marker log; add
+  in-context comment pointing at the helper + cron
+- Edit: [render.yaml](render.yaml) — new `confirm-payment-events`
+  cron block (documentation-only; not auto-synced — see User-side
+  action required above)
+
+**Verification.**
+- `grep -rn "booking_request_to_lender_alt" server/ | grep -v test |
+  grep -v node_modules` → exactly one match
+  (`server/api-util/lender-booking-sms.js`).
+- `grep -rn "booking_confirmation_to_borrower" server/ | grep -v
+  test | grep -v node_modules` → zero matches.
+- `npm run test-server` — touched tests pass; pre-existing
+  `server/__tests__/shipping-estimates.test.js` failures (4)
+  reference unexported `buildShippingLine`/`getZips` and fail
+  identically on HEAD, unrelated to this PR.
+- New poller tests: 6/6 pass via
+  `npx jest server/scripts/processConfirmPaymentEvents.test.js`.
+- Prettier baseline on `initiate-privileged.js` is non-conformant on
+  HEAD (whole-codebase drift) — this PR doesn't introduce new
+  prettier failures.
+
 ### May 7, 2026 — 4-issue SMS / inbox-copy fix-up (default-booking expire flows)
 
 **The bugs.** Three back-to-back transactions (`69f8e5ee-…`,

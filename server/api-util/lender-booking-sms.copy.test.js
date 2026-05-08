@@ -1,15 +1,18 @@
 /**
- * PR-4 (10.0): initiate-privileged 1-SMS copy update.
+ * PR-4 (10.0): lender booking-request 1-SMS copy regression.
  *
- * Source-level regression: confirms the operator-approved copy change
- * landed correctly — comma (not period) after the listing title,
- * and the 24h window language replaces the old "Tap to review & accept".
+ * Source-level regression: confirms the operator-approved copy stays
+ * intact — comma (not period) after the listing title, and the 24h
+ * window language replaces the old "Tap to review & accept".
+ *
+ * Helper was extracted from initiate-privileged.js on May 8, 2026 when
+ * lender SMS moved from request-payment to confirm-payment dispatch.
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const SCRIPT = path.resolve(__dirname, 'initiate-privileged.js');
+const SCRIPT = path.resolve(__dirname, 'lender-booking-sms.js');
 const src = fs.readFileSync(SCRIPT, 'utf8');
 
 describe('PR-4: 1-SMS copy', () => {
