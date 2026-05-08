@@ -463,6 +463,57 @@ re-check the Render cron is actually scheduled and that
   HEAD (whole-codebase drift) — this PR doesn't introduce new
   prettier failures.
 
+**May 8, 2026 — addendum (lineItems shape fix, post-deploy).**
+First dogfood after PR #63 merged validated end-to-end (SMS delivered
+to lender via the cron) but surfaced a small follow-up bug in the
+Render logs:
+
+```
+[SMS][booking-request] Could not calculate payout: Value must be a Money type
+```
+
+The lender SMS shipped without the earnings tease — `"Sherbrt 🍧:
+Amalia wants to borrow your \"Cindy Dress\". You have 24hrs to
+accept: <url>"` — losing the conversion-driving `"You'll earn $XX.XX
+💸🤑"` clause. *Cause.* `tx.attributes.lineItems[i].unitPrice`
+(and `lineTotal`) come back from `sdk.transactions.show()` as plain
+`{ amount, currency }` objects, not `Money` class instances. The
+helper called `calculateTotalForProvider` from
+`server/api-util/lineItemHelpers.js`, which delegates to
+`getAmountAsDecimalJS`, which has an `instanceof Money` guard
+(`server/api-util/currency.js:215`) — that's the throw site.
+
+*Fix.* Swap to `calculateLenderPayoutTotal` from
+`server/api-util/lenderEarnings.js`. That helper was authored
+specifically for the Integration-SDK shape: it tries
+`calculateTotalForProvider` first and on throw falls back to a manual
+calculation that handles plain `{amount, currency}` objects AND
+goog.math.Long amounts, returning `null` instead of throwing. Same
+helper `sendLenderRequestReminders.js` uses for the 60m follow-up
+SMS — its docblock literally says "used by both the initial lender
+SMS and the 60-minute follow-up reminder worker so the two messages
+can never drift on the earnings amount." Should have used it during
+the original PR #63 extraction; missed it.
+
+*Files touched.*
+- Edit: `server/api-util/lender-booking-sms.js` — replace
+  `calculateTotalForProvider` import and call with
+  `calculateLenderPayoutTotal`. Drop the surrounding try/catch
+  (the new helper returns `null` instead of throwing).
+- New: `server/api-util/lender-booking-sms.payout.test.js` — 3
+  unit tests using a `tx` fixture with plain-object `lineItems`
+  (mirrors `transactions.show()` output): asserts
+  `"You'll earn $90.00 💸🤑"` is in the SMS body, fallback to
+  `tx.attributes.lineItems` when explicit `lineItems` arg is null,
+  graceful no-earnings copy when lineItems are missing entirely.
+
+*Branch.* `chore/lender-sms-payout-money-shape` (off main post-PR-63
+merge). Verification: `npm run test-server` 222/226 pass — same 4
+pre-existing `shipping-estimates.test.js` failures unchanged. Manual
+cron retest after Render redeploy: confirm log shows `[SMS][booking-
+request] Calculated payout total: Money { ... }` and SMS body
+includes earnings tease.
+
 ### May 7, 2026 — 4-issue SMS / inbox-copy fix-up (default-booking expire flows)
 
 **The bugs.** Three back-to-back transactions (`69f8e5ee-…`,

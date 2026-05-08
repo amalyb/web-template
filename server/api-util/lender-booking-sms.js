@@ -18,8 +18,7 @@
 
 const { getIntegrationSdk } = require('./integrationSdk');
 const { maskPhone } = require('./phone');
-const { calculateTotalForProvider } = require('./lineItemHelpers');
-const { formatMoneyServerSide } = require('./lenderEarnings');
+const { calculateLenderPayoutTotal, formatMoneyServerSide } = require('./lenderEarnings');
 const { shortLink } = require('./shortlink');
 const { saleUrl } = require('../util/url');
 const { getRedis } = require('../redis');
@@ -142,16 +141,18 @@ async function sendLenderBookingRequestSMS({ tx, listing, lineItems, sdk }) {
     }
   }
 
-  let payoutTotal = null;
-  try {
-    const effectiveLineItems =
-      Array.isArray(lineItems) && lineItems.length > 0 ? lineItems : tx?.attributes?.lineItems;
-    if (effectiveLineItems && effectiveLineItems.length > 0) {
-      payoutTotal = calculateTotalForProvider(effectiveLineItems);
-      console.log('[SMS][booking-request] Calculated payout total:', payoutTotal);
-    }
-  } catch (payoutErr) {
-    console.warn('[SMS][booking-request] Could not calculate payout:', payoutErr.message);
+  // Money-shape note: tx.attributes.lineItems from sdk.transactions.show()
+  // (Integration SDK) come back with unitPrice/lineTotal as plain
+  // { amount, currency } objects (or goog.math.Long amounts), NOT Money
+  // instances. calculateLenderPayoutTotal handles both shapes — same helper
+  // sendLenderRequestReminders.js uses for the 60m follow-up SMS.
+  const effectiveLineItems =
+    Array.isArray(lineItems) && lineItems.length > 0 ? lineItems : tx?.attributes?.lineItems;
+  const payoutTotal = calculateLenderPayoutTotal(effectiveLineItems);
+  if (payoutTotal) {
+    console.log('[SMS][booking-request] Calculated payout total:', payoutTotal);
+  } else if (effectiveLineItems && effectiveLineItems.length > 0) {
+    console.warn('[SMS][booking-request] Could not calculate payout from lineItems');
   }
 
   const txId = tx?.id?.uuid || tx?.id;
