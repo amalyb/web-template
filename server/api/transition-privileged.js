@@ -1089,12 +1089,16 @@ async function createShippingLabels({
           const rawTitle = (listing && (listing.attributes?.title || listing.title)) || 'your item';
           const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
           
-          // One-time log before SMS (as requested)
-          console.log('[SMS][LENDER:shipBy]', { 
-            shipByISO: shipByDate?.toISOString?.(), 
-            leadDays, 
-            miles: miles ? Math.round(miles) : null, 
-            mode 
+          // One-time log before SMS. NOTE: leadDays / miles / mode are
+          // internals of computeShipByDate() and are NOT in scope here —
+          // referencing them previously threw `ReferenceError: leadDays is
+          // not defined`, which the outer catch turned into the symptom
+          // "[SMS][Step-3] error sending lender SMS … leadDays is not
+          // defined" and aborted the lender notification.
+          console.log('[SMS][LENDER:shipBy]', {
+            shipByISO: shipByDate?.toISOString?.() || null,
+            shipByFormatted: shipByStr,
+            txId,
           });
 
           // Build the lender SMS using the new strict QR/label-only function
@@ -1345,16 +1349,30 @@ async function createShippingLabels({
         console.log('📦 [SHIPPO] Creating return shipment (customer → provider)...');
         
         // For return shipment, reverse the addresses:
-        // - address_from: customer (borrower) returning the item
-        // - address_to: provider (lender) receiving the return
-        // Apply email suppression to return label recipient (provider) as well
-        let returnAddressFrom = buildShippoAddress(rawCustomerAddress, { suppressEmail: suppress });
-        let returnAddressTo = buildShippoAddress(rawProviderAddress, { suppressEmail: false });
-        
-        // Runtime guard for return label too
-        if (suppress && returnAddressFrom.email) {
-          console.warn('[SHIPPO] Removing email from return label address_from due to suppression flag.');
-          delete returnAddressFrom.email;
+        // - address_from: customer (borrower) returning the item — is the SENDER
+        // - address_to:   provider (lender) receiving the return — is the RECIPIENT
+        //
+        // The SHIPPO_SUPPRESS_RECIPIENT_EMAIL flag is intended to suppress
+        // *recipient* notifications (UPS Quantum View, USPS Informed
+        // Delivery), so it must only ever drop the email on the
+        // `address_to` side — never on `address_from`. USPS additionally
+        // rejects labels whose `address_from.email` is empty (returns
+        // `Attribute "address_from.email" must not be empty.`), which is
+        // what previously broke return-label creation for this tx.
+        let returnAddressFrom = buildShippoAddress(rawCustomerAddress, { suppressEmail: false });
+        let returnAddressTo = buildShippoAddress(rawProviderAddress, { suppressEmail: suppress });
+
+        // Defensive: if for any reason rawCustomerAddress lacks an email
+        // (older protectedData rows pre-checkout-email-capture), fall
+        // back to a deterministic Sherbrt support address so USPS does
+        // not reject the label.
+        if (!returnAddressFrom.email) {
+          const fallback = process.env.SHIPPO_FALLBACK_SENDER_EMAIL || 'shipping@sherbrt.com';
+          console.warn('[SHIPPO][RETURN] customer email missing on address_from; using fallback', {
+            txId,
+            fallback,
+          });
+          returnAddressFrom.email = fallback;
         }
         
         // ──────────────────────────────────────────────────────────────────────────────
