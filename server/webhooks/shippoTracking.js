@@ -89,6 +89,54 @@ function hasReplacementCharged(tx) {
   return !!ret.replacementCharged;
 }
 
+// Resolve the listing title for SMS interpolation.
+//
+// Background: `integrationSdk.transactions.show({ id, include: ['listing'] })`
+// returns the listing resource in `response.data.included`, NOT denormalized
+// onto `transaction.attributes.listing`. The relationship under
+// `transaction.relationships.listing.data` is only a `{ type, id }` reference
+// without `attributes.title`. This webhook discards `response.data.included`
+// at every fetch site, so the previous inline expression
+//   `listing?.title || listing?.attributes?.title || 'your item'`
+// always evaluated to the fallback. That caused the borrower SMS to read
+//   `🚚 Sherbrt 🍧: "your item" is on its way! ...`
+// (CLAUDE_CONTEXT.md — Steps 7/8/10/11 SMS copy section — documents the
+// canonical pattern of resolving title through `included` Map.)
+//
+// Strategy: prefer a denormalized title if one happens to be present, else
+// fetch the listing directly via `sdk.listings.show()`. Returns null on any
+// failure so callers can apply their own fallback string.
+async function resolveListingTitle(integrationSdk, transaction) {
+  if (!transaction) return null;
+
+  const denormTitle =
+    transaction.attributes?.listing?.attributes?.title ||
+    transaction.attributes?.listing?.title ||
+    null;
+  if (denormTitle) return denormTitle;
+
+  const listingRef = transaction.relationships?.listing?.data;
+  const listingId = listingRef?.id?.uuid || listingRef?.id || null;
+  if (!listingId) {
+    console.warn('[SHIPPO-WEBHOOK][LISTING-TITLE] missing listing relationship', {
+      txId: transaction.id?.uuid || transaction.id,
+    });
+    return null;
+  }
+
+  try {
+    const response = await integrationSdk.listings.show({ id: listingId });
+    return response?.data?.data?.attributes?.title || null;
+  } catch (err) {
+    console.warn('[SHIPPO-WEBHOOK][LISTING-TITLE] listings.show failed', {
+      txId: transaction.id?.uuid || transaction.id,
+      listingId,
+      error: err?.message,
+    });
+    return null;
+  }
+}
+
 // Derive direction using metadata hint first, then transaction protectedData
 // Returns 'return' | 'outbound' | null (unknown)
 function deriveDirection({ metadataDirection, trackingNumber, protectedData }) {
@@ -890,7 +938,8 @@ async function handleTrackingWebhook(req, res, opts = {}) {
           return res.status(400).json({ error: 'No lender phone number found' });
         }
         
-        const rawTitle = transaction.attributes.listing?.title || 'your item';
+        const resolvedTitle = await resolveListingTitle(integrationSdk, transaction);
+        const rawTitle = resolvedTitle || 'your item';
         const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
         const returnCarrier = protectedData.returnCarrier;
         const publicTrackingUrl = getPublicTrackingUrl(returnCarrier, trackingNumber);
@@ -1097,7 +1146,8 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         });
       }
 
-      const rawTitle = transaction.attributes.listing?.title || 'your item';
+      const resolvedTitle = await resolveListingTitle(integrationSdk, transaction);
+      const rawTitle = resolvedTitle || 'your item';
       const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
       const message = `📦 Sherbrt 🍧: "${listingTitle}" is back home! Thanks for sharing your style! 🫶🏽 Just in case: bestie@sherbrt.com 💌`;
 
@@ -1242,11 +1292,12 @@ async function handleTrackingWebhook(req, res, opts = {}) {
         const publicTrackingUrl = getPublicTrackingUrl(smsCarrier, trackingNum);
         console.log(`[TRACKINGLINK] Using short public link: ${publicTrackingUrl} (carrier: ${carrier || 'unknown'})`);
         
-        // Get listing title for personalized message
-        const listing = transaction.attributes?.listing || transaction.relationships?.listing?.data;
-        const rawTitle = listing?.title || listing?.attributes?.title || 'your item';
+        // Get listing title for personalized message.
+        // Falls back to 'your item' only if the listing fetch itself fails.
+        const resolvedTitle = await resolveListingTitle(integrationSdk, transaction);
+        const rawTitle = resolvedTitle || 'your item';
         const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-        
+
         // Use short link for even more compact SMS
         const shortTrackingUrl = await shortLink(publicTrackingUrl);
         message = `🚚 Sherbrt 🍧: "${listingTitle}" is on its way! Tracking info: ${shortTrackingUrl}.`;
@@ -1489,10 +1540,10 @@ if (process.env.TEST_ENDPOINTS) {
         const publicTrackingUrl = getPublicTrackingUrl(carrier, trackingNum);
         console.log(`[TRACKINGLINK] Using short public link: ${publicTrackingUrl} (carrier: ${carrier || 'unknown'})`);
         
-        const listing = transaction.attributes?.listing || transaction.relationships?.listing?.data;
-        const rawTitle = listing?.title || listing?.attributes?.title || 'your item';
+        const resolvedTitle = await resolveListingTitle(integrationSdk, transaction);
+        const rawTitle = resolvedTitle || 'your item';
         const listingTitle = rawTitle.length > 40 ? rawTitle.substring(0, 37) + '...' : rawTitle;
-        
+
         const shortTrackingUrl = await shortLink(publicTrackingUrl);
         message = `🚚 Sherbrt 🍧: "${listingTitle}" is on its way! Tracking info: ${shortTrackingUrl}.`;
         tag = SMS_TAGS.ITEM_SHIPPED_TO_BORROWER;
