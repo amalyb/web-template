@@ -54,6 +54,38 @@
   border-radius: var(--borderRadius);
 }
 
+/* "Cover" badge shown on the first (cover) image. */
+.coverBadge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 4px 8px;
+  background-color: var(--marketplaceColor);
+  color: var(--colorWhite);
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom-right-radius: 2px;
+}
+
+/* "Make cover" button shown on non-cover images. */
+.makeCoverButton {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  padding: 4px 8px;
+  background-color: rgba(0, 0, 0, 0.6);
+  color: var(--colorWhite);
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-top-right-radius: 2px;
+  cursor: pointer;
+}
+
+.makeCoverButton:hover {
+  background-color: rgba(0, 0, 0, 0.8);
+}
+
 .thumbnailLoading {
   position: absolute;
   top: 0;

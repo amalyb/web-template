@@ -84,7 +84,7 @@ export const FieldAddImage = props => {
 
 // Component that shows listing images from "images" field array
 const FieldListingImage = props => {
-  const { name, intl, onRemoveImage, aspectWidth, aspectHeight, variantPrefix } = props;
+  const { name, intl, onRemoveImage, isCover, onMakeCover, aspectWidth, aspectHeight, variantPrefix } = props;
   return (
     <Field name={name}>
       {fieldProps => {
@@ -99,6 +99,10 @@ const FieldListingImage = props => {
               id: 'EditListingPhotosForm.savedImageAltText',
             })}
             onRemoveImage={() => onRemoveImage(image?.id)}
+            isCover={isCover}
+            onMakeCover={onMakeCover}
+            coverLabel={intl.formatMessage({ id: 'EditListingPhotosForm.coverLabel' })}
+            makeCoverLabel={intl.formatMessage({ id: 'EditListingPhotosForm.makeCover' })}
             aspectWidth={aspectWidth}
             aspectHeight={aspectHeight}
             variantPrefix={variantPrefix}
@@ -241,6 +245,8 @@ export const EditListingPhotosForm = props => {
                     <FieldListingImage
                       key={name}
                       name={name}
+                      isCover={index === 0}
+                      onMakeCover={() => fields.move(index, 0)}
                       onRemoveImage={imageId => {
                         fields.remove(index);
                         onRemoveImage(imageId);

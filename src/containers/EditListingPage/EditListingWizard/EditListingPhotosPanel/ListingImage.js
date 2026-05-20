@@ -62,6 +62,10 @@ const ListingImage = props => {
     image,
     savedImageAltText,
     onRemoveImage,
+    isCover,
+    onMakeCover,
+    coverLabel,
+    makeCoverLabel,
     aspectWidth = 1,
     aspectHeight = 1,
     variantPrefix = 'listing-card',
@@ -70,6 +74,22 @@ const ListingImage = props => {
     e.stopPropagation();
     onRemoveImage(image.id);
   };
+  const handleMakeCoverClick = e => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (onMakeCover) onMakeCover();
+  };
+  // The first image is the listing's cover (used as the card thumbnail on web
+  // and in the mobile app). Show a badge on the cover, and a "Make cover"
+  // button on the others so any image can be promoted to first WITHOUT
+  // re-uploading the rest.
+  const coverControl = isCover ? (
+    <div className={css.coverBadge}>{coverLabel || 'Cover'}</div>
+  ) : onMakeCover ? (
+    <button type="button" className={css.makeCoverButton} onClick={handleMakeCoverClick}>
+      {makeCoverLabel || 'Make cover'}
+    </button>
+  ) : null;
 
   if (image.file && !image.attributes) {
     // Add remove button only when the image has been uploaded and can be removed
@@ -132,6 +152,7 @@ const ListingImage = props => {
             />
           </AspectRatioWrapper>
           <RemoveImageButton onClick={handleRemoveClick} />
+          {coverControl}
         </div>
       </div>
     );
