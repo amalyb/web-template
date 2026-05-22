@@ -283,6 +283,158 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 22, 2026 — Return-label persistence + return/overdue reminder eligibility (SMS 7/8/9.x)
+
+**Symptom.** Borrowers weren't receiving the return-shipment texts: SMS 7
+(T-1 return reminder, tag `return_tminus1_to_borrower`), SMS 8 (day-of, tag
+`return_reminder_today`), and the SMS 9.x overdue series. Traced on tx
+`6a03712a-…` (booking Mon May 18 – Thu May 21, state `accepted`, default-booking
+v6). Four independent bugs were stacked on top of each other.
+
+**Root cause #1 — the big one: the protectedData whitelist silently dropped the
+return label.** `ALLOWED_PROTECTED_DATA_KEYS` in
+`server/api-util/integrationSdk.js` was missing the canonical return-label keys.
+`pruneProtectedData()` runs on EVERY protectedData write (after `deepMerge`,
+before the `operator-update-pd-<state>` transition that replaces protectedData
+wholesale), copying only whitelisted keys. So `returnQrUrl`, `returnLabelUrl`,
+`returnTrackingNumber`, `returnCarrier`, `returnService`, `returnQrExpiry`,
+`returnPurchasedAt`, and `returnNotification` were stripped on every write — the
+label/QR bought at `transition/accept` never persisted, and both reminder crons
+hit `[NO-LABEL]` and skipped. This was systemic (every organic `accepted` tx,
+not just the seeded one). The outbound side had the same class of gap: the accept
+flow writes `outboundQrUrl` but the whitelist only had `outboundQrCodeUrl` (read
+by `ship.js`, never written), and `outboundCarrier`/`outboundService`/
+`outboundQrExpiry`/`outboundPurchasedAt` were also being dropped. **Fix:** added
+all the canonical return + outbound keys to the whitelist.
+
+**Root cause #2 — wrong target state.** `sendReturnReminders.js` queried (and a
+per-tx guard re-checked) `state: 'delivered'` — inheriting the May 7 defensive
+state-check assumption. But the borrower holds the item the entire time the tx is
+in `accepted`; `delivered` is only reached AFTER the return scan fires the
+operator `complete-return`. So filtering to `delivered` matched essentially
+nothing. **Fix:** target `accepted` (terminal-state denylist kept). Note this
+corrects the May 7, 2026 entry's `state: ONLY_STATE || 'delivered'` assumption —
+that filter was itself a reason 7/8 never fired.
+
+**Root cause #3 — off-by-one due date.** The T-1/day-of window used
+`endsAtMidnight ? bookingEndPT.subtract(1,'day') : bookingEndPT`, shifting the
+due date a day early; combined with the inner TODAY check that used the
+un-subtracted booking end, the day-of reminder never fired. **Fix:**
+`dueLocalDate` = the booking-end calendar date (PT) always, so T-1 lands one day
+before the Return Date and TODAY lands on it, aligned with the overdue script.
+**This only changes reminder timing — late-fee math is untouched.** Fees still
+compute from `booking.end` and start the first *chargeable* day after it
+(`computeChargeableLateDays` skips Sundays + USPS holidays); the reminder shift
+just lines SMS 8 up with the day the fee window is pegged to.
+
+**Root cause #4 — overdue due date couldn't resolve (SMS 9.x).**
+`sendOverdueReminders.js` and `server/lib/lateFees.js` resolved the return due
+date from `tx.attributes.booking?.end` / `deliveryEnd`, which is ALWAYS undefined
+because `booking` is a Sharetribe *relationship*, not a tx attribute, and
+`returnData.dueAt` was never persisted. Every tx was skipped with "no return due
+date" → no overdue SMS and no charges ever evaluated. **Fix:** add
+`include: ['booking']` to both `show()`/query calls and read `booking.end` from
+the `included` resource.
+
+**Defense-in-depth — Shippo re-fetch fallback.** Added `getShippoTransaction()`
+(8 s `AbortSignal` timeout, never throws — safe in a cron loop) and
+`resolveReturnLabelUrl()` to `server/lib/shippo.js`. The resolver prefers the
+persisted `returnQrUrl`/`returnLabelUrl`; if both are absent it re-fetches the
+label from Shippo via the transaction `object_id`. To make that possible the
+accept flow now persists `returnTransactionId`/`outboundTransactionId`
+(`transition-privileged.js`), and both are whitelisted. Bonus: this also unblocks
+`sendAutoCancelUnshipped.js`, which already read `pd.outboundTransactionId`/
+`pd.returnTransactionId` to void unused labels but never found them (never
+persisted + not whitelisted). Wired the resolver into both
+`sendReturnReminders.js` (T-1 + TODAY) and `sendOverdueReminders.js`.
+
+**Also whitelisted `autoCancel`** — `sendAutoCancelUnshipped.js` writes a
+top-level `autoCancel` idempotency marker that was being stripped, so the
+cancel/void path could re-fire on later cron runs. Activating the void path
+(above) made this live, so it's fixed in the same change.
+
+**⚠️ Architectural gotcha (remember this).** ANY new top-level `protectedData`
+key MUST be added to `ALLOWED_PROTECTED_DATA_KEYS` in
+`server/api-util/integrationSdk.js`, or `pruneProtectedData()` silently drops it
+on the next write (protectedData is replaced wholesale by the operator-update-pd
+transition). Known still-stripped, deferred because nothing reads them FROM
+protectedData (all consumers take them as in-process params): `shippingArtifacts`
+(written in `transition-privileged.js`).
+
+**Files touched.**
+- `server/api-util/integrationSdk.js` — whitelist canonical return + outbound
+  keys, `returnTransactionId`/`outboundTransactionId`, `autoCancel`.
+- `server/api/transition-privileged.js` — persist the Shippo `object_id` for
+  outbound and return labels.
+- `server/lib/shippo.js` — `getShippoTransaction()` + `resolveReturnLabelUrl()`.
+- `server/scripts/sendReturnReminders.js` — target `accepted`; fix off-by-one
+  due date; T-1 no-scan gate; dry-run no longer writes; use the resolver.
+- `server/scripts/sendOverdueReminders.js` + `server/lib/lateFees.js` — include
+  `booking` so the due date resolves; overdue SMS uses the resolver.
+
+**Verification.** All affected jest suites pass — `integrationSdk.transition` /
+`integrationSdk.lockedRate` (whitelist/prune), `sendReturnReminders.persist` /
+`.quiet-hours`, `sendOverdueReminders.skip-log`, and the three
+`transition-privileged` accept-flow suites. `node --check` on every edited file;
+runtime check confirms the resolver short-circuits on canonical fields and
+returns null (no throw) when the Shippo token is missing.
+
+**Ship status.** Branch `fix/return-overdue-sms-state-and-duedate`, two commits:
+`7a9506e3d` (core fix) and `769fd7654` (Claude Code review follow-ups — Shippo
+timeout/no-throw, `autoCancel` whitelist, overdue resolver). Reviewed by Claude
+Code before merge. Pushed + PR to `main` by operator; Render auto-deploys `main`
+on merge. No data backfill needed — the only stale `accepted` tx was an operator
+test. (`CLAUDE_CONTEXT.md` + the read-only `diagnoseTxSms.js` diagnostic were
+intentionally kept out of the fix commit for a cleaner review.)
+
+**Workbook v14.** Saved to
+`/Users/amaliabornstein/shop-on-sherbet-cursor/sherbrt_transaction_comms_v14.xlsx`
+(supersedes v13; v13 retained for history). Log tab changes: `Verified` →
+`In review` for 7-SMS, 8-SMS, and 9.1-SMS through 9.6-SMS (they were marked
+Verified but were broken in prod until this fix — flip back to Verified after the
+post-deploy end-to-end test). 7-SMS `Event / Trigger` tightened to "…no return
+accepted/in-transit scan yet" (matches 8-SMS + the code). `Policy / Notes`
+rewritten for 7/8/9.1 to record the `:state/accepted` gating, the Shippo label
+re-fetch fallback, and the `booking.end` due-date resolution. Message copy,
+examples, timing, and code-location columns unchanged (they already matched the
+shipped code). Summary auto-counts recalculated (Verified SMS 17 → 9; the 8 rows
+now sit in the `In review` bucket). Scenario 5's `$0.50` test value left as-is
+(intentional `LATE_FEE_CENTS_OVERRIDE=50` staging value).
+
+### May 20, 2026 — "Make cover photo" in the listing photo editor
+
+**Problem.** Both the website grid (Console "Listing thumbnail aspect ratio:
+Portrait 3:4") and the mobile app use a listing's FIRST image as the card
+thumbnail. The Sharetribe template's photo editor (`EditListingPhotosForm`)
+only supported add + remove — no reordering — and re-adding a replaced photo
+appends it to the END. So replacing just the cover image was impossible
+without deleting and re-uploading every photo in order (often not possible —
+many are user-uploaded lifestyle shots the admin doesn't have).
+
+**Fix.** Added a "Make cover" action using `react-final-form-arrays`'
+`fields.move(index, 0)`. The first image shows a coral "Cover" badge; every
+other image shows a "Make cover" button that promotes it to position 1. On
+Save, images submit in FieldArray order (confirmed in `EditListingPhotosPanel`
+onSubmit — `images` is spread in order), so the moved image becomes the cover
+on BOTH web and mobile (both use `images[0]`).
+
+Files: `EditListingPhotosForm.js` (passes `isCover` + `onMakeCover` through the
+FieldArray map → `FieldListingImage`), `ListingImage.js` (renders the badge /
+button), `ListingImage.module.css` (`.coverBadge`, `.makeCoverButton`),
+`src/translations/en.json` (`EditListingPhotosForm.coverLabel` / `.makeCover`).
+
+**Ship status.** Committed on branch `feature/make-cover-photo` (cut from
+latest `main`), pushed; PR opened to `main`. Render auto-deploys `main`, so
+merging deploys it. Verified: en.json valid JSON; both JS files parse with the
+project's `babel-preset-react-app`.
+
+**Related — image standardization (mostly mobile-side).** Listings now follow
+a 3:4 image standard (1200×1600, model framed head-to-toe on white) to match
+the Console Portrait 3:4 thumbnail, so one upload looks consistent on web +
+app with no cropping. A Python tool (`standardize_images.py`, kept OUTSIDE the
+repos) auto-detects the model on white and reframes to the standard. See the
+mobile repo's `CLAUDE_CONTEXT.md` for the app-side display details.
+
 ### May 8, 2026 — Lender SMS deferred to preauthorized via Integration API events poller; borrower request-confirmation SMS removed
 
 **Surfaced.** Mobile dogfood on TestFlight build 0.1.0 (4): the lender
@@ -809,7 +961,7 @@ history.
    as default.
 
 5. **Lo-fi CI check for inbox-copy drift.** The new `Inbox Comms`
-   tab in `sherbrt_transaction_comms_v13.xlsx` is a manual source
+   tab in `sherbrt_transaction_comms_v14.xlsx` is a manual source
    of truth that web (`src/translations/en.json`) and mobile
    (`sherbrt-mobile/lib/transactions.ts` STATE_TO_STATUS /
    STATE_TO_LENDER_STATUS) must stay in sync with. Easy first
@@ -1703,15 +1855,28 @@ re-paste if CC's session was interrupted.
 5. **Backlog — post-mobile-launch (gated on TestFlight ship + first
    real users; no order within batch):**
    - **Task #32** — Transactional email provider returning
-     `Unauthorized`. Surfaced May 1 evening logs on tx `69f51671`:
-     both `lenderOutboundLabelEmail` and the return-label email
-     failed with `error: 'Unauthorized', response: { errors: [...] }`.
-     Likely rotated/expired API key (SendGrid/Postmark/etc.). SMS
-     unaffected. Label URLs DID persist to `tx.protectedData`, so a
-     re-send mechanism could recover the missed emails — consider
-     building one as part of the fix. Investigate: which email provider
-     are we on, when was the key rotated, can we re-send for tx
-     `69f51671` retroactively.
+     `Unauthorized`. Surfaced May 1 evening logs on tx `69f51671`;
+     **still failing as of May 12, 2026** (confirmed on tx `6a03712a`
+     while seeding the Apple App Store reviewer test account — both
+     `lenderOutboundLabelEmail` to `amaliaebornstein@gmail.com` and
+     `returnLabelEmail` to `appstore-review@sherbrt.com` failed with
+     `error: 'Unauthorized', response: { errors: [...] }`). **Operator
+     diagnosis (May 12, 2026):** SendGrid free trial likely expired;
+     transactional emails not going out. SMS unaffected — label URLs
+     all delivered via Twilio successfully on tx `6a03712a` (borrower
+     accept SMS, lender ship-by SMS, return label SMS to borrower all
+     delivered). Label URLs DID persist to `tx.protectedData`, so a
+     re-send mechanism could recover the missed emails once a new
+     provider is wired up. **Action items (post-Apple-launch):** (1)
+     confirm SendGrid plan status / which provider key is in use, (2)
+     evaluate alternatives — SendGrid paid tier vs Resend (generous
+     free tier, modern API) vs Postmark (transactional-focused,
+     ~$15/mo) vs AWS SES (cheap but more setup), (3) build a re-send
+     CLI to backfill emails for any tx with `protectedData.outboundLabelUrl`
+     or `returnLabelUrl` set but no corresponding `sentAt` flag. **Not
+     blocking Apple App Store submission** — Apple reviewers don't
+     receive these emails, and the in-app + SMS surfaces cover the
+     critical UX paths.
    - **Task #33** — Twilio SMS-status-callback URL has duplicated query
      params (`?tag=...&tag=...&txId=...&txId=...`). Cosmetic — webhook
      still 200s. Fix the query-string assembly logic in the callback
@@ -1726,6 +1891,23 @@ re-paste if CC's session was interrupted.
      diagnosis to distinguish "pre-Phase-2" (data at metadata.X = bug
      present) from "post-Phase-2" (data at protectedData.X = fix
      verified). One-line patch. Bundle with #32/#33.
+   - **Task #34** — Turnaround buffer between bookings on the same
+     listing. Currently the listing's availability calendar allows
+     back-to-back bookings with zero gap (Sherbrt operator surfaced
+     this May 12, 2026 while seeding the App Store reviewer test
+     account — placed booking #1 May 14-16 and booking #2 May 18-23
+     on a different listing because it felt risky on the same item
+     with only 1 day in between). Lenders need realistic turnaround:
+     receive returned item, inspect, clean if needed, repackage,
+     re-list as available. Proposed: a per-listing `turnaroundDays`
+     field (default 2-3?) that auto-blocks N calendar days after any
+     accepted booking's `end` date. Touches: Shippo-anchored
+     availability logic in `server/lib/shipping.js` + listing-creation
+     UI on web + mobile borrower date-picker (which currently shows
+     calendar from a Sharetribe API call — would need to consume the
+     `turnaroundDays` config from listing publicData). Marketplace-
+     wide v1 default + per-lender override would be the cleanest
+     v0.2+ shape.
 
 **Diag scripts written today (still useful for verification later).**
 
