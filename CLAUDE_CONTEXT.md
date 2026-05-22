@@ -308,19 +308,22 @@ Holidays say "the holiday" and roll to the correct next business day (Memorial D
 **Timing & 9.x unchanged.** No firing-schedule change — the Monday "ship today"
 nudge is already 9.1 (grace day, no charge). The 9.x overdue series already
 excludes Sundays/holidays via `computeChargeableLateDays`, so it needed no change.
-Gotcha to remember: `getFirstChargeableLateDate` is imported in
-`sendReturnReminders.js` but is NOT exported by `businessDays.js` (the call site
-is `typeof`-guarded, so it's effectively null) — use `isNonChargeableDate` /
-`subtractBusinessDays`, which ARE exported.
+Gotcha to remember: `getFirstChargeableLateDate` is NOT exported by
+`businessDays.js` — use `isNonChargeableDate` / `subtractBusinessDays`, which ARE.
+(The dead import + always-null usage of it in `sendReturnReminders.js` was removed
+in the CC-review follow-up commit noted below.)
 
-**Tests.** `server/scripts/sendReturnReminders.sunday-copy.test.js` covers Sunday,
-Memorial-Day-holiday, and normal-weekday cases for SMS 7/8 plus `nextShippingDay`
-(incl. "Saturday stays Saturday"). `buildReturnReminderCopy`/`nextShippingDay` are
-exported for testability.
+**Tests.** `server/scripts/sendReturnReminders.sunday-copy.test.js` covers normal
+weekday, Sunday, and Memorial-Day-holiday copy for SMS 7 / 8 / no-label, plus
+consecutive closed days (a Sunday whose Monday is a holiday → "ship Tuesday"), a
+Friday holiday → Saturday (carriers run Saturdays), falsy `returnLocalDate` falling
+back to normal copy, and `nextShippingDay` roll-forward. `buildReturnReminderCopy`/
+`nextShippingDay` are exported for testability.
 
 **Comms doc → v15** (`sherbrt_transaction_comms_v15.xlsx`): Sunday/holiday variant
 noted in Policy/Notes on rows 22–23. Branch `fix/sunday-holiday-return-sms` (cut
-from the May 22 SMS branch). Not yet deployed.
+from the May 22 SMS branch); commits `e9743efd9` (feature) + `59ee34070` (CC-review
+follow-up: extra tests + dead-import cleanup). CC-reviewed; not yet pushed/deployed.
 
 ### May 22, 2026 — Return-label persistence + return/overdue reminder eligibility (SMS 7/8/9.x)
 
