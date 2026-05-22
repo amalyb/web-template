@@ -50,7 +50,7 @@ try {
 // This automatically prefers Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
-const { getFirstChargeableLateDate } = require('../lib/businessDays');
+const { isNonChargeableDate, USPS_HOLIDAYS } = require('../lib/businessDays');
 const { getRedis } = require('../redis');
 const { withinSendWindow, getNow } = require('../util/time');
 const { upsertProtectedData } = require('../lib/txData');
@@ -75,6 +75,52 @@ const TZ = 'America/Los_Angeles';
 const SEND_HOUR_PT = 8;
 const SEND_MINUTE_PT = 0;
 const DEFAULT_ACCEPT_HOUR_PT = 9;
+
+// Roll a return-due date forward to the next day carriers actually run (skips
+// Sundays + USPS holidays via isNonChargeableDate). Mirrors the checkout
+// "Sunday end date" banner so a borrower whose booking ends on a closed day is
+// told the real ship day (e.g. "Monday") instead of "tomorrow" / "today".
+// returnLocalDate is a PT YYYY-MM-DD string; parsed with dayjs.tz so it isn't
+// shifted by the host timezone.
+function nextShippingDay(returnLocalDate) {
+  let d = dayjs.tz(returnLocalDate, TZ).startOf('day');
+  for (let i = 0; i < 14 && isNonChargeableDate(d); i++) {
+    d = d.add(1, 'day');
+  }
+  return d;
+}
+
+// Borrower return-reminder copy with Sunday / USPS-holiday-aware variants.
+// kind: 'T-1' | 'TODAY' | 'TODAY_NO_LABEL'. When the return date lands on a
+// non-shipping day, the copy names the next shipping day and mirrors the
+// checkout banner's "carriers don't run" framing. Exported for unit testing.
+function buildReturnReminderCopy({ kind, itemTitle, shortUrl, returnLocalDate }) {
+  const closed = returnLocalDate ? isNonChargeableDate(dayjs.tz(returnLocalDate, TZ)) : false;
+
+  if (!closed) {
+    if (kind === 'T-1') {
+      return `📦 Sherbrt 🍧: It's almost return time! Use your QR/label to ship "${itemTitle}" back tomorrow: ${shortUrl}.`;
+    }
+    if (kind === 'TODAY') {
+      return `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Use your QR/label to ship back: ${shortUrl}.`;
+    }
+    return `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Check your dashboard for return instructions.`;
+  }
+
+  const returnDj = dayjs.tz(returnLocalDate, TZ).startOf('day');
+  const closedReason = USPS_HOLIDAYS && USPS_HOLIDAYS.has(returnDj.format('YYYY-MM-DD'))
+    ? 'the holiday'
+    : returnDj.format('dddd'); // e.g. "Sunday"
+  const shipDayName = nextShippingDay(returnLocalDate).format('dddd'); // e.g. "Monday"
+
+  if (kind === 'T-1') {
+    return `📦 Sherbrt 🍧: It's almost return time! Carriers don't run ${closedReason}, so use your QR/label to ship "${itemTitle}" back ${shipDayName}: ${shortUrl}.`;
+  }
+  if (kind === 'TODAY') {
+    return `⏰ Sherbrt 🍧: Your booking for "${itemTitle}" ends today, but carriers don't run ${closedReason}. Ship ${shipDayName} to avoid a late fee — use your QR/label: ${shortUrl}.`;
+  }
+  return `⏰ Sherbrt 🍧: Your booking for "${itemTitle}" ends today, but carriers don't run ${closedReason}. Ship ${shipDayName} to avoid a late fee. Check your dashboard for return instructions.`;
+}
 const DEFAULT_ACCEPT_MINUTE_PT = 0;
 
 // ---- CLI flags / env guards ----
@@ -379,8 +425,10 @@ async function sendReturnReminders(allowExitOnError = true) {
         }
 
         const tMinus1ForTx = dayjs(dueLocalDate).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
-        const firstChargeableLateDate =
-          typeof getFirstChargeableLateDate === 'function' ? getFirstChargeableLateDate(dueLocalDate) : null;
+        // getFirstChargeableLateDate is not exported by businessDays.js; this stays
+        // null and is retained only for the debug logs below (see CLAUDE_CONTEXT
+        // May 22 follow-up). Late-fee day counting lives in computeChargeableLateDays.
+        const firstChargeableLateDate = null;
 
         const pd = tx?.attributes?.protectedData || {};
         const returnData = pd.return || {};
@@ -552,7 +600,7 @@ async function sendReturnReminders(allowExitOnError = true) {
 
           const shortUrl = await shortLink(returnLabelUrl);
           console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
-          message = `📦 Sherbrt 🍧: It's almost return time! Use your QR/label to ship "${itemTitle}" back tomorrow: ${shortUrl}.`;
+          message = buildReturnReminderCopy({ kind: 'T-1', itemTitle, shortUrl, returnLocalDate: dueLocalDate });
           tag = 'return_tminus1_to_borrower';
           
         } else if (reminderType === 'TODAY') {
@@ -610,10 +658,10 @@ async function sendReturnReminders(allowExitOnError = true) {
             const returnLabelUrl = resolvedLabel.url;
             const shortUrl = await shortLink(returnLabelUrl);
             console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl, source: resolvedLabel.source });
-            message = `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Use your QR/label to ship back: ${shortUrl}.`;
+            message = buildReturnReminderCopy({ kind: 'TODAY', itemTitle, shortUrl, returnLocalDate: dueLocalDate });
             tag = 'return_reminder_today';
           } else {
-            message = `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Check your dashboard for return instructions.`;
+            message = buildReturnReminderCopy({ kind: 'TODAY_NO_LABEL', itemTitle, returnLocalDate: dueLocalDate });
             tag = 'return_reminder_today_no_label';
           }
           
@@ -914,4 +962,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { sendReturnReminders }; 
+module.exports = { sendReturnReminders, buildReturnReminderCopy, nextShippingDay };
