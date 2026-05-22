@@ -54,6 +54,7 @@ const { getFirstChargeableLateDate } = require('../lib/businessDays');
 const { getRedis } = require('../redis');
 const { withinSendWindow, getNow } = require('../util/time');
 const { upsertProtectedData } = require('../lib/txData');
+const { resolveReturnLabelUrl } = require('../lib/shippo');
 
 // In-memory guards to avoid repeat sends within the same daemon process
 // if Flex protectedData updates fail. Keys are txId → local date string.
@@ -102,7 +103,9 @@ if (DRY) {
     const bodyJson = JSON.stringify(body);
     console.log(`[SMS:OUT] tag=${tag || 'none'} to=${to} meta=${metaJson} body=${bodyJson} dry-run=true`);
     if (VERBOSE) console.log('opts:', opts);
-    return { dryRun: true };
+    // Match the real sendSMS skip envelope so the post-send block treats dry-run
+    // as "not sent" and does NOT write idempotency markers to production data.
+    return { skipped: true, reason: 'dry_run', dryRun: true };
   };
 }
 
@@ -248,7 +251,11 @@ async function sendReturnReminders(allowExitOnError = true) {
     const PAGE_SIZE = parseInt(process.env.ONLY_PAGE_SIZE || process.env.PER_PAGE || '5', 10) || 5;
 
     const baseQuery = {
-      state: ONLY_STATE || 'delivered',
+      // Return reminders fire while the item is OUT with the borrower — that is
+      // state/accepted (active rental + return window). state/delivered means the
+      // RETURN already completed (item back to lender via complete-return), so it
+      // must NOT be the target or the reminder can never match a live rental.
+      state: ONLY_STATE || 'accepted',
       include: ['customer', 'listing', 'booking', 'provider'],
       per_page: PAGE_SIZE, // narrow default; env overrides above
     };
@@ -258,7 +265,7 @@ async function sendReturnReminders(allowExitOnError = true) {
       try {
         console.log('[RETURN-REMINDER-SELFTEST] running minimal Flex access check');
         const selfTestQuery = {
-          state: ONLY_STATE || 'delivered',
+          state: ONLY_STATE || 'accepted',
           include: [],
           per_page: 1,
           page: 1,
@@ -269,14 +276,14 @@ async function sendReturnReminders(allowExitOnError = true) {
         console.log(`[RETURN-REMINDER-SELFTEST] success firstTx=${first || 'none'}`);
         return;
       } catch (err) {
-        logAxios(err, `sdk.transactions.query selftest state=${ONLY_STATE || 'delivered'}`);
+        logAxios(err, `sdk.transactions.query selftest state=${ONLY_STATE || 'accepted'}`);
         if (allowExitOnError) process.exit(1);
         return;
       }
     }
 
     const ONLY_TX = process.env.ONLY_TX;
-  const onlyTxId = ONLY_TX && ONLY_TX.includes('-') ? { uuid: ONLY_TX } : ONLY_TX;
+  const onlyTxId = ONLY_TX; // bare UUID string; Integration SDK rejects a plain { uuid } object here
 
     let sent = 0, failed = 0, processed = 0;
     let totalCandidates = 0;
@@ -327,7 +334,7 @@ async function sendReturnReminders(allowExitOnError = true) {
         //      Catches inquiry/pending-payment/preauthorized/accepted etc.
         // Integration SDK returns "state/delivered"; marketplace SDK may
         // return bare "delivered" — strip the "state/" prefix to accept both.
-        const expectedState = ONLY_STATE || 'delivered';
+        const expectedState = ONLY_STATE || 'accepted';
         const txState = tx?.attributes?.state || '';
         const normalizedTxState = txState.replace(/^state\//, '');
         if (TERMINAL_STATES_DENYLIST.has(normalizedTxState)) {
@@ -351,8 +358,14 @@ async function sendReturnReminders(allowExitOnError = true) {
         const endsAtMidnight =
           bookingEndPT && bookingEndPT.format('HH:mm:ss') === '00:00:00';
 
+        // Use the booking-end calendar date as the return due date so the day-of
+        // (8-SMS) window aligns with the overdue script's due date and lands exactly
+        // one day before the first overdue reminder (9.1). The previous
+        // `endsAtMidnight ? subtract(1,'day')` shifted the due date a day early,
+        // which (combined with the inner TODAY check that used the un-subtracted
+        // booking end) meant the day-of reminder never fired.
         const dueLocalDate = bookingEndPT
-          ? (endsAtMidnight ? bookingEndPT.subtract(1, 'day') : bookingEndPT).format('YYYY-MM-DD')
+          ? bookingEndPT.format('YYYY-MM-DD')
           : null;
 
         const lateStartLocalDate = bookingEndPT ? bookingEndPT.format('YYYY-MM-DD') : null;
@@ -510,22 +523,33 @@ async function sendReturnReminders(allowExitOnError = true) {
             continue;
           }
 
-          // T-1 day: Send QR/label (use real label if available)
-          // Canonical fields only: pd.returnQrUrl (preferred) / pd.returnLabelUrl (fallback).
-          // These are written atomically at the accept transition — if both are missing,
-          // skip this pass and let the next cron cycle or LATE reminder pick it up.
-          const returnLabelUrl = pd.returnQrUrl || pd.returnLabelUrl;
-
-          if (!returnLabelUrl) {
-            console.warn(`[RETURN-REMINDER][NO-LABEL] tx=${tx?.id?.uuid || '(no id)'} — no pd.returnQrUrl or pd.returnLabelUrl. Skipping this pass.`);
+          // Skip if the return is already in motion (mirrors the TODAY branch):
+          // no point telling someone to "ship back tomorrow" once they've shipped.
+          if (
+            returnData.firstScanAt ||
+            returnData.status === 'in_transit' ||
+            returnData.status === 'accepted'
+          ) {
+            console.log(`[return-reminders] 🚚 Return already scanned/in transit for tx ${tx?.id?.uuid || '(no id)'} - skipping T-1 reminder`);
             continue;
           }
 
-          // Log whether we're using QR or label URL
-          const labelType = pd.returnQrUrl ? 'QR' : 'label';
-          const labelSource = pd.returnQrUrl ? 'returnQrUrl' : 'returnLabelUrl';
-          console.log(`[return-reminders] Using ${labelType} URL from ${labelSource} for tx ${tx?.id?.uuid || '(no id)'}`);
-          
+          // T-1 day: Send QR/label (use real label if available)
+          // Canonical fields preferred: pd.returnQrUrl / pd.returnLabelUrl. If both
+          // are absent, fall back to re-fetching from Shippo via pd.returnTransactionId
+          // (defense-in-depth — see resolveReturnLabelUrl). If nothing resolves, skip
+          // this pass and let the next cron cycle pick it up.
+          const resolvedLabel = await resolveReturnLabelUrl(pd);
+
+          if (!resolvedLabel) {
+            console.warn(`[RETURN-REMINDER][NO-LABEL] tx=${tx?.id?.uuid || '(no id)'} — no returnQrUrl/returnLabelUrl and no Shippo re-fetch via returnTransactionId. Skipping this pass.`);
+            continue;
+          }
+
+          const returnLabelUrl = resolvedLabel.url;
+          // Log whether we're using QR or label URL, and where it came from
+          console.log(`[return-reminders] Using ${resolvedLabel.type} URL from ${resolvedLabel.source} for tx ${tx?.id?.uuid || '(no id)'}`);
+
           const shortUrl = await shortLink(returnLabelUrl);
           console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
           message = `📦 Sherbrt 🍧: It's almost return time! Use your QR/label to ship "${itemTitle}" back tomorrow: ${shortUrl}.`;
@@ -579,12 +603,13 @@ async function sendReturnReminders(allowExitOnError = true) {
             continue;
           }
           
-          // Canonical fields only — matches T-1 branch.
-          const returnLabelUrl = pd.returnQrUrl || pd.returnLabelUrl;
+          // Canonical fields preferred, Shippo re-fetch fallback — matches T-1 branch.
+          const resolvedLabel = await resolveReturnLabelUrl(pd);
 
-          if (returnLabelUrl) {
+          if (resolvedLabel) {
+            const returnLabelUrl = resolvedLabel.url;
             const shortUrl = await shortLink(returnLabelUrl);
-            console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl });
+            console.log('[SMS] shortlink', { type: 'return', short: shortUrl, original: returnLabelUrl, source: resolvedLabel.source });
             message = `⏰ Sherbrt 🍧: Today's the day for you to ship back "${itemTitle}"! Late returns may incur $15/day fees. Use your QR/label to ship back: ${shortUrl}.`;
             tag = 'return_reminder_today';
           } else {
@@ -760,6 +785,10 @@ async function sendReturnReminders(allowExitOnError = true) {
           id: onlyTxId,
           include: ['customer', 'listing', 'booking', 'provider'],
         });
+        // show() returns a single object; processTxPage expects a query-shaped array.
+        if (res?.data && !Array.isArray(res.data.data)) {
+          res.data.data = [res.data.data];
+        }
         await processTxPage(res, { pageLabel: 'ONLY_TX' });
       } catch (err) {
         logAxios(err, `sdk.transactions.show ONLY_TX=${ONLY_TX} idShape=${safeStringify(onlyTxId, 200)}`);

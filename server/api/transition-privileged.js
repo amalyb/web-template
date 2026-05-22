@@ -1296,6 +1296,7 @@ async function createShippingLabels({
     
     try {
       const patch = {
+        outboundTransactionId: shippoTransactionId || null, // durable Shippo handle (void + label re-fetch)
         outboundTrackingNumber: trackingNumber,
         outboundTrackingUrl: trackingUrl,
         outboundLabelUrl: labelUrl,
@@ -1748,6 +1749,7 @@ async function createShippingLabels({
             // Persist return label details to Flex protectedData
             try {
               const patch = {
+                returnTransactionId: returnTransactionRes.data.object_id || null, // durable Shippo handle (void + label re-fetch)
                 returnTrackingNumber: returnTransactionRes.data.tracking_number || null,
                 returnTrackingUrl: returnTrackingUrl,
                 returnLabelUrl: returnTransactionRes.data.label_url || null,
