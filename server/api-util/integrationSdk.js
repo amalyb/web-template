@@ -92,8 +92,36 @@ const ALLOWED_PROTECTED_DATA_KEYS = [
   'outboundLabelUrl',
   'outboundTrackingNumber',
   'outboundTrackingUrl',
+  // Canonical outbound keys actually written by the accept flow
+  // (transition-privileged.js ~1302-1306). The legacy 'outboundQrCodeUrl'
+  // entry above is read by ship.js but never written — the writer uses
+  // 'outboundQrUrl'. These siblings were also being stripped on every persist.
+  'outboundQrUrl',
+  'outboundCarrier',
+  'outboundService',
+  'outboundQrExpiry',
+  'outboundPurchasedAt',
+  // Durable Shippo transaction object_id handles. Read by sendAutoCancelUnshipped.js
+  // (pd.outboundTransactionId / pd.returnTransactionId) to void unused labels, and
+  // used by resolveReturnLabelUrl() to re-fetch a label URL from Shippo when the
+  // persisted URL fields are absent. Previously never persisted AND not whitelisted.
+  'outboundTransactionId',
+  'returnTransactionId',
   'returnQrCodeUrl',
   'returnTrackingUrl',
+  // Canonical return-label keys written by the accept flow
+  // (transition-privileged.js ~1751-1758 and the returnNotification persist ~1831).
+  // These were MISSING from the whitelist, so pruneProtectedData() stripped them on
+  // every protectedData write and the return label/QR never persisted → the
+  // return-reminder and overdue SMS jobs read [NO-LABEL]. This is the root-cause fix.
+  'returnQrUrl',
+  'returnLabelUrl',
+  'returnTrackingNumber',
+  'returnCarrier',
+  'returnService',
+  'returnQrExpiry',
+  'returnPurchasedAt',
+  'returnNotification',
   'borrowerReturnLabelEmailSent', // Email idempotency flag for borrower return label emails
   'lenderOutboundLabelEmailSent', // Email idempotency flag for lender outbound label emails
   // Webhook-written scan/status state. Required by hasOutboundScan() and by
@@ -102,6 +130,10 @@ const ALLOWED_PROTECTED_DATA_KEYS = [
   'lastTrackingStatus',
   // Cross-process flags for return-reminder SMS dedupe (H2).
   'returnSms',
+  // Idempotency marker written by sendAutoCancelUnshipped.js after it cancels an
+  // unshipped booking (voids labels + sends 3.2/3.2b SMS). Must persist or the
+  // cancel + void path can re-fire on subsequent cron runs.
+  'autoCancel',
 ];
 
 /**

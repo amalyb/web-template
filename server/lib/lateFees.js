@@ -160,10 +160,10 @@ async function applyCharges({ sdkInstance, txId, now }) {
   try {
     console.log(`[lateFees] Processing transaction ${txId}...`);
     
-    // Load transaction with listing data
+    // Load transaction with listing + booking data
     const response = await sdkInstance.transactions.show({
       id: txId,
-      include: ['listing']
+      include: ['listing', 'booking']
     });
     
     const tx = response.data.data;
@@ -202,8 +202,15 @@ async function applyCharges({ sdkInstance, txId, now }) {
     
     // Determine return due date
     // Priority 1: Explicit return.dueAt
-    // Priority 2: booking.end (deliveryEnd)
-    const returnDueAt = returnData.dueAt || tx.attributes?.booking?.end;
+    // Priority 2: booking.end resolved from the INCLUDED booking resource.
+    //   booking is a relationship, not a tx attribute, so tx.attributes.booking?.end
+    //   is always undefined; the show() above now includes 'booking'.
+    const bookingRef = tx.relationships?.booking?.data;
+    const bookingKey = bookingRef ? `${bookingRef.type}/${bookingRef.id?.uuid || bookingRef.id}` : null;
+    const includedBookingEnd = bookingKey
+      ? included.find(i => `${i.type}/${i.id.uuid || i.id}` === bookingKey)?.attributes?.end
+      : null;
+    const returnDueAt = returnData.dueAt || tx.attributes?.booking?.end || includedBookingEnd;
     
     if (!returnDueAt) {
       throw new Error(

@@ -46,6 +46,7 @@ const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
 const { applyCharges } = require('../lib/lateFees');
+const { resolveReturnLabelUrl } = require('../lib/shippo');
 const { getRedis } = require('../redis');
 const {
   ymd,
@@ -340,7 +341,7 @@ async function sendOverdueReminders() {
     for (const state of statesToQuery) {
       const query = {
         state: state,
-        include: ['customer', 'listing'],
+        include: ['customer', 'listing', 'booking'],
         per_page: 100  // snake_case for Marketplace SDK
       };
 
@@ -433,7 +434,15 @@ async function sendOverdueReminders() {
         continue;
       }
       
-      const deliveryEnd = tx?.attributes?.deliveryEnd || tx?.attributes?.booking?.end;
+      // Resolve the booking end from the INCLUDED booking resource (the query now
+      // includes 'booking'). Sharetribe exposes booking as a relationship, not a tx
+      // attribute, so tx.attributes.booking?.end is always undefined and
+      // returnData.dueAt is never persisted — without this the due date can't be
+      // resolved and every tx was skipped with "no return due date".
+      const bookingRef = tx?.relationships?.booking?.data;
+      const bookingKey = bookingRef ? `${bookingRef.type}/${bookingRef.id?.uuid || bookingRef.id}` : null;
+      const includedBookingEnd = bookingKey ? included.get(bookingKey)?.attributes?.end : null;
+      const deliveryEnd = tx?.attributes?.deliveryEnd || includedBookingEnd;
       const returnDueAt = returnData.dueAt || deliveryEnd;
       
       if (!returnDueAt) {
@@ -692,13 +701,17 @@ async function sendOverdueReminders() {
           if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
             if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
           } else {
-            // Canonical return-label URL (9.1 spec: two fields only)
-            const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl;
+            // Canonical return-label URL, with Shippo re-fetch fallback (matches
+            // sendReturnReminders.js): prefer returnQrUrl/returnLabelUrl, else recover
+            // from Shippo via returnTransactionId.
+            const resolvedLabel = await resolveReturnLabelUrl(protectedData);
 
-            if (!returnLabelUrl) {
-              console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl or returnLabelUrl, skipping SMS`);
+            if (!resolvedLabel) {
+              console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl/returnLabelUrl and no Shippo re-fetch via returnTransactionId, skipping SMS`);
               continue;
             }
+
+            const returnLabelUrl = resolvedLabel.url;
 
             let shortUrl = returnLabelUrl;
             try {
