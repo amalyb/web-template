@@ -283,6 +283,45 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 22, 2026 (follow-up) — Sunday / USPS-holiday-aware return reminder copy (SMS 7/8)
+
+**Why.** A booking can end on a Sunday or USPS holiday (checkout already shows a
+"Sunday end date" banner). The borrower can't ship that day, so SMS 7 ("ship
+tomorrow") and SMS 8 ("today's the day… $15/day fees") read as confusing/alarming
+for those returns. Note this is a **copy/clarity** issue, not a financial one —
+the charge logic already protects them: day 1 is a no-charge grace day and
+`computeChargeableLateDays` skips Sundays + USPS holidays, so a Sunday-due
+borrower who ships the next business day pays $0.
+
+**Fix (copy only; firing schedule unchanged).** Added `buildReturnReminderCopy()`
++ `nextShippingDay()` to `sendReturnReminders.js`. When
+`isNonChargeableDate(returnDate)` is true — one mechanism covers Sundays AND USPS
+holidays — SMS 7/8 name the next shipping day and mirror the banner's "carriers
+don't run" framing:
+- SMS 7 (still T-1): "…Carriers don't run Sunday, so use your QR/label to ship
+  "[Item]" back Monday: [link]."
+- SMS 8 (still day-of): "Your booking for "[Item]" ends today, but carriers don't
+  run Sunday. Ship Monday to avoid a late fee — use your QR/label: [link]."
+Holidays say "the holiday" and roll to the correct next business day (Memorial Day
+→ Tuesday; a Friday holiday → Saturday, since carriers run Saturdays).
+
+**Timing & 9.x unchanged.** No firing-schedule change — the Monday "ship today"
+nudge is already 9.1 (grace day, no charge). The 9.x overdue series already
+excludes Sundays/holidays via `computeChargeableLateDays`, so it needed no change.
+Gotcha to remember: `getFirstChargeableLateDate` is imported in
+`sendReturnReminders.js` but is NOT exported by `businessDays.js` (the call site
+is `typeof`-guarded, so it's effectively null) — use `isNonChargeableDate` /
+`subtractBusinessDays`, which ARE exported.
+
+**Tests.** `server/scripts/sendReturnReminders.sunday-copy.test.js` covers Sunday,
+Memorial-Day-holiday, and normal-weekday cases for SMS 7/8 plus `nextShippingDay`
+(incl. "Saturday stays Saturday"). `buildReturnReminderCopy`/`nextShippingDay` are
+exported for testability.
+
+**Comms doc → v15** (`sherbrt_transaction_comms_v15.xlsx`): Sunday/holiday variant
+noted in Policy/Notes on rows 22–23. Branch `fix/sunday-holiday-return-sms` (cut
+from the May 22 SMS branch). Not yet deployed.
+
 ### May 22, 2026 — Return-label persistence + return/overdue reminder eligibility (SMS 7/8/9.x)
 
 **Symptom.** Borrowers weren't receiving the return-shipment texts: SMS 7
