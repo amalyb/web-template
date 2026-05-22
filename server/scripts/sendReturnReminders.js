@@ -50,7 +50,7 @@ try {
 // This automatically prefers Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
-const { getFirstChargeableLateDate, isNonChargeableDate, USPS_HOLIDAYS } = require('../lib/businessDays');
+const { isNonChargeableDate, USPS_HOLIDAYS } = require('../lib/businessDays');
 const { getRedis } = require('../redis');
 const { withinSendWindow, getNow } = require('../util/time');
 const { upsertProtectedData } = require('../lib/txData');
@@ -425,8 +425,10 @@ async function sendReturnReminders(allowExitOnError = true) {
         }
 
         const tMinus1ForTx = dayjs(dueLocalDate).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
-        const firstChargeableLateDate =
-          typeof getFirstChargeableLateDate === 'function' ? getFirstChargeableLateDate(dueLocalDate) : null;
+        // getFirstChargeableLateDate is not exported by businessDays.js; this stays
+        // null and is retained only for the debug logs below (see CLAUDE_CONTEXT
+        // May 22 follow-up). Late-fee day counting lives in computeChargeableLateDays.
+        const firstChargeableLateDate = null;
 
         const pd = tx?.attributes?.protectedData || {};
         const returnData = pd.return || {};

@@ -65,12 +65,52 @@ describe('buildReturnReminderCopy — USPS holiday return date (Memorial Day 202
   });
 });
 
+describe('buildReturnReminderCopy — consecutive closed days (Sunday before a Monday holiday)', () => {
+  // 2026-05-24 = Sunday, 2026-05-25 = Memorial Day (Mon holiday) -> next ship Tuesday 5/26.
+  // Exercises the roll-forward loop more than once; closedReason ("Sunday") differs
+  // from the named ship day ("Tuesday").
+  test('TODAY: Sunday return whose Monday is a holiday -> ship Tuesday', () => {
+    const m = buildReturnReminderCopy({ ...ARGS, kind: 'TODAY', returnLocalDate: '2026-05-24' });
+    expect(m).toContain("carriers don't run Sunday");
+    expect(m).toContain('Ship Tuesday to avoid a late fee');
+  });
+});
+
+describe('buildReturnReminderCopy — Friday USPS holiday rolls to Saturday', () => {
+  // 2026-07-03 = observed Independence Day (Friday). Saturdays are shipping days,
+  // so the next shipping day is Saturday 7/4 (confirms "Saturdays count").
+  test('TODAY: Friday holiday -> ship Saturday', () => {
+    const m = buildReturnReminderCopy({ ...ARGS, kind: 'TODAY', returnLocalDate: '2026-07-03' });
+    expect(m).toContain("carriers don't run the holiday");
+    expect(m).toContain('Ship Saturday');
+  });
+});
+
+describe('buildReturnReminderCopy — falsy returnLocalDate falls back to normal copy', () => {
+  test('T-1 with undefined returnLocalDate', () => {
+    const m = buildReturnReminderCopy({ ...ARGS, kind: 'T-1', returnLocalDate: undefined });
+    expect(m).toContain('back tomorrow');
+    expect(m).not.toMatch(/don't run/);
+  });
+  test('TODAY with null returnLocalDate', () => {
+    const m = buildReturnReminderCopy({ ...ARGS, kind: 'TODAY', returnLocalDate: null });
+    expect(m).toContain("Today's the day");
+    expect(m).not.toMatch(/don't run/);
+  });
+});
+
 describe('nextShippingDay', () => {
   test('Sunday -> Monday', () => {
     expect(nextShippingDay('2026-06-07').format('dddd')).toBe('Monday');
   });
   test('Memorial Day (Mon holiday) -> Tuesday', () => {
     expect(nextShippingDay('2026-05-25').format('dddd')).toBe('Tuesday');
+  });
+  test('Sunday before a Monday holiday -> Tuesday (two-day roll)', () => {
+    expect(nextShippingDay('2026-05-24').format('dddd')).toBe('Tuesday');
+  });
+  test('Friday holiday -> Saturday (carriers run Saturdays)', () => {
+    expect(nextShippingDay('2026-07-03').format('YYYY-MM-DD')).toBe('2026-07-04');
   });
   test('normal Saturday stays Saturday (carriers run Saturdays)', () => {
     // 2026-06-06 is a Saturday
