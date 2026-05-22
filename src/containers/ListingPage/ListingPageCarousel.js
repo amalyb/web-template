@@ -258,6 +258,18 @@ const pendingIsApproved = isPendingApprovalVariant && isApproved;
 
 
 
+  // Resolve the brand's display label from the listing field config (hosted
+  // enumOptions), so we show the configured label (e.g. "AFRM") rather than a
+  // title-cased version of the stored option value (e.g. "Afrm"). Falls back to
+  // a title-cased value only if no matching option/label is configured.
+  const brandFieldConfig = config?.listing?.listingFields?.find(f => f.key === 'brand');
+  const brandOption = brandFieldConfig?.enumOptions?.find(o => `${o.option}` === publicData?.brand);
+  const brandLabel =
+    brandOption?.label ||
+    (publicData?.brand
+      ? publicData.brand.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+      : '');
+
   const richTitle = (
     <span>
       {richText(title, {
@@ -474,7 +486,7 @@ const pendingIsApproved = isPendingApprovalVariant && isApproved;
         }}
         className={css.brandLinkText}
       >
-        {publicData.brand.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+        {brandLabel}
       </NamedLink>
     ) : null}
   </div>
