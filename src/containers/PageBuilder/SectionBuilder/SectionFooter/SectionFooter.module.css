@@ -99,10 +99,43 @@
   }
 }
 
+/* Scale up the social media (Instagram/TikTok) icons within the footer only.
+   The icon SVGs now carry a viewBox, so setting height here actually scales
+   the graphic (width auto keeps each icon's aspect ratio). Scoped to the footer
+   so the shared SocialMediaLink primitive's default size is unchanged. */
+.icons svg {
+  width: auto;
+  height: 30px;
+}
+
+.icons a {
+  margin-right: 12px;
+}
+
 .icon {
   font-size: 28px;
   margin: 15px 15px 0px 0px;
   padding: 10px 15px;
+}
+
+.appStore {
+  margin-top: 16px;
+}
+
+.appStoreLink {
+  display: inline-block;
+  line-height: 0;
+
+  &:hover {
+    text-decoration: none;
+    opacity: 0.85;
+  }
+}
+
+.appStoreBadge {
+  height: 40px;
+  width: auto;
+  display: block;
 }
 
 .logoLink {
