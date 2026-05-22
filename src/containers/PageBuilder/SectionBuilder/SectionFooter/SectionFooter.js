@@ -7,6 +7,11 @@ import BlockBuilder from '../../BlockBuilder';
 
 import SectionContainer from '../SectionContainer';
 import css from './SectionFooter.module.css';
+import appStoreBadge from '../../../../assets/app-store-badge-black.svg';
+
+// Direct link to the Sherbrt app on the Apple App Store.
+// This URL is tied to the app's permanent Apple ID and does not change between releases.
+const APP_STORE_URL = 'https://apps.apple.com/us/app/sherbrt/id6767250653';
 
 // The number of columns (numberOfColumns) affects styling
 
@@ -136,6 +141,20 @@ const SectionFooter = props => {
                 <BlockBuilder blocks={linksWithBlockId} sectionId={sectionId} options={options} />
               </div>
             ) : null}
+            <div className={css.appStore}>
+              <a
+                className={css.appStoreLink}
+                href={APP_STORE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <img
+                  className={css.appStoreBadge}
+                  src={appStoreBadge}
+                  alt="Download Sherbrt on the App Store"
+                />
+              </a>
+            </div>
             <Field data={copyright} className={css.copyright} />
           </div>
           <div className={classNames(css.grid, getGridCss(numberOfColumns))}>
