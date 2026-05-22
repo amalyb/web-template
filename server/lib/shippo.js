@@ -9,6 +9,10 @@
 
 const SHIPPO_API_BASE = 'https://api.goshippo.com';
 
+// Bound every Shippo GET so a stalled API call can't block a per-tx cron loop
+// (a hung request would otherwise hold the 24h per-tx Redis lock for the day).
+const SHIPPO_FETCH_TIMEOUT_MS = 8000;
+
 function getShippoToken() {
   const token = process.env.SHIPPO_API_TOKEN;
   if (!token) {
@@ -76,30 +80,49 @@ async function voidShippoLabel(shippoTransactionId) {
  *   protectedData.returnTransactionId / protectedData.outboundTransactionId).
  * @returns {Promise<object|null>} - Parsed transaction object (includes
  *   label_url, qr_code_url, tracking_number, tracking_url_provider, status),
- *   or null if missing/unfetchable. Never throws.
+ *   or null on ANY failure (missing token, non-2xx, network error, timeout).
+ *   Never throws — safe to call from a cron loop without a try/catch.
  */
 async function getShippoTransaction(objectId) {
   if (!objectId) return null;
 
-  const token = getShippoToken();
-  const url = `${SHIPPO_API_BASE}/transactions/${encodeURIComponent(objectId)}`;
-
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'Authorization': `ShippoToken ${token}`,
-    },
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => '<no body>');
-    console.warn(
-      `[shippo] getShippoTransaction(${objectId}) failed (${res.status}): ${errorText}`
-    );
+  let token;
+  try {
+    token = getShippoToken();
+  } catch (e) {
+    console.warn(`[shippo] getShippoTransaction(${objectId}) skipped: ${e.message}`);
     return null;
   }
 
-  return res.json();
+  const url = `${SHIPPO_API_BASE}/transactions/${encodeURIComponent(objectId)}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SHIPPO_FETCH_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `ShippoToken ${token}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => '<no body>');
+      console.warn(
+        `[shippo] getShippoTransaction(${objectId}) failed (${res.status}): ${errorText}`
+      );
+      return null;
+    }
+
+    return await res.json();
+  } catch (e) {
+    const reason = e.name === 'AbortError' ? `timeout after ${SHIPPO_FETCH_TIMEOUT_MS}ms` : e.message;
+    console.warn(`[shippo] getShippoTransaction(${objectId}) request error: ${reason}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

@@ -46,6 +46,7 @@ const { sendSMS: sendSMSOriginal } = require('../api-util/sendSMS');
 const { maskPhone } = require('../api-util/phone');
 const { shortLink } = require('../api-util/shortlink');
 const { applyCharges } = require('../lib/lateFees');
+const { resolveReturnLabelUrl } = require('../lib/shippo');
 const { getRedis } = require('../redis');
 const {
   ymd,
@@ -700,13 +701,17 @@ async function sendOverdueReminders() {
           if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
             if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
           } else {
-            // Canonical return-label URL (9.1 spec: two fields only)
-            const returnLabelUrl = protectedData.returnQrUrl || protectedData.returnLabelUrl;
+            // Canonical return-label URL, with Shippo re-fetch fallback (matches
+            // sendReturnReminders.js): prefer returnQrUrl/returnLabelUrl, else recover
+            // from Shippo via returnTransactionId.
+            const resolvedLabel = await resolveReturnLabelUrl(protectedData);
 
-            if (!returnLabelUrl) {
-              console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl or returnLabelUrl, skipping SMS`);
+            if (!resolvedLabel) {
+              console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl/returnLabelUrl and no Shippo re-fetch via returnTransactionId, skipping SMS`);
               continue;
             }
+
+            const returnLabelUrl = resolvedLabel.url;
 
             let shortUrl = returnLabelUrl;
             try {

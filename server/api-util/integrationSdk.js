@@ -130,6 +130,10 @@ const ALLOWED_PROTECTED_DATA_KEYS = [
   'lastTrackingStatus',
   // Cross-process flags for return-reminder SMS dedupe (H2).
   'returnSms',
+  // Idempotency marker written by sendAutoCancelUnshipped.js after it cancels an
+  // unshipped booking (voids labels + sends 3.2/3.2b SMS). Must persist or the
+  // cancel + void path can re-fire on subsequent cron runs.
+  'autoCancel',
 ];
 
 /**
