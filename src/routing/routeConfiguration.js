@@ -35,6 +35,7 @@ const TopLendersPage = loadable(() => import(/* webpackChunkName: "TopLendersPag
 const SearchPageWithMap = loadable(() => import(/* webpackChunkName: "SearchPageWithMap" */ /* webpackPrefetch: true */  '../containers/SearchPage/SearchPageWithMap'));
 const SearchPageWithGrid = loadable(() => import(/* webpackChunkName: "SearchPageWithGrid" */ /* webpackPrefetch: true */  '../containers/SearchPage/SearchPageWithGrid'));
 const StripePayoutPage = loadable(() => import(/* webpackChunkName: "StripePayoutPage" */ '../containers/StripePayoutPage/StripePayoutPage'));
+const PaymentsReturnPage = loadable(() => import(/* webpackChunkName: "PaymentsReturnPage" */ '../containers/PaymentsReturnPage/PaymentsReturnPage'));
 const TermsOfServicePage = loadable(() => import(/* webpackChunkName: "TermsOfServicePage" */ '../containers/TermsOfServicePage/TermsOfServicePage'));
 const TransactionPage = loadable(() => import(/* webpackChunkName: "TransactionPage" */ '../containers/TransactionPage/TransactionPage'));
 const NoAccessPage = loadable(() => import(/* webpackChunkName: "NoAccessPage" */ '../containers/NoAccessPage/NoAccessPage'));
@@ -328,6 +329,18 @@ const routeConfiguration = (layoutConfig, accessControlConfig) => {
       authPage: 'LoginPage',
       component: StripePayoutPage,
       loadData: pageDataLoadingAPI.StripePayoutPage.loadData,
+    },
+    {
+      // Bounce target for the Sherbrt mobile app's Stripe Connect
+      // onboarding return. Stripe rejects custom-scheme URLs on
+      // account_links, so the mobile app passes this HTTPS URL as the
+      // successURL/failureURL; this page immediately JS-redirects to
+      // `sherbrt://account/payments-return` (preserving query params).
+      // No auth gate — Stripe's redirect doesn't carry the web session;
+      // identity lives on the mobile side of this flow.
+      path: '/account/payments-return',
+      name: 'PaymentsReturnPage',
+      component: PaymentsReturnPage,
     },
     {
       path: '/account/payment-methods',
