@@ -283,6 +283,126 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 29, 2026 — IN-FLIGHT: end-to-end verification via intentionally-late test transaction
+
+**Status.** Code shipped to main as commit `cb08b4993` (lender-share split +
+atomic charge+SMS fix). Render auto-deployed to the
+`Overdue / Late-Fee Reminders & Charges` cron service. Env vars set on that
+service:
+- `OVERDUE_FEES_CHARGING_ENABLED=true`
+- `LATE_FEE_LENDER_SHARE_ENABLED=true`
+- `LENDER_LATE_FEE_SHARE_PCT_OVERRIDE=50`
+
+Verification is now blocked on a single intentionally-late test transaction
+that validates BOTH (a) the atomic charge+SMS invariant in production, and
+(b) the load-bearing B1 assumption that provider line items added by the
+mid-flow late-fee transition accumulate into the cumulative payout total
+carried to `stripe-create-payout` at `complete-return`. B1 cannot be proven
+by unit tests — see `docs/9.0_late_fee_lender_share.md:101` for the full
+write-up of the assumption and why this empirical check is required.
+
+**Test setup.**
+- Booking: 3-night minimum, both sides operator-controlled (one borrower
+  account, one lender account with Stripe Connect onboarding complete).
+- Item: any active listing where the operator can withhold the return at
+  will to force lateness.
+- Borrower checks out and pays normally, lender accepts, item ships and
+  is delivered to borrower.
+
+**Intentional lateness.**
+- Do NOT ship the return on the booking-end date. Let the return-by date
+  pass with no return carrier scan.
+- Day 1 after booking-end (10 AM PT cron): expect SMS only, no charge.
+  Log signature: `[lateFees] SKIP tx=... reason=scan-lag-grace daysLate=1`.
+- Day 2+ (10 AM PT cron each day): expect SMS + $15 borrower charge with
+  the 50/50 split. Log signature: `[lateFees] Charging $15 for tx=... ` +
+  `split=lender:$7.5/platform:$7.5 lenderShareEnabled=true`, followed by
+  `event: "overdue.charge"` JSON with `items: ["late-fee","late-fee-lender-share"]`,
+  followed by an SMS-send log line — all for the same `txId`.
+- Day 6: same plus operator email alert (per `9.6-Email` row in
+  `sherbrt_transaction_comms_v15.xlsx`).
+- Cap caps at 5 charges = $75 total to borrower over days 2..6.
+- Day 7+: hard stop, no SMS, no charge (now enforced for both per the
+  atomic-skip fix).
+
+**Atomic invariant check (smoke test, every charging day).** For each day
+the charge fires, expect to see these log lines together for the same tx:
+1. `[lateFees] Charging $15 for tx=...` with the split suffix.
+2. `event: "overdue.charge"` structured JSON line.
+3. SMS-send confirmation log.
+
+What you should NEVER see post-deploy: an `event: "overdue.charge"`
+structured log followed by an `[OVERDUE][NO-LABEL]` / `[NO-PHONE]` /
+`[DAY>6][HARD-STOP]` skip for the same `txId` in the same run. That was the
+pre-fix bug — its absence is the regression check.
+
+**Lender-share end-to-end check (B1 verification, the test that matters most).**
+After 2..6 chargeable late days, ship the return back. When the carrier
+scans "delivered" on the return label:
+- `server/webhooks/shippoTracking.js` fires `transition/complete-return`.
+- `stripe-create-payout` fires, paying the lender's Stripe Connect account.
+
+Open Stripe Connect and inspect the Transfer to the test lender account.
+Expected Transfer amount: original rental payout + accrued lender share.
+
+Example math for a 3-night $25 rental at 15% provider commission with
+2 chargeable late days:
+- Base rental payout: ~$21.25 (rental minus provider commission)
+- Accrued lender share: 2 days × $7.50 = +$15.00
+- Expected total Transfer: ~$36.25
+
+Three outcomes:
+
+1. **PASS** — Transfer ≈ base rental + lender share. The B1 assumption
+   holds; line items accumulate into payout as designed. Leave
+   `LATE_FEE_LENDER_SHARE_ENABLED=true` for real customers.
+
+2. **FAIL (lender share stranded)** — Transfer ≈ base rental only, no
+   lender share. Provider line items added mid-flow do NOT accumulate.
+   Immediately set `LATE_FEE_LENDER_SHARE_ENABLED=false` in Render. Open
+   `docs/9.0_late_fee_lender_share.md` and follow the "redesign with
+   explicit Stripe Connect Transfers fired at charge time" branch.
+
+3. **FAIL (rental destroyed)** — Transfer ≈ lender share only (~$15) or
+   zero, missing the base rental. The late-fee `set-line-items` call has
+   destructively replaced the payout-eligible line items. Same recovery
+   path as outcome 2. Additionally indicates that any prior prod tx that
+   hit late fees and reached `complete-return` may have been shortpaid
+   on rental — audit historical Transfers to confirm scope.
+
+**Post-test cleanup.**
+- If the test borrower account incurred real $15 charges, refund them
+  via Stripe dashboard.
+- If outcome was PASS: replace this section's status with the verdict
+  ("VERIFIED: B1 holds, $X Transfer included $Y rental + $Z lender share
+  on test tx <txId>, prod-ready").
+- If outcome was FAIL: replace with the verdict + link to the follow-up
+  redesign PR.
+
+**Things NOT to do during this test.**
+- Do not run the cron manually via FORCE_NOW — let the natural daily
+  10 AM PT cron fire so the test reflects real production timing and
+  the Redis dedupe behavior.
+- Do not change env vars on the cron service mid-test — the test
+  validates the configuration that shipped with `cb08b4993`.
+- Do not fire `transition/complete-replacement` manually unless the
+  outcome is FAIL and you need to recover the lender; otherwise wait
+  for the natural `complete-return` to be triggered by the return scan.
+- Do not flip `LATE_FEE_CENTS_OVERRIDE=50` on for this test — the user
+  controls both sides of the booking and there are no other live
+  transactions to protect, so testing at the real $15 amount produces
+  more meaningful Transfer math for the B1 check.
+
+**Pre-test checklist.**
+1. Render deploy of `cb08b4993` shows "Live" on the
+   `Overdue / Late-Fee Reminders & Charges` service.
+2. Test lender account has completed Stripe Connect onboarding (or the
+   Transfer at `complete-return` will have nowhere to land).
+3. Today's 10 AM PT cron run accounted for: if it ran before the deploy,
+   any pre-existing overdue tx (e.g. stuck tx `6a03712a`) may have been
+   charged $15 silently under the old code; check Stripe for surprise
+   $15 charges in the morning's window and refund if necessary.
+
 ### May 29, 2026 — Late-fee lender share (50/50 split, flag-gated, default OFF)
 
 **Why.** Until now, every dollar of the daily late fee went to Sherbrt. The
@@ -366,8 +486,13 @@ assertions use `.includes('late-fee')` and
 `.some(a => a.code === 'late-fee')`, which match correctly whether or
 not the provider line is present.
 
-**Ship status.** Code + tests + docs in working tree, not yet committed.
-Staging dry-run still pending. Prod flag remains OFF.
+**Ship status.** Shipped to main as commit `cb08b4993` (May 29 2026),
+combined with the atomic-charge+SMS fix. Render auto-deployed.
+Prod flag `LATE_FEE_LENDER_SHARE_ENABLED=true` set on the
+`Overdue / Late-Fee Reminders & Charges` cron service per operator
+decision (the only live transactions are operator-controlled test
+bookings). End-to-end verification via intentionally-late test tx is
+in-flight — see the "IN-FLIGHT: end-to-end verification…" entry above.
 
 **Review follow-ups (Claude Code review, May 29 2026).** Code is safe to
 merge as PR-1 (flag OFF, additive). Specific findings addressed:
@@ -447,6 +572,11 @@ blocks the charge. Tests: `sendOverdueReminders.atomic-skip.test.js`.
 SMS-attempt AND the charge-attempt happen, or NEITHER does — the sole
 exception being a `sendSMS()` network failure after the charge succeeds
 (logged via `[OVERDUE][SMS-FAILED]`).
+
+**Ship status.** Shipped to main as commit `cb08b4993` (May 29 2026)
+alongside the lender-share split. Render auto-deployed. First
+production behavior signal expected at the next 10 AM PT cron run
+following the deploy.
 
 ### May 22, 2026 (follow-up) — Sunday / USPS-holiday-aware return reminder copy (SMS 7/8)
 
