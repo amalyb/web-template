@@ -2335,7 +2335,7 @@ module.exports = async (req, res) => {
           
           // Now merge: transaction first, then cleaned updates
           const mergedProtectedData = { ...txProtectedData, ...cleaned };
-          
+
           // Explicitly protect customer* fields from being overwritten by blank strings:
           const CUSTOMER_KEYS = [
             'customerName','customerStreet','customerStreet2','customerCity',
@@ -2345,6 +2345,35 @@ module.exports = async (req, res) => {
             if ((mergedProtectedData[k] == null || mergedProtectedData[k] === '') && txProtectedData[k]) {
               mergedProtectedData[k] = txProtectedData[k];
             }
+          }
+
+          // Defensive scrub for the lender-SMS-to-borrower bug (tx 6a1a18ad...):
+          // pre-fix borrower checkout wrote currentUser's phone/email into
+          // protectedData.providerPhone / providerEmail. That meant the
+          // Step-3 "Ship by" SMS (and lender outbound email) were sent to
+          // the borrower's contact info. If the value in PD matches the
+          // borrower's customer* contact, treat it as polluted and drop it
+          // so hydrateProviderFieldsFromProfile() refills from the lender's
+          // profile. Lender form submissions (clean string, doesn't match
+          // customer*) are preserved.
+          const norm = v => (typeof v === 'string' ? v.trim().toLowerCase() : v);
+          if (
+            mergedProtectedData.providerPhone &&
+            mergedProtectedData.customerPhone &&
+            norm(mergedProtectedData.providerPhone) === norm(mergedProtectedData.customerPhone) &&
+            !(cleaned && Object.prototype.hasOwnProperty.call(cleaned, 'providerPhone'))
+          ) {
+            console.warn('[ACCEPT][SCRUB] providerPhone matches customerPhone — dropping polluted value so profile hydration can refill');
+            mergedProtectedData.providerPhone = '';
+          }
+          if (
+            mergedProtectedData.providerEmail &&
+            mergedProtectedData.customerEmail &&
+            norm(mergedProtectedData.providerEmail) === norm(mergedProtectedData.customerEmail) &&
+            !(cleaned && Object.prototype.hasOwnProperty.call(cleaned, 'providerEmail'))
+          ) {
+            console.warn('[ACCEPT][SCRUB] providerEmail matches customerEmail — dropping polluted value so profile hydration can refill');
+            mergedProtectedData.providerEmail = '';
           }
           
           console.log('[server accept] merged PD keys:', Object.keys(mergedProtectedData));
