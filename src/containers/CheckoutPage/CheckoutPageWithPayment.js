@@ -143,15 +143,22 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
       customerEmail: formValues.email || currentUser?.attributes?.email || '',
       customerPhone: formValues.phone || shippingInfo?.phoneNumber || '',
 
-      // Provider info from currentUser
-      providerName: currentUser?.attributes?.profile?.displayName || '',
+      // Provider (lender) info — MUST be left blank on the borrower's checkout.
+      // currentUser here is the BORROWER. Writing borrower-derived values into
+      // provider* fields polluted protectedData.providerPhone with the
+      // borrower's phone, which caused the lender "Ship by" SMS to be sent
+      // to the borrower at outbound-label time. The server hydrates these
+      // from the lender's profile (hydrateProviderFieldsFromProfile) during
+      // transition/accept, and the ProviderAddressForm overrides them on
+      // accept — both code paths only run when these fields are empty here.
+      providerName: '',
       providerStreet: '', // Will be filled by provider in TransactionPanel
       providerStreet2: '', // Apartment, suite, etc. - will be filled by provider
       providerCity: '',
       providerState: '',
       providerZip: '',
-      providerEmail: currentUser?.attributes?.email || '',
-      providerPhone: currentUser?.attributes?.profile?.protectedData?.phoneNumber || currentUser?.attributes?.profile?.publicData?.phoneNumber || '',
+      providerEmail: '',
+      providerPhone: '',
 
       // Additional transaction data
       ...getTransactionTypeData(listingType, unitType, config),
@@ -379,11 +386,16 @@ const handleSubmit = async (values, process, props, stripe, submitting, setSubmi
     customerState: finalShipping?.state?.trim() || '',
     customerZip: finalShipping?.postalCode?.trim() || '',
     
-    // Provider fields
-    providerName: currentUser?.attributes?.profile?.displayName?.trim() || '',
-    providerEmail: currentUser?.attributes?.email?.trim() || '',
-    providerPhone: (currentUser?.attributes?.profile?.protectedData?.phoneNumber || 
-                   currentUser?.attributes?.profile?.publicData?.phoneNumber || '').trim(),
+    // Provider (lender) fields — MUST stay blank here. currentUser on the
+    // checkout page is the BORROWER; populating provider* from currentUser
+    // wrote the borrower's phone/email into protectedData.providerPhone /
+    // providerEmail and caused the lender "Ship by" SMS to be sent to the
+    // borrower. The server hydrates these from the lender's profile during
+    // transition/accept (see hydrateProviderFieldsFromProfile), which only
+    // runs when these are missing/empty.
+    providerName: '',
+    providerEmail: '',
+    providerPhone: '',
   };
 
   const mergedPD = protectedData;
