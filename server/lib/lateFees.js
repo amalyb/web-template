@@ -15,6 +15,26 @@
  * - Automatic replacement charging is DISABLED (AUTO_REPLACEMENT_ENABLED = false)
  * - Full replacement charges must be applied manually by an operator
  *
+ * Lender share split (added May 2026 — gated by LATE_FEE_LENDER_SHARE_ENABLED,
+ * default OFF):
+ * - When ON, each daily late fee emits TWO line items:
+ *     1. customer-side  `late-fee`            ($15 charged to borrower)
+ *     2. provider-side  `late-fee-lender-share` (LENDER_LATE_FEE_SHARE_PCT% of $15
+ *        added to lender's payout total — default 50% = $7.50/day)
+ *   Borrower-facing UX is unchanged: same $15 charge, same cap, same SMS copy.
+ *   The provider line item adds to the cumulative payout total and is only
+ *   actually transferred at the next stripe-create-payout action, which fires
+ *   on :transition/complete-return or :transition/complete-replacement.
+ * - When OFF, only the customer-side line item is emitted (historical behavior
+ *   — 100% of late fees to Sherbrt).
+ * - Replacement value (manual, operator-only) is NOT affected by this flag;
+ *   replacement = make-whole-for-lost-asset, lender share handled separately by
+ *   operator at the time of the manual replacement charge.
+ *
+ * Cap accounting note: the count-based cap filter matches `code === 'late-fee'`,
+ * not the new `late-fee-lender-share` code, so adding the lender share does NOT
+ * inflate the cap — 5 charges = 5 chargeHistory entries either way.
+ *
  * Vestigial transition: transition/privileged-apply-late-fees (from :state/delivered,
  * process.edn:128) was added in v4 but is never called under the unified model.
  * Any :state/delivered tx is intercepted by the hasScan check (scan-detected skip) or
@@ -63,6 +83,109 @@ const MAX_LATE_FEE_CHARGES = 5;
 // Automatic replacement charging is DISABLED. All replacement charges are
 // manual/operator-only (see PR-3b day-6 email alert for the operator cue).
 const AUTO_REPLACEMENT_ENABLED = false;
+
+// =============================================================================
+// LENDER SHARE OF DAILY LATE FEE
+// =============================================================================
+// Master kill switch for routing a share of each daily late fee to the lender's
+// payout. Default OFF — when OFF, every late fee continues to go 100% to
+// Sherbrt (historical behavior). When ON, a provider-side line item is added
+// to each charge so the lender receives LENDER_LATE_FEE_SHARE_PCT% of the
+// fee in their next payout (at complete-return or complete-replacement).
+//
+// Rollout pattern matches OVERDUE_FEES_CHARGING_ENABLED (9.0 PR-1 → PR-5):
+// ship with flag OFF, dry-run in staging, flip in prod after verification.
+const LATE_FEE_LENDER_SHARE_ENABLED =
+  String(process.env.LATE_FEE_LENDER_SHARE_ENABLED || 'false').toLowerCase() === 'true';
+
+// Percent of each daily late fee routed to the lender. Default 50% — see the
+// May 2026 lender-share policy note in CLAUDE_CONTEXT.md for rationale. Clamped
+// 0-100; values outside the range are coerced to the nearest bound. Override
+// via env for staging (e.g. LENDER_LATE_FEE_SHARE_PCT_OVERRIDE=25 to test a
+// 25/75 split before committing to a code change).
+const LENDER_LATE_FEE_SHARE_PCT_RAW = process.env.LENDER_LATE_FEE_SHARE_PCT_OVERRIDE
+  ? parseInt(process.env.LENDER_LATE_FEE_SHARE_PCT_OVERRIDE, 10)
+  : 50;
+const LENDER_LATE_FEE_SHARE_PCT = Number.isFinite(LENDER_LATE_FEE_SHARE_PCT_RAW)
+  ? Math.max(0, Math.min(100, LENDER_LATE_FEE_SHARE_PCT_RAW))
+  : 50;
+
+/**
+ * Compute the effective cents contribution of a single line item.
+ *
+ * Mirrors Sharetribe's own line-total calculation:
+ *  - percentage-based items: unitPrice * (percentage / 100)
+ *  - quantity-based items:   unitPrice * quantity (default quantity 1)
+ *
+ * Used to populate `amounts` / `wouldCharge` summaries with EFFECTIVE money
+ * moved per item (e.g. lender-share at 50% reports 750 cents, not 1500), so
+ * digests, dry-run logs, and audit history reflect actual cash flow.
+ *
+ * Rounding: Math.round is half-up (rounds .5 toward +∞), NOT banker's
+ * rounding (half-to-even). At realistic percentages (25/50/75/100) no
+ * rounding occurs. At odd percentages (33/67/etc.) the JS-side rounding may
+ * disagree with Sharetribe's own line-total rounding by 1 cent; treat
+ * `amounts[].cents` as a high-fidelity ESTIMATE, not as the authoritative
+ * line-total. The authoritative value is whatever Sharetribe persists on
+ * `tx.attributes.lineItems[].lineTotal` after the transition.
+ *
+ * @param {Object} lineItem
+ * @returns {number} cents (integer, Math.round half-up)
+ */
+function lineItemEffectiveCents(lineItem) {
+  const base = lineItem?.unitPrice?.amount || 0;
+  const pct = lineItem?.percentage;
+  if (typeof pct === 'number' && pct !== 0) {
+    return Math.round((base * pct) / 100);
+  }
+  const qty = typeof lineItem?.quantity === 'number' ? lineItem.quantity : 1;
+  return base * qty;
+}
+
+/**
+ * Build the line items for ONE daily late-fee charge.
+ *
+ * Always emits the customer-side `late-fee` line item ($lateFeeCents,
+ * quantity 1, includeFor customer). When `lenderSharePct > 0`, ALSO emits a
+ * provider-side `late-fee-lender-share` line item that adds
+ * lateFeeCents * lenderSharePct / 100 to the lender's payout total.
+ *
+ * Shape of the provider line item mirrors `line-item/provider-commission` in
+ * server/api-util/lineItems.js: percentage-based, no quantity, so Sharetribe
+ * computes lineTotal = unitPrice * percentage / 100.
+ *
+ * Sherbrt's take per charge = lateFeeCents * (1 - lenderSharePct/100)
+ * (less Stripe processing on the customer-side charge).
+ *
+ * Exported for unit testing.
+ *
+ * @param {Object} opts
+ * @param {number} opts.lateFeeCents - Full daily charge in cents (e.g. 1500).
+ * @param {number} opts.lenderSharePct - 0-100. Set to 0 to suppress provider line.
+ * @returns {Array<Object>} Sharetribe line items
+ */
+function buildLateFeeLineItems({ lateFeeCents, lenderSharePct }) {
+  const customerLine = {
+    code: 'late-fee',
+    unitPrice: { amount: lateFeeCents, currency: 'USD' },
+    quantity: 1,
+    percentage: 0,
+    includeFor: ['customer'],
+  };
+
+  if (!lenderSharePct || lenderSharePct <= 0) {
+    return [customerLine];
+  }
+
+  const providerLine = {
+    code: 'late-fee-lender-share',
+    unitPrice: { amount: lateFeeCents, currency: 'USD' },
+    percentage: lenderSharePct,
+    includeFor: ['provider'],
+  };
+
+  return [customerLine, providerLine];
+}
 
 /**
  * Check if return shipment has been scanned by carrier.
@@ -328,17 +451,38 @@ async function applyCharges({ sdkInstance, txId, now }) {
       return { charged: false, reason: 'max-charges-reached', chargeCount: priorChargeCount, lateDays, scenario };
     }
 
-    // Build the line item — always quantity: 1, always $15.
-    const newLineItems = [{
-      code: 'late-fee',
-      unitPrice: { amount: LATE_FEE_CENTS, currency: 'USD' },
-      quantity: 1,
-      percentage: 0,
-      includeFor: ['customer'],
-    }];
+    // Build the line items. Borrower always pays LATE_FEE_CENTS (quantity 1).
+    // When the lender-share flag is ON, also emit a provider-side line item
+    // that routes LENDER_LATE_FEE_SHARE_PCT% of the fee to the lender at the
+    // next payout transition (complete-return / complete-replacement).
+    // Borrower charge amount is identical either way; only the split changes.
+    const effectiveLenderSharePct = LATE_FEE_LENDER_SHARE_ENABLED
+      ? LENDER_LATE_FEE_SHARE_PCT
+      : 0;
+    const newLineItems = buildLateFeeLineItems({
+      lateFeeCents: LATE_FEE_CENTS,
+      lenderSharePct: effectiveLenderSharePct,
+    });
+
+    // lenderShareCents/platformShareCents are JS-side SUMMARIES used for
+    // dry-run logs, the digest email, and the chargeHistory audit trail.
+    // At realistic configs (25/50/75/100) they match Sharetribe's
+    // authoritative line-total exactly. At odd percentages (33, 67, etc.)
+    // Sharetribe's own rounding may disagree with Math.round by 1 cent; the
+    // authoritative value is tx.attributes.lineItems[].lineTotal after the
+    // transition lands. lenderShareCents + platformShareCents === LATE_FEE_CENTS
+    // is guaranteed here by construction (platform = LATE_FEE_CENTS - lender),
+    // so the SUMMARY is internally consistent even if it diverges from
+    // Sharetribe's by a penny.
+    const lenderShareCents = effectiveLenderSharePct > 0
+      ? Math.round((LATE_FEE_CENTS * effectiveLenderSharePct) / 100)
+      : 0;
+    const platformShareCents = LATE_FEE_CENTS - lenderShareCents;
 
     console.log(`[lateFees] Charging $${LATE_FEE_CENTS / 100} for tx=${txId} ` +
-      `day=${lateDays} effective=${effectiveYmd} chargeCount=${priorChargeCount + 1}/${MAX_LATE_FEE_CHARGES}`);
+      `day=${lateDays} effective=${effectiveYmd} chargeCount=${priorChargeCount + 1}/${MAX_LATE_FEE_CHARGES} ` +
+      `split=lender:$${lenderShareCents / 100}/platform:$${platformShareCents / 100} ` +
+      `lenderShareEnabled=${LATE_FEE_LENDER_SHARE_ENABLED}`);
 
     // ============================================================================
     // GATE 3: Feature flag.
@@ -348,9 +492,14 @@ async function applyCharges({ sdkInstance, txId, now }) {
     // before enabling real billing in prod.
     // ============================================================================
     if (!OVERDUE_FEES_CHARGING_ENABLED) {
+      // Use EFFECTIVE cents so dry-run logs show the true money flow:
+      // - customer line: $15 charged
+      // - provider line (when split flag on): $7.50 routed to lender
+      // Pre-split tests assert `wouldCharge.some(w => w.code==='late-fee' && w.cents===1500)`
+      // which is preserved (customer line is unchanged at 1500 cents).
       const wouldCharge = newLineItems.map(i => ({
         code: i.code,
-        cents: i.unitPrice.amount,
+        cents: lineItemEffectiveCents(i),
       }));
       console.log(`[lateFees] SKIP tx=${txId} reason=feature-flag-disabled wouldCharge=${JSON.stringify(wouldCharge)} lateDays=${lateDays} scenario=${scenario}`);
       return {
@@ -359,6 +508,9 @@ async function applyCharges({ sdkInstance, txId, now }) {
         wouldCharge,
         lateDays,
         scenario,
+        lenderShareCents,
+        platformShareCents,
+        lenderShareEnabled: LATE_FEE_LENDER_SHARE_ENABLED,
       };
     }
 
@@ -388,7 +540,19 @@ async function applyCharges({ sdkInstance, txId, now }) {
               {
                 date: effectiveYmd,
                 scenario: 'daily-overdue',
-                items: newLineItems.map(i => ({ code: i.code, amount: i.unitPrice.amount })),
+                // Track EFFECTIVE cents per item (i.e. lender share at 50%
+                // records 750, not 1500) so the digest + operator audit
+                // reflects real money moved. The cap filter matches
+                // `code === 'late-fee'` only, so this extra entry does NOT
+                // count toward the 5-charge cap (one history row per charge,
+                // not per line item).
+                items: newLineItems.map(i => ({
+                  code: i.code,
+                  amount: lineItemEffectiveCents(i),
+                })),
+                lenderShareCents,
+                platformShareCents,
+                lenderShareEnabled: LATE_FEE_LENDER_SHARE_ENABLED,
                 timestamp: dayjs(now).toISOString(),
                 lateDays,
               }
@@ -400,12 +564,24 @@ async function applyCharges({ sdkInstance, txId, now }) {
 
     console.log(`[lateFees] Charges applied successfully (${transitionName}, day ${lateDays}, $${LATE_FEE_CENTS / 100})`);
 
+    // Return value: `items` and `amounts` enumerate ALL emitted line items.
+    // When the lender-share flag is OFF this is identical to historical
+    // behavior (single 'late-fee' entry). When ON it includes the
+    // 'late-fee-lender-share' provider entry with its EFFECTIVE cents
+    // (e.g. 750 at 50%). Existing consumers using `.includes('late-fee')` /
+    // `.some(a => a.code === 'late-fee')` continue to match correctly.
     return {
       charged: true,
-      items: ['late-fee'],
-      amounts: [{ code: 'late-fee', cents: LATE_FEE_CENTS }],
+      items: newLineItems.map(i => i.code),
+      amounts: newLineItems.map(i => ({
+        code: i.code,
+        cents: lineItemEffectiveCents(i),
+      })),
       lateDays,
       scenario,
+      lenderShareCents,
+      platformShareCents,
+      lenderShareEnabled: LATE_FEE_LENDER_SHARE_ENABLED,
     };
     
   } catch (error) {
@@ -424,5 +600,14 @@ async function applyCharges({ sdkInstance, txId, now }) {
   }
 }
 
-module.exports = { applyCharges, MAX_LATE_FEE_CHARGES };
+module.exports = {
+  applyCharges,
+  MAX_LATE_FEE_CHARGES,
+  // Exposed for unit testing the lender-share split (May 2026):
+  buildLateFeeLineItems,
+  lineItemEffectiveCents,
+  // Exposed for staging dry-run inspection + tests asserting current config:
+  LATE_FEE_LENDER_SHARE_ENABLED,
+  LENDER_LATE_FEE_SHARE_PCT,
+};
 

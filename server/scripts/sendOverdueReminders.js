@@ -538,7 +538,69 @@ async function sendOverdueReminders() {
         // Scenario B: Based on today (ongoing lateness for non-return)
         daysLate = typeof precomputedDaysLate === 'number' ? precomputedDaysLate : computeChargeableLateDays(todayDate, returnDate);
       }
-      
+
+      // Resolve itemTitle (used by the Block A NO-COPY gate and the Block C message build)
+      const itemTitle = listing?.attributes?.title || 'your item';
+
+      // ========================================================================
+      // BLOCK A — SMS-eligibility gates (Scenario B / non-return only).
+      // These run BEFORE the charge so a tx that can't be notified is never
+      // charged. Each failing gate `continue`s the iteration, which now skips
+      // BOTH the SMS and the charge. Invariant: for an overdue non-return tx,
+      // either both the SMS-attempt AND the charge-attempt happen in a given
+      // run, or NEITHER does. (Scenario A / delivered-late has no SMS — its item
+      // is already returned — so it skips these gates and is charged below.)
+      // ========================================================================
+      let borrowerPhone = null;
+      let resolvedLabel = null;
+      if (scenario === 'non-return') {
+        // (a) Day-7 hard stop — no SMS and (under the new order) no charge past day 6.
+        if (daysLate > 6) {
+          if (!ONLY_TX || txId === ONLY_TX) {
+            console.log('[OVERDUE][DAY>6][HARD-STOP]', { txId, daysLate });
+          }
+          continue;
+        }
+
+        // (b) Pre-build sanity gate: no copy exists for this day → skip.
+        // buildOverdueMessage returns null for any day outside 1..6. The real
+        // message is built in Block C once shortUrl is ready; shortUrl is
+        // irrelevant to the null-check so a placeholder ctx is sufficient here.
+        if (!buildOverdueMessage(daysLate, { itemTitle, shortUrl: '' })) {
+          console.log(`[OVERDUE][NO-COPY] tx=${txId} daysLate=${daysLate} — no message for this day, skipping`);
+          continue;
+        }
+
+        // (c) Resolve borrower phone (checkout-entered preferred, profile fallback).
+        const txPhone = protectedData?.customerPhone ||
+                       protectedData?.phone ||
+                       protectedData?.customer_phone;
+        const profilePhone = customer?.attributes?.profile?.protectedData?.phone ||
+                           customer?.attributes?.profile?.protectedData?.phoneNumber;
+        borrowerPhone = (txPhone && String(txPhone).trim()) ||
+                             (profilePhone && String(profilePhone).trim()) ||
+                             null;
+        if (!borrowerPhone) {
+          console.log(`[OVERDUE][NO-PHONE] tx=${txId} day=${daysLate}`);
+          continue;
+        }
+
+        // (d) ONLY_PHONE targeted-test filter.
+        if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
+          if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
+          continue;
+        }
+
+        // (e) Resolve canonical return-label URL, with Shippo re-fetch fallback
+        // (matches sendReturnReminders.js): prefer returnQrUrl/returnLabelUrl,
+        // else recover from Shippo via returnTransactionId.
+        resolvedLabel = await resolveReturnLabelUrl(protectedData);
+        if (!resolvedLabel) {
+          console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl/returnLabelUrl and no Shippo re-fetch via returnTransactionId, skipping SMS`);
+          continue;
+        }
+      }
+
       // Apply charges (separate try/catch so charge failures don't block SMS)
       // applyCharges() handles both Scenario A and Scenario B internally
       let chargeResult = null;
@@ -677,187 +739,152 @@ async function sendOverdueReminders() {
         }
       }
 
-      // SMS reminders: Only send for Scenario B (never returned)
-      // Scenario A (returned late) doesn't need reminders - item already returned
+      // ========================================================================
+      // BLOCK C — send SMS (Scenario B / non-return only).
+      // All SMS-eligibility gates already passed in Block A and the charge
+      // already ran in Block B, so borrowerPhone + resolvedLabel are set here.
+      // EXCEPTION to the both-or-neither invariant: the sendSMS() network call
+      // below can fail AFTER the charge succeeded (Twilio rejects, network
+      // error). We can't prevent that — it's logged loudly via
+      // [OVERDUE][SMS-FAILED]. The Redis dedupe stays here (not Block A): if a
+      // prior run already sent for this daysLate, applyCharges() self-skips with
+      // reason 'already-charged-today' via its per-business-day idempotency, so
+      // moving the dedupe earlier would be a redundant no-op.
+      // ========================================================================
       if (scenario === 'non-return') {
-        // Get borrower phone
-        // First try transaction protectedData (checkout-entered phone - preferred)
-        // Then fall back to customer profile protectedData
+        const returnLabelUrl = resolvedLabel.url;
 
-        // Check transaction protectedData first (checkout-entered, E.164 normalized)
-        const txPhone = protectedData?.customerPhone || 
-                       protectedData?.phone || 
-                       protectedData?.customer_phone;
-        
-        // Fall back to customer profile protectedData
-        const profilePhone = customer?.attributes?.profile?.protectedData?.phone ||
-                           customer?.attributes?.profile?.protectedData?.phoneNumber;
-        
-        const borrowerPhone = (txPhone && String(txPhone).trim()) || 
-                             (profilePhone && String(profilePhone).trim()) || 
-                             null;
-        
-        if (borrowerPhone) {
-          if (ONLY_PHONE && borrowerPhone !== ONLY_PHONE) {
-            if (VERBOSE) console.log(`↩️ Skipping ${borrowerPhone} (ONLY_PHONE=${ONLY_PHONE})`);
-          } else {
-            // Canonical return-label URL, with Shippo re-fetch fallback (matches
-            // sendReturnReminders.js): prefer returnQrUrl/returnLabelUrl, else recover
-            // from Shippo via returnTransactionId.
-            const resolvedLabel = await resolveReturnLabelUrl(protectedData);
+        let shortUrl = returnLabelUrl;
+        try {
+          const maybeShort = await shortLink(returnLabelUrl);
+          if (maybeShort) shortUrl = maybeShort;
+        } catch (shortErr) {
+          console.warn('[SMS] shortlink generation failed, using fallback', {
+            txId,
+            error: shortErr?.message || shortErr
+          });
+        }
+        console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
 
-            if (!resolvedLabel) {
-              console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl/returnLabelUrl and no Shippo re-fetch via returnTransactionId, skipping SMS`);
-              continue;
-            }
+        // ================================================================
+        // SMS DEDUPE — Redis-backed (PR-3a, replaces dead transition call)
+        // Pattern matches sendShippingReminders.js / sendReturnReminders.js.
+        // runNotificationGuard kept as belt-and-suspenders intra-run guard.
+        // ================================================================
+        const redis = getRedis();
+        const sentKey = `overdueNotified:${txId}:${daysLate}:sent`;
+        const inFlightKey = `overdueNotified:${txId}:${daysLate}:inFlight`;
 
-            const returnLabelUrl = resolvedLabel.url;
+        // Check Redis sent mark
+        if (await redis.get(sentKey)) {
+          console.log(`[OVERDUE][ALREADY-SENT] tx=${txId} day=${daysLate}`);
+          continue;
+        }
+        // Check Redis in-flight mark
+        if (await redis.get(inFlightKey)) {
+          console.log(`[OVERDUE][IN-FLIGHT] tx=${txId} day=${daysLate}`);
+          continue;
+        }
+        // Belt-and-suspenders: in-memory guard for intra-run dupes
+        const runGuardDay = runNotificationGuard.get(txId);
+        if (runGuardDay === daysLate) {
+          console.log(`[OVERDUE][RUN-GUARD] tx=${txId} day=${daysLate}`);
+          continue;
+        }
 
-            let shortUrl = returnLabelUrl;
-            try {
-              const maybeShort = await shortLink(returnLabelUrl);
-              if (maybeShort) shortUrl = maybeShort;
-            } catch (shortErr) {
-              console.warn('[SMS] shortlink generation failed, using fallback', {
-                txId,
-                error: shortErr?.message || shortErr
-              });
-            }
-            console.log('[SMS] shortlink', { type: 'overdue', short: shortUrl, original: returnLabelUrl });
-            
-            // ================================================================
-            // SMS DEDUPE — Redis-backed (PR-3a, replaces dead transition call)
-            // Pattern matches sendShippingReminders.js / sendReturnReminders.js.
-            // runNotificationGuard kept as belt-and-suspenders intra-run guard.
-            // ================================================================
-            if (daysLate > 6) {
-              if (!ONLY_TX || txId === ONLY_TX) {
-                console.log('[OVERDUE][DAY>6][HARD-STOP]', { txId, daysLate });
-              }
-              continue; // Hard stop after day 6 — no SMS or persistence attempts
-            }
+        if (DRY_RUN) {
+          console.log(`[OVERDUE][DRY-RUN] Would SET ${sentKey}`);
+          continue; // DRY_RUN skips Redis writes too
+        }
 
-            const redis = getRedis();
-            const sentKey = `overdueNotified:${txId}:${daysLate}:sent`;
-            const inFlightKey = `overdueNotified:${txId}:${daysLate}:inFlight`;
+        // Build message using the 9.1 message-map module.
+        // buildOverdueMessage returns null for any day outside 1..6 —
+        // defense-in-depth against the Block A daysLate > 6 hard stop.
+        const built = buildOverdueMessage(daysLate, { itemTitle, shortUrl });
+        if (!built) {
+          console.log(`[OVERDUE][NO-COPY] tx=${txId} daysLate=${daysLate} — no message for this day, skipping`);
+          continue;
+        }
+        const { message, tag } = built;
 
-            // Check Redis sent mark
-            if (await redis.get(sentKey)) {
-              console.log(`[OVERDUE][ALREADY-SENT] tx=${txId} day=${daysLate}`);
-              continue;
-            }
-            // Check Redis in-flight mark
-            if (await redis.get(inFlightKey)) {
-              console.log(`[OVERDUE][IN-FLIGHT] tx=${txId} day=${daysLate}`);
-              continue;
-            }
-            // Belt-and-suspenders: in-memory guard for intra-run dupes
-            const runGuardDay = runNotificationGuard.get(txId);
-            if (runGuardDay === daysLate) {
-              console.log(`[OVERDUE][RUN-GUARD] tx=${txId} day=${daysLate}`);
-              continue;
-            }
+        if (VERBOSE) {
+          console.log(`[SMS] To ${borrowerPhone} (tx ${txId}, day ${daysLate}) → ${message}`);
+        }
 
-            if (DRY_RUN) {
-              console.log(`[OVERDUE][DRY-RUN] Would SET ${sentKey}`);
-              continue; // DRY_RUN skips Redis writes too
-            }
+        // Set in-memory guard immediately (belt-and-suspenders)
+        runNotificationGuard.set(txId, daysLate);
 
-            // Resolve itemTitle from listing
-            const itemTitle = listing?.attributes?.title || 'your item';
+        // Set Redis in-flight mark before SMS send
+        await redis.set(inFlightKey, '1', 'EX', INFLIGHT_TTL_SEC);
 
-            // Build message using the 9.1 message-map module.
-            // buildOverdueMessage returns null for any day outside 1..6 —
-            // defense-in-depth against the upstream daysLate > 6 hard stop.
-            const built = buildOverdueMessage(daysLate, { itemTitle, shortUrl });
-            if (!built) {
-              console.log(`[OVERDUE][NO-COPY] tx=${txId} daysLate=${daysLate} — no message for this day, skipping`);
-              continue;
-            }
-            const { message, tag } = built;
-
-            if (VERBOSE) {
-              console.log(`[SMS] To ${borrowerPhone} (tx ${txId}, day ${daysLate}) → ${message}`);
-            }
-
-            // Set in-memory guard immediately (belt-and-suspenders)
-            runNotificationGuard.set(txId, daysLate);
-
-            // Set Redis in-flight mark before SMS send
-            await redis.set(inFlightKey, '1', 'EX', INFLIGHT_TTL_SEC);
-
-            try {
-              if (daysLate === 6) {
-                console.log('[OVERDUE][DAY6_SENT]', {
-                  txId: tx?.id?.uuid || tx?.id,
-                  daysLate,
-                  tag,
-                });
-              }
-
-              const smsResult = await sendSMS(borrowerPhone, message, {
-                role: 'borrower',
-                tag: tag,
-                meta: {
-                  txId: tx?.id?.uuid || tx?.id,
-                  listingId: listing?.id?.uuid || listing?.id,
-                  daysLate,
-                  scenario,
-                }
-              });
-
-              if (smsResult?.success || !smsResult?.skipped) {
-                // Atomic: SET NX EX closes the double-send race if two
-                // processes overlap on restart.
-                await redis.set(sentKey, String(daysLate), 'NX', 'EX', SENT_TTL_SEC);
-                await redis.del(inFlightKey);
-                sent++;
-
-                // §3b.1 — Day-6 fire-and-forget operator alert email
-                if (daysLate === 6) {
-                  const emailBody = [
-                    `Day-6 SMS just fired to borrower — replacement charge commitment is now in effect.`,
-                    ``,
-                    `Tx: ${tx?.id?.uuid || 'unknown'}`,
-                    `Listing: ${listing?.attributes?.title || 'unknown'} (${listing?.id?.uuid || 'unknown'})`,
-                    `Borrower: ${customerName} (${borrowerPhone})`,
-                    `Return due: ${ymd(returnDate)}`,
-                    `Days late: ${daysLate}`,
-                    ``,
-                    `Action: decide whether to trigger manual replacement charge.`,
-                    `Console: https://console.sharetribe.com/o/sherbrt/transactions/${tx?.id?.uuid}`,
-                  ].join('\n');
-
-                  if (!DRY_RUN) {
-                    sendTransactionalEmail({
-                      to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
-                      subject: `[Sherbrt] Day-6 overdue — manual replacement decision needed (tx ${tx?.id?.uuid?.slice(0, 8) || '??'})`,
-                      text: emailBody,
-                    }).catch(err => {
-                      console.error('[OVERDUE][DAY6_EMAIL_FAILED]', { txId: tx?.id?.uuid, error: err.message });
-                    });
-                  } else {
-                    console.log('[OVERDUE][DAY6_EMAIL_DRY_RUN]', { txId: tx?.id?.uuid });
-                  }
-                }
-              } else {
-                await redis.del(inFlightKey); // let next tick retry
-                console.log(`[OVERDUE][SMS-SKIPPED] tx=${txId} reason=${smsResult?.reason}`);
-              }
-            } catch (e) {
-              await redis.del(inFlightKey);
-              console.error(`[OVERDUE][SMS-FAILED] tx=${txId} day=${daysLate}:`, e?.message || e);
-              failed++;
-            }
+        try {
+          if (daysLate === 6) {
+            console.log('[OVERDUE][DAY6_SENT]', {
+              txId: tx?.id?.uuid || tx?.id,
+              daysLate,
+              tag,
+            });
           }
-        } else {
-          console.warn(`⚠️ No borrower phone for tx ${tx?.id?.uuid || '(no id)'} - skipping SMS`);
+
+          const smsResult = await sendSMS(borrowerPhone, message, {
+            role: 'borrower',
+            tag: tag,
+            meta: {
+              txId: tx?.id?.uuid || tx?.id,
+              listingId: listing?.id?.uuid || listing?.id,
+              daysLate,
+              scenario,
+            }
+          });
+
+          if (smsResult?.success || !smsResult?.skipped) {
+            // Atomic: SET NX EX closes the double-send race if two
+            // processes overlap on restart.
+            await redis.set(sentKey, String(daysLate), 'NX', 'EX', SENT_TTL_SEC);
+            await redis.del(inFlightKey);
+            sent++;
+
+            // §3b.1 — Day-6 fire-and-forget operator alert email
+            if (daysLate === 6) {
+              const emailBody = [
+                `Day-6 SMS just fired to borrower — replacement charge commitment is now in effect.`,
+                ``,
+                `Tx: ${tx?.id?.uuid || 'unknown'}`,
+                `Listing: ${listing?.attributes?.title || 'unknown'} (${listing?.id?.uuid || 'unknown'})`,
+                `Borrower: ${customerName} (${borrowerPhone})`,
+                `Return due: ${ymd(returnDate)}`,
+                `Days late: ${daysLate}`,
+                ``,
+                `Action: decide whether to trigger manual replacement charge.`,
+                `Console: https://console.sharetribe.com/o/sherbrt/transactions/${tx?.id?.uuid}`,
+              ].join('\n');
+
+              if (!DRY_RUN) {
+                sendTransactionalEmail({
+                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  subject: `[Sherbrt] Day-6 overdue — manual replacement decision needed (tx ${tx?.id?.uuid?.slice(0, 8) || '??'})`,
+                  text: emailBody,
+                }).catch(err => {
+                  console.error('[OVERDUE][DAY6_EMAIL_FAILED]', { txId: tx?.id?.uuid, error: err.message });
+                });
+              } else {
+                console.log('[OVERDUE][DAY6_EMAIL_DRY_RUN]', { txId: tx?.id?.uuid });
+              }
+            }
+          } else {
+            await redis.del(inFlightKey); // let next tick retry
+            console.log(`[OVERDUE][SMS-SKIPPED] tx=${txId} reason=${smsResult?.reason}`);
+          }
+        } catch (e) {
+          await redis.del(inFlightKey);
+          console.error(`[OVERDUE][SMS-FAILED] tx=${txId} day=${daysLate}:`, e?.message || e);
+          failed++;
         }
       } else {
         // Scenario A: Item already returned, no SMS needed
         console.log(`ℹ️ [SCENARIO A] Item already returned - skipping SMS reminder`);
       }
-      
+
       if (LIMIT && sent >= LIMIT) {
         console.log(`⏹️ Limit reached (${LIMIT}). Stopping.`);
         break;

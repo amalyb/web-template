@@ -283,6 +283,171 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### May 29, 2026 — Late-fee lender share (50/50 split, flag-gated, default OFF)
+
+**Why.** Until now, every dollar of the daily late fee went to Sherbrt. The
+lender — whose item is the one being held past return — got nothing for the
+inconvenience. Steps 9.1–9.6 in `sherbrt_transaction_comms_v15.xlsx` frame
+the fee purely as a borrower penalty, never as compensation to the asset owner.
+Policy decision: route 50% of each daily late fee to the lender (default;
+0–100% configurable), keeping Sherbrt's half to cover Stripe processing,
+day-6 ops, CS, and dispute risk. Borrower experience unchanged ($15/day,
+$75 cap, same SMS copy). Replacement value remains manual + 100% lender
+(it's reimbursement for a lost asset, not a penalty) — NOT affected by this
+flag.
+
+**How.** `server/lib/lateFees.js` now emits TWO line items per daily charge
+when `LATE_FEE_LENDER_SHARE_ENABLED=true`:
+1. `late-fee` — customer-side, $15, quantity 1 (unchanged — 100% to payin).
+2. `late-fee-lender-share` — provider-side, percentage `LENDER_LATE_FEE_SHARE_PCT`
+   (default 50), `includeFor: ['provider']`. Shape mirrors
+   `line-item/provider-commission` in `server/api-util/lineItems.js`:
+   percentage-based, no quantity, lineTotal = unitPrice × pct/100.
+
+The provider line item accrues into the cumulative payout total and is
+actually transferred to the lender's Connect account at the next
+`stripe-create-payout` action, which fires on `transition/complete-return`
+(return delivered scan via `server/webhooks/shippoTracking.js`) or
+`transition/complete-replacement` (manual operator path).
+
+**Cap accounting (critical).** The count-based cap filter still matches
+`code === 'late-fee'` only. One chargeHistory entry per daily charge,
+regardless of whether the entry has 1 or 2 line items. Cap stays at 5
+charges = $75. Test `cap accounting — late-fee-lender-share never inflates
+the 5-charge cap` in `lateFees.lender-share.test.js` is the regression
+guard.
+
+**process.edn — NO change.** `transition/privileged-apply-late-fees-non-return`
+already runs `:action/privileged-set-line-items`, which accepts any line
+items the script passes. No new transition, no version bump, no Console flip.
+
+**Rollout (matches 9.0 PR-1 → PR-5 cadence).** Ships with
+`LATE_FEE_LENDER_SHARE_ENABLED=false` so nothing changes in prod until the
+env var is flipped in Render after a staging dry-run with
+`LATE_FEE_CENTS_OVERRIDE=50`. Full rollout plan + edge cases in
+`docs/9.0_late_fee_lender_share.md`.
+
+**Gotcha — payout timing.** The late-fee transition only does
+`stripe-create-payment-intent` (charges borrower). It does NOT create a
+payout. Lender share is paid out at the next payout transition. For a tx
+stuck in `:state/accepted` forever (no return, no operator replacement),
+the lender share is stranded in the platform balance — acceptable because
+day-6+ is already an investigation case where operator decides whether to
+fire `complete-replacement` (lender gets full replacement value + accrued
+late-fee share) or `cancel`.
+
+**Gotcha — chargeHistory amounts now hold effective cents.** Pre-flag,
+`chargeHistory[N].items[0].amount` = 1500 (= unitPrice). Post-flag,
+percentage-based provider items record the EFFECTIVE lineTotal
+(e.g. 750 at 50%), via the new `lineItemEffectiveCents()` helper. Cap
+filter is unaffected (matches by `code`, not `amount`). Digest emails
+that sum `amounts[].cents` will reflect real money moved.
+
+**Files touched.**
+- `server/lib/lateFees.js` — new constants, `buildLateFeeLineItems()` +
+  `lineItemEffectiveCents()` helpers, updated charging path + return
+  shape + chargeHistory tracking.
+- `server/lib/lateFees.lender-share.test.js` (new) — 15 unit tests.
+- `.env.example` — `LATE_FEE_LENDER_SHARE_ENABLED`,
+  `LENDER_LATE_FEE_SHARE_PCT_OVERRIDE`,
+  `OVERDUE_FEES_CHARGING_ENABLED`, `LATE_FEE_CENTS_OVERRIDE`
+  (last two backfilled — were already in code but missing from example).
+- `docs/9.0_late_fee_lender_share.md` (new) — PR description + rollout
+  plan + edge cases.
+- `sherbrt_transaction_comms_v15.xlsx` — borrower-facing copy is
+  UNCHANGED (split is invisible to borrower). Lender-facing copy is
+  DEFERRED to a follow-up PR (no notification when share lands; lender
+  sees it as a bump in their payout total at complete-return).
+
+**Verification.** `yarn jest server/lib/lateFees.lender-share.test.js`
+green. `node --check server/lib/lateFees.js` passes. Existing scenarioTests
+(`dailyChargeWithNoScan.js`, `maxCapReached.js`) remain green — their
+assertions use `.includes('late-fee')` and
+`.some(a => a.code === 'late-fee')`, which match correctly whether or
+not the provider line is present.
+
+**Ship status.** Code + tests + docs in working tree, not yet committed.
+Staging dry-run still pending. Prod flag remains OFF.
+
+**Review follow-ups (Claude Code review, May 29 2026).** Code is safe to
+merge as PR-1 (flag OFF, additive). Specific findings addressed:
+- **B1 (BLOCKER for PR-4 flip, NOT for PR-1 merge):** The payout-accumulation
+  premise — that a provider line item set in the mid-flow
+  `privileged-apply-late-fees-non-return` self-loop persists into the
+  cumulative payout total carried to `stripe-create-payout` at
+  `complete-return` — is an ASSUMPTION, not verified by anything in this
+  repo. Reviewer correctly flagged that `docs/9.0_late_fee_lender_share.md`
+  originally said "Payout mechanics — verified" which overstated the
+  evidence. Retitled to "ASSUMPTION, must verify empirically before PR-4".
+  Added a hard verification gate in PR-2 with TWO checks:
+    (A) Historical prod tx audit — find a prod tx that hit late fees AND
+        `complete-return`; compare its final lineItems[] vs. its actual
+        Stripe Transfer. Highest-signal check, zero risk.
+    (B) Staging dry-run with $0.50 override + simulated `complete-return`,
+        verify Stripe Transfer includes the lender share ON TOP OF rental.
+  If either fails, do NOT flip — re-architect using explicit Stripe Connect
+  Transfers at charge time instead of relying on line-item accumulation.
+- **S1:** Documented that `lenderShareCents/platformShareCents` are JS-side
+  ESTIMATES via Math.round (half-up). Authoritative value for audit is
+  `tx.attributes.lineItems[].lineTotal` post-transition. At realistic
+  configs (25/50/75/100) the two always agree.
+- **N1:** With flag OFF the line items sent to Sharetribe are byte-identical,
+  but the persisted chargeHistory entry + return object gain 3 additive
+  metadata keys (`lenderShareCents:0`, `platformShareCents:1500`,
+  `lenderShareEnabled:false`). No current consumer reads them. Reworded
+  "byte-identical" → "functionally identical" throughout the docs.
+- **N2:** Math.round is half-up, NOT banker's rounding (half-to-even).
+  Corrected the misleading "banker-rounded" comments.
+- **N3:** The digest email (`sendLateFeeDigest()`) uses hardcoded
+  `totalCents: LATE_FEE_CENTS` per tx — it does NOT iterate
+  `chargeResult.amounts`. So it will NOT show two rows per charge with
+  flag on (doc was wrong in original draft).
+- **S2:** Added `server/lib/lateFees.applyCharges.test.js` — SDK-mock
+  integration tests that exercise the full applyCharges flow with the
+  flag on/off, asserting the transition is called with the expected
+  lineItems + chargeHistory shape. Cheap, recommended before PR-4 anyway.
+
+Important reviewer-verified findings (no code changes needed):
+- Existing prod late-fee path already sets `[late-fee]` (customer-only)
+  line items daily, yet rental payouts still happen at complete-return.
+  That's mild evidence (not proof) that Sharetribe preserves payout
+  across mid-flow `set-line-items` calls — but the historical prod tx
+  audit (B1 Check A) is the only way to know for sure.
+- Provider line direction: positive `percentage` + `includeFor:['provider']`
+  ADDS to payout, correctly inverting `provider-commission`'s negative
+  percentage. Shape mirrors `line-item/provider-commission` in
+  `server/api-util/lineItems.js:453-460`. Payin ≥ payout invariant holds.
+- Downstream consumers: `lenderEarnings.calculateLenderPayoutTotal`
+  consumers (`lender-booking-sms.js`, `sendLenderRequestReminders.js`,
+  `sendAutoCancelUnshipped.js`) all run pre-late-fee, reading booking
+  line items — the provider lender-share item can't corrupt their payout
+  display. No other consumer of `chargeResult.items/amounts/wouldCharge`
+  or `chargeHistory` regresses.
+
+### May 29, 2026 — Atomic charge+SMS in the overdue cron (gate before charge)
+
+**Symptom.** `sendOverdueReminders.js` fired the late-fee charge BEFORE
+checking whether the overdue SMS could actually be sent. Surfaced on tx
+`6a03712a-…`: txs with stripped/missing `protectedData` (no return label,
+no phone) — or any tx hitting the day-7 hard stop or missing day-copy —
+got billed with `applyCharges()`, then the loop `continue`d past the SMS.
+Borrower charged, never notified. Violated the both-or-neither policy in
+`sherbrt_transaction_comms_v15.xlsx` (rows 9.1–9.6) and the lateFees.js
+docstring ("Day 7+ = hard stop: no SMS, no charge").
+
+**Fix.** Reordered the per-tx loop body into Block A (SMS-eligibility
+gates: day-7 hard stop, copy sanity, phone, ONLY_PHONE, label) → Block B
+(`applyCharges`, unchanged) → Block C (SMS send, unchanged). A failing
+Block A gate now `continue`s and skips BOTH charge and SMS. Scenario A
+(delivered-late) has no SMS and still charges unconditionally.
+`lateFees.js` was NOT touched. Behavioral change: day-7 hard stop now also
+blocks the charge. Tests: `sendOverdueReminders.atomic-skip.test.js`.
+
+**Invariant.** For an overdue non-return tx in a run, either both the
+SMS-attempt AND the charge-attempt happen, or NEITHER does — the sole
+exception being a `sendSMS()` network failure after the charge succeeds
+(logged via `[OVERDUE][SMS-FAILED]`).
+
 ### May 22, 2026 (follow-up) — Sunday / USPS-holiday-aware return reminder copy (SMS 7/8)
 
 **Why.** A booking can end on a Sunday or USPS holiday (checkout already shows a
