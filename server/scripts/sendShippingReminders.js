@@ -357,8 +357,26 @@ async function sendShippingReminders() {
 
       const txProtected = tx?.attributes?.protectedData || {};
       const providerProtected = provider?.attributes?.profile?.protectedData || {};
+
+      // Defensive scrub for the lender-SMS-to-borrower bug: pre-fix borrower
+      // checkout wrote currentUser's phone into protectedData.providerPhone
+      // (= the borrower's phone). The accept-time scrub fixes new accepts,
+      // but legacy "accepted" txs already in the queue would still misroute
+      // here. If tx PD providerPhone matches customerPhone, treat it as
+      // polluted and fall through to the lender's profile phone.
+      const norm = v => (typeof v === 'string' ? v.trim().toLowerCase() : v);
+      const txProviderPhone =
+        txProtected.providerPhone &&
+        txProtected.customerPhone &&
+        norm(txProtected.providerPhone) === norm(txProtected.customerPhone)
+          ? null
+          : txProtected.providerPhone;
+      if (txProviderPhone !== txProtected.providerPhone) {
+        console.warn(`[shipping-reminder][SCRUB] tx ${txId} providerPhone matched customerPhone — falling through to profile`);
+      }
+
       const providerPhone =
-        txProtected.providerPhone ||
+        txProviderPhone ||
         providerProtected.phoneNumber ||
         providerProtected.phone ||
         null;

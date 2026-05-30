@@ -13,16 +13,6 @@
  * invoke `.getUTCDay()` and `.toISOString()` without type-mismatches.
  */
 
-// Pin "now" before requiring computeShipByDate so the new past-date clamp
-// (which calls getNow() → respects FORCE_NOW) does not turn the fixed
-// April-2026 test dates into "today" and break the suite.
-const ORIGINAL_FORCE_NOW = process.env.FORCE_NOW;
-process.env.FORCE_NOW = '2026-04-01T00:00:00.000Z';
-afterAll(() => {
-  if (ORIGINAL_FORCE_NOW === undefined) delete process.env.FORCE_NOW;
-  else process.env.FORCE_NOW = ORIGINAL_FORCE_NOW;
-});
-
 const { computeShipByDate } = require('./shipping');
 const dayjs = require('dayjs');
 dayjs.extend(require('dayjs/plugin/utc'));
