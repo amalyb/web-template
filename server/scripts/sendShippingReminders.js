@@ -229,9 +229,21 @@ async function sendShippingReminders() {
     const today = new Date(now);
     today.setUTCHours(0, 0, 0, 0);
     
-    // Query all accepted transactions (outbound shipping)
+    // Query transactions whose last transition is one of the "in accepted
+    // state" set. The previous `state: 'accepted'` filter is silently
+    // ignored by the Marketplace API v2 query, which meant we were pulling
+    // every transaction in the marketplace (including cancelled / delivered)
+    // and relying on a downstream defensive check that itself read a field
+    // (tx.attributes.state) that v2 does not populate. Result: cancelled
+    // txs were processed by the cron whenever the shipBy gate let them
+    // through. Filtering by lastTransitions matches the transition names
+    // that leave the tx in :state/accepted in default-booking process.edn.
+    const ACCEPTED_STATE_TRANSITIONS = [
+      'transition/accept',
+      'transition/operator-update-pd-accepted',
+    ];
     const query = {
-      state: 'accepted',
+      lastTransitions: ACCEPTED_STATE_TRANSITIONS,
       include: ['listing', 'provider', 'customer'],
       'fields.listing': 'title',
       'fields.provider': 'profile',
@@ -304,11 +316,23 @@ async function sendShippingReminders() {
         continue;
       }
       
-      // Skip if already canceled or completed
-      const state = tx?.attributes?.state;
-      if (state === 'cancelled' || state === 'canceled' || state === 'completed' || state === 'delivered') {
+      // Skip if last transition moved tx out of :state/accepted. Read
+      // lastTransition, NOT tx.attributes.state — the latter is undefined
+      // on Marketplace API v2 responses and made this guard a silent no-op
+      // for years. The lastTransitions query filter above already handles
+      // the common case; this is a per-tx belt-and-suspenders check that
+      // also catches transitions added to the process file later (e.g.,
+      // transition/cancel, transition/auto-cancel-unshipped, transition/
+      // operator-update-pd-cancelled, transition/mark-delivered, transition/
+      // operator-complete) without needing a code update.
+      const lastTransition = tx?.attributes?.lastTransition;
+      const ALLOWED_LAST_TRANSITIONS = new Set([
+        'transition/accept',
+        'transition/operator-update-pd-accepted',
+      ]);
+      if (lastTransition && !ALLOWED_LAST_TRANSITIONS.has(lastTransition)) {
         if (VERBOSE) {
-          console.log(`[shipping-reminder] Skipping tx ${txId} - state: ${state}`);
+          console.log(`[shipping-reminder] Skipping tx ${txId} - lastTransition: ${lastTransition} (not in accepted state)`);
         }
         continue;
       }
@@ -357,8 +381,26 @@ async function sendShippingReminders() {
 
       const txProtected = tx?.attributes?.protectedData || {};
       const providerProtected = provider?.attributes?.profile?.protectedData || {};
+
+      // Defensive scrub for the lender-SMS-to-borrower bug: pre-fix borrower
+      // checkout wrote currentUser's phone into protectedData.providerPhone
+      // (= the borrower's phone). The accept-time scrub fixes new accepts,
+      // but legacy "accepted" txs already in the queue would still misroute
+      // here. If tx PD providerPhone matches customerPhone, treat it as
+      // polluted and fall through to the lender's profile phone.
+      const norm = v => (typeof v === 'string' ? v.trim().toLowerCase() : v);
+      const txProviderPhone =
+        txProtected.providerPhone &&
+        txProtected.customerPhone &&
+        norm(txProtected.providerPhone) === norm(txProtected.customerPhone)
+          ? null
+          : txProtected.providerPhone;
+      if (txProviderPhone !== txProtected.providerPhone) {
+        console.warn(`[shipping-reminder][SCRUB] tx ${txId} providerPhone matched customerPhone — falling through to profile`);
+      }
+
       const providerPhone =
-        txProtected.providerPhone ||
+        txProviderPhone ||
         providerProtected.phoneNumber ||
         providerProtected.phone ||
         null;

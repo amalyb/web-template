@@ -1,16 +1,6 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
 const { subtractBusinessDays } = require('./businessDays');
-const { getNow } = require('../util/time');
-
-// Helper: today at UTC midnight (respects FORCE_NOW via getNow()).
-// Used to clamp shipByDate so we never tell a lender to ship in the past
-// when they accept within the lead-day window of the booking start.
-function _todayUTCMidnight() {
-  const today = getNow();
-  today.setUTCHours(0, 0, 0, 0);
-  return today;
-}
 
 // Buffer days added to `estimated_days` for shipBy derivation (10.0 PR-2).
 const SAFETY_BUFFER_DAYS = Number(process.env.SHIP_SAFETY_BUFFER || 1);
@@ -181,19 +171,6 @@ async function computeShipByDate(tx, opts = {}) {
   if (persisted) {
     const d = new Date(persisted);
     if (!Number.isNaN(+d)) {
-      // Clamp: a persisted ship-by date in the past (e.g., lender accepted
-      // within the lead-day window of booking start, so the originally
-      // computed date was already yesterday) must surface as "today" so
-      // downstream SMS / email never tells the lender to ship in the past.
-      const today = _todayUTCMidnight();
-      if (d < today) {
-        console.warn('[ship-by:persisted:clamp]', {
-          persistedISO: persisted,
-          todayISO: today.toISOString(),
-          txId: tx?.id?.uuid,
-        });
-        return today;
-      }
       console.log('[ship-by:persisted]', {
         shipByISO: persisted,
         txId: tx?.id?.uuid,
@@ -231,30 +208,15 @@ async function computeShipByDate(tx, opts = {}) {
   const ADJUST_SUNDAY = String(process.env.SHIP_ADJUST_SUNDAY || '1') === '1';
   const adjusted = ADJUST_SUNDAY ? adjustIfSundayUTC(shipBy) : shipBy;
 
-  // Clamp: if the computed date is already in the past (lender accepted
-  // close to or after the lead-day window), surface "today" instead of
-  // a past date — the SMS would otherwise say "ship by [yesterday]".
-  const today = _todayUTCMidnight();
-  const final = adjusted < today ? today : adjusted;
-  if (final !== adjusted) {
-    console.warn('[ship-by:computed:clamp]', {
-      computedISO: adjusted.toISOString(),
-      todayISO: today.toISOString(),
-      startISO,
-      leadDays,
-    });
-  }
-
   console.log('[ship-by:computed]', {
     startISO,
     transitDays: transitDays ?? null,
     leadDays,
     mode: transitDays != null ? 'shippo-anchored' : 'static-fallback',
-    shipByISO: final.toISOString(),
-    clamped: final !== adjusted,
+    shipByISO: adjusted.toISOString(),
   });
 
-  return final;
+  return adjusted;
 }
 
 /**

@@ -1066,8 +1066,32 @@ async function createShippingLabels({
     // DEBUG: prove we got here
     console.log('✅ [SHIPPO] Label created successfully for tx:', txId);
 
-    // Reuse the shipByDate computed earlier (already logged above)
-    const shipByStr = formatShipBy(shipByDate);
+    // Reuse the shipByDate computed earlier (already logged above).
+    //
+    // Display-only clamp: if the lender accepted within the lead-day window
+    // of the booking start, the computed shipByDate can already be in the
+    // past (e.g., accept Fri, booking start Mon, leadDays=2 → ship-by Thu).
+    // The Step-3 SMS would otherwise read "Ship by [yesterday]" verbatim.
+    // We clamp here at the SMS construction site only — NOT inside
+    // computeShipByDate — because the shipping-reminder cron also calls
+    // computeShipByDate and treats a past return as "skip this tx";
+    // clamping there made the cron fire reminders for every stale accepted
+    // tx in the queue (observed when cron sent borrower-routed reminders
+    // for old transactions after the first clamp deploy).
+    let shipByForSms = shipByDate;
+    if (shipByDate) {
+      const todayUTC = new Date();
+      todayUTC.setUTCHours(0, 0, 0, 0);
+      if (shipByDate < todayUTC) {
+        console.warn('[SMS][Step-3][ship-by:clamp] computed ship-by in the past, clamping to today for SMS display', {
+          computedISO: shipByDate.toISOString(),
+          todayISO: todayUTC.toISOString(),
+          txId,
+        });
+        shipByForSms = todayUTC;
+      }
+    }
+    const shipByStr = formatShipBy(shipByForSms);
     
     // ──────────────────────────────────────────────────────────────────────────────
     // STEP-3: notify lender "label ready" with QR/label-only link (no tracking)
