@@ -642,7 +642,12 @@ async function sendReturnReminders(allowExitOnError = true) {
             continue;
           }
 
-          const returnDayLocalDate = bookingEndPT ? bookingEndPT.format('YYYY-MM-DD') : null;
+          // Use the same dueLocalDate derived above (UTC-date for UTC-midnight
+          // day-bookings). Previously this re-derived from bookingEndPT, which
+          // for end-exclusive UTC-midnight bookings resolves to the PT-day BEFORE
+          // the actual return ship day and made the day-of 8-SMS silently never
+          // fire for every Sharetribe day-booking.
+          const returnDayLocalDate = dueLocalDate;
           const sendAtPT = returnDayLocalDate
             ? dayjs.tz(
                 `${returnDayLocalDate} ${String(SEND_HOUR_PT).padStart(2, '0')}:${String(SEND_MINUTE_PT).padStart(2, '0')}:00`,
