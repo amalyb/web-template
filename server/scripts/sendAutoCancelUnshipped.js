@@ -285,10 +285,29 @@ async function sendCancelSMSes(tx, { listing, customer, provider }) {
     customer?.attributes?.profile?.protectedData?.phone ||
     customer?.attributes?.profile?.protectedData?.phoneNumber ||
     pd.customerPhone;
+
+  // Defensive scrub for the lender-SMS-to-borrower bug family: pre-fix
+  // borrower checkout wrote currentUser's phone into pd.providerPhone.
+  // Legacy "accepted" txs may still carry that polluted value. If pd
+  // providerPhone matches pd customerPhone, drop the PD fallback so we
+  // resolve from the lender's profile only. Matches the scrubs in
+  // sendShippingReminders.js and the accept-time scrub in
+  // transition-privileged.js.
+  const norm = v => (typeof v === 'string' ? v.trim().toLowerCase() : v);
+  const pdProviderPhone =
+    pd.providerPhone &&
+    pd.customerPhone &&
+    norm(pd.providerPhone) === norm(pd.customerPhone)
+      ? null
+      : pd.providerPhone;
+  if (pdProviderPhone !== pd.providerPhone) {
+    console.warn(`[auto-cancel-unshipped][SCRUB] tx ${txId} pd.providerPhone matched pd.customerPhone — falling through to lender profile`);
+  }
+
   const lenderPhone =
     provider?.attributes?.profile?.protectedData?.phone ||
     provider?.attributes?.profile?.protectedData?.phoneNumber ||
-    pd.providerPhone;
+    pdProviderPhone;
 
   if (borrowerPhone) {
     const msg = `🚫 Sherbrt 🍧: Your borrow request for "${truncate(itemTitle, 40)}" was auto-canceled because the lender didn't ship in time. Full refund will hit your card in 5–10 business days. Browse other looks: https://sherbrt.com/s`;
