@@ -2867,7 +2867,8 @@ module.exports = async (req, res) => {
             // 1c-SMS in sendLenderRequestReminders.js — refactor to env
             // var BORROWER_RESHOP_URL is tracked as a follow-up in the
             // May 7 backlog (CLAUDE_CONTEXT.md).
-            const message = `😔 Sherbrt 🍧: Your borrow request was declined. Don't worry — new looks are waiting to be borrowed! Check them out!  https://www.sherbrt.com/r/lyBUNc13c1.`;
+            const BORROWER_RESHOP_URL = process.env.BORROWER_RESHOP_URL || 'https://www.sherbrt.com/r/lyBUNc13c1';
+            const message = `😔 Sherbrt 🍧: Your borrow request was declined. Don't worry — new looks are waiting to be borrowed! Check them out!  ${BORROWER_RESHOP_URL}.`;
             
             // Debug: log SMS length (Note: actual SMS segmentation depends on carrier encoding, newlines, etc.)
             console.log('[sms] borrower_decline length:', message.length, 'chars');

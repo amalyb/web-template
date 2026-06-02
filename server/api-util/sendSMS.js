@@ -12,6 +12,34 @@ const client = twilio(
 const recentSends = new Map(); // key: `${transactionId}:${transition}:${role}`, value: timestamp
 const DUPLICATE_WINDOW_MS = 60000; // 60 seconds
 
+// Redis-backed dedupe: catches duplicates that the in-memory Map cannot
+// (cross-dyno, post-restart, retries spaced >60 s apart). 7-day TTL is
+// well past any reasonable Twilio retry window. We lazy-load Redis so
+// scripts that don't need it (e.g. unit tests) aren't forced to.
+let _redis = null;
+let _redisLoaded = false;
+function getRedisLazy() {
+  if (_redisLoaded) return _redis;
+  _redisLoaded = true;
+  try {
+    _redis = require('../redis').getRedis();
+  } catch (e) {
+    console.warn('[sms] Redis dedupe unavailable, falling back to in-memory only:', e?.message);
+    _redis = null;
+  }
+  return _redis;
+}
+const REDIS_DEDUPE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
+// Key includes `tag` to avoid collisions between distinct messages that
+// share (txId, transition, role) — notably accept-flow borrower SMS where
+// `accept_to_borrower` and `label_created_to_borrower` are both
+// transition=transition/accept, role=customer but are different messages.
+// Without `tag` in the key the second one would be suppressed for 7 days.
+// `tag` may be undefined for ad-hoc sends; we coerce to '' to keep the
+// key deterministic in that case.
+const redisDedupeKey = (txId, transition, role, tag) =>
+  `sms:dedupe:${txId}:${transition}:${role}:${tag || ''}`;
+
 // Helper function to normalize phone number to E.164 format
 function normalizePhoneNumber(phone) {
   if (!phone) return null;
@@ -115,11 +143,31 @@ async function sendSMS(to, message, opts = {}) {
     return Promise.resolve({ skipped: true, reason: 'missing_twilio_credentials' });
   }
 
-  // Duplicate prevention check
+  // Duplicate prevention check — two layers:
+  //   1. In-memory Map (60-second window, per-process; catches Twilio retries
+  //      and accidental double-dispatch within a single request handler).
+  //   2. Redis (7-day TTL, cross-process; catches duplicates the in-memory
+  //      layer cannot — cross-dyno, post-restart, retries spaced >60s).
+  //      Falls back to in-memory only if Redis is unavailable.
   if (transactionId && transition && role) {
     if (isDuplicateSend(transactionId, transition, role)) {
-      console.warn(`🔄 [DUPLICATE] SMS suppressed for ${transactionId}:${transition}:${role} within ${DUPLICATE_WINDOW_MS}ms window`);
+      console.warn(`🔄 [DUPLICATE] SMS suppressed for ${transactionId}:${transition}:${role} within ${DUPLICATE_WINDOW_MS}ms window (in-memory)`);
       return { suppressed: true, reason: 'duplicate_within_window' };
+    }
+    const redis = getRedisLazy();
+    if (redis) {
+      try {
+        const key = redisDedupeKey(transactionId, transition, role, tag);
+        // SET NX so the first writer wins; subsequent identical sends see
+        // the key already present and bail.
+        const acquired = await redis.set(key, Date.now().toString(), 'EX', REDIS_DEDUPE_TTL_SEC, 'NX');
+        if (acquired !== 'OK') {
+          console.warn(`🔄 [DUPLICATE] SMS suppressed for ${transactionId}:${transition}:${role}:${tag || ''} via Redis dedupe (already sent within ${REDIS_DEDUPE_TTL_SEC}s)`);
+          return { suppressed: true, reason: 'duplicate_redis_dedupe' };
+        }
+      } catch (e) {
+        console.warn('[sms] Redis dedupe check failed, proceeding with in-memory only:', e?.message);
+      }
     }
   }
 

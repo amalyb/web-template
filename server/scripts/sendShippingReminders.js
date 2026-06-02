@@ -190,14 +190,21 @@ function isEndOfShipByDay(shipByDate) {
     return false;
   }
 
-  // "End of day" window: 22:00 UTC onward on the ship-by date.
-  // - 22:00 UTC = 6pm EDT / 3pm PDT, late enough in a US workday that a
-  //   lender who hasn't scanned the label by now isn't likely to today.
-  // - Wide window (2+ hours) is cron-proof: with an hourly on-the-hour
-  //   cron, at least two ticks (22:00, 23:00) fall inside the window.
-  // - Redis :eod:sent idempotency guarantees only one SMS per tx per day
-  //   regardless of how many ticks hit the window.
-  return now.getUTCHours() >= 22;
+  // "End of day" window: 3 PM PT onward on the ship-by date — anchored to
+  // PT-local hour so DST doesn't drift the fire time. Previously this
+  // used `now.getUTCHours() >= 22` which equals 3 PM PDT (summer) but
+  // 2 PM PST (winter), firing ~1 hour early for half the year. v15
+  // spec is "evening of ship-by day (after ~3 PM PT / 6 PM ET)" — PT
+  // is the authoritative anchor.
+  const ptHour = parseInt(
+    now.toLocaleString('en-US', {
+      timeZone: 'America/Los_Angeles',
+      hour: '2-digit',
+      hour12: false,
+    }),
+    10
+  );
+  return ptHour >= 15;
 }
 
 async function sendShippingReminders() {
