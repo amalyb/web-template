@@ -294,16 +294,31 @@ async function sendReturnReminders(allowExitOnError = true) {
 
     // Query transactions for T-1, today, and tomorrow (with pagination)
     const ONLY_STATE = process.env.ONLY_STATE;
-    const PAGE_SIZE = parseInt(process.env.ONLY_PAGE_SIZE || process.env.PER_PAGE || '5', 10) || 5;
+    // Default raised from 5 → 50 because the previous `state: 'accepted'`
+    // filter was silently ignored by Marketplace API v2 (the cron scanned
+    // every transaction in the marketplace before the lastTransitions
+    // filter below). At per_page=5 the page sweep risks not reaching
+    // candidates before quotas/timeouts. lastTransitions narrows to
+    // ~accepted-state only, so 50 is safe.
+    const PAGE_SIZE = parseInt(process.env.ONLY_PAGE_SIZE || process.env.PER_PAGE || '50', 10) || 50;
+
+    // Return reminders fire while the item is OUT with the borrower —
+    // that is, the tx is in :state/accepted (active rental + return
+    // window). The previous `state: 'accepted'` query param was silently
+    // ignored by Marketplace API v2 — we now use lastTransitions to
+    // match the transitions that leave a tx in :state/accepted per
+    // ext/transaction-processes/default-booking/process.edn. The
+    // downstream defensive state allowlist (line ~390) stays as belt-
+    // and-suspenders and as the ONLY_STATE override path.
+    const ACCEPTED_STATE_TRANSITIONS = [
+      'transition/accept',
+      'transition/operator-update-pd-accepted',
+    ];
 
     const baseQuery = {
-      // Return reminders fire while the item is OUT with the borrower — that is
-      // state/accepted (active rental + return window). state/delivered means the
-      // RETURN already completed (item back to lender via complete-return), so it
-      // must NOT be the target or the reminder can never match a live rental.
-      state: ONLY_STATE || 'accepted',
+      lastTransitions: ACCEPTED_STATE_TRANSITIONS,
       include: ['customer', 'listing', 'booking', 'provider'],
-      per_page: PAGE_SIZE, // narrow default; env overrides above
+      per_page: PAGE_SIZE,
     };
 
     // Self-test mode: validate Flex access without sending SMS
