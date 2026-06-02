@@ -283,6 +283,146 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### June 2, 2026 — SMS cron hardening (merged PRs #73–#76)
+
+Comprehensive SMS audit against `sherbrt_transaction_comms_v15.xlsx`. All
+findings shipped. State of every SMS code path is documented in the table
+under "SMS System" above; this entry captures the bugs that motivated each
+change so the rationale survives future audits.
+
+**Why this entry exists.** Three real production bugs and one regression
+were live in main when the audit started. None had user-visible failure
+modes during the audit window because no in-flight transactions hit the
+exact PD-pollution / clock / state-filter combination needed to trigger
+them, but every one of them was reachable. Documented here so future Claude
+sessions don't try to "fix" the fixed code by reverting it.
+
+**PR #73 — borrower-checkout providerPhone pollution (commit `518bc460e`).**
+Borrower checkout (`src/containers/CheckoutPage/CheckoutPageWithPayment.js`)
+was writing `currentUser`'s phone/email/displayName into
+`protectedData.providerPhone` / `providerEmail` / `providerName`.
+`currentUser` at checkout is the BORROWER, so the polluted values caused
+the lender Step-3 "Ship by" SMS (and lender outbound label email) to be
+sent to the borrower at outbound-label time. Fixed at source (checkout no
+longer writes provider* fields) + accept-time scrub in
+`server/api/transition-privileged.js` that drops `providerPhone` /
+`providerEmail` from PD when they match `customerPhone` / `customerEmail`
+on any in-flight transaction.
+
+**PR #74 — past-date ship-by clamp + state filter (commits `91c656770`,
+`97b64f3aa`).** Two bugs in one PR:
+1. Lender-acceptance within the lead-day window of booking-start produced
+   a `shipByDate` already in the past — Step-3 SMS rendered "Ship by
+   [yesterday]". Initial fix put the clamp inside `computeShipByDate`,
+   which broke the shipping-reminder cron (cron's "is shipBy in the next
+   24h" gate became true for every stale accepted tx; cron fired
+   borrower-routed reminders for old transactions). Final fix moves the
+   clamp inline at the SMS construction site only (Step-3 in
+   `transition-privileged.js`), leaving the cron's view of `shipByDate`
+   un-clamped.
+2. `sendShippingReminders.js` was using `state: 'accepted'` as the
+   Sharetribe query filter — silently ignored by Marketplace API v2, so
+   the cron was scanning every transaction in the marketplace. Combined
+   with a downstream defensive check on `tx.attributes.state` (undefined
+   on v2), the cron was processing canceled / delivered txs and only
+   silently skipping them via the past-`shipBy` window gate. Replaced
+   with `lastTransitions` allowlist matching the transitions that leave
+   a tx in `:state/accepted` per `default-booking/process.edn`.
+
+**PR #75 — Mon-start auto-cancel grace + return-reminder off-by-1
+(commits `d3aa64ba8`, `564a5d52e`).**
+1. `sendAutoCancelUnshipped.js`'s `getCancelDeadline()` added a +24h grace
+   for Monday-start bookings — combined with the 12h scan-lag grace this
+   pushed Mon-start auto-cancels to Wed ~noon PT (intent was ~Tue noon to
+   match every other day). Monday grace dropped; all start days now
+   produce deadline at Mon 23:59:59 PT + 12h = Tue ~noon PT.
+2. `sendReturnReminders.js` computed `dueLocalDate` from
+   `bookingEndPT.format('YYYY-MM-DD')`. Sharetribe day-bookings store
+   `booking.end` at UTC midnight (end-exclusive), so a "Mon Jun 1 — Wed
+   Jun 3" booking has `booking.end = "2026-06-03T00:00:00Z"`, which
+   converts to PT as Tue Jun 2 5 PM PT, giving `dueLocalDate = Jun 2`.
+   T-1 then fired Mon Jun 1 instead of the spec-aligned Tue Jun 2.
+   `dueLocalDate` now reads the UTC calendar date directly for
+   UTC-midnight day-bookings. Same fix applied to the inner
+   `returnDayLocalDate` at the day-of 8-SMS branch — otherwise the
+   8-SMS would silently never fire for any Sharetribe day-booking.
+3. State filter swap to `lastTransitions` also applied to
+   `sendAutoCancelUnshipped.js`.
+
+**PR #76 — SMS cron hardening rollup (commits `cd1aec9`, `ced7aeb`,
+`62718c3`).** Full v15 audit follow-ups:
+- Phone scrub (`providerPhone === customerPhone`) extended to
+  `sendAutoCancelUnshipped.js`'s `sendCancelSMSes` and to
+  `server/webhooks/shippoTracking.js`'s `getLenderPhone` (PD branch +
+  metadata tail). Closes the last legacy-tx misroute vectors of the
+  lender-SMS-to-borrower bug family — rows 3.2b, 10, 11.
+- `sendOverdueReminders.js`: `withinSendWindow` gate wraps BOTH the
+  `applyCharges` call and the SMS send. Critical because this cron
+  also triggers $15 charges — pre-fix, a Render deploy/restart at 3 AM
+  PT would send overdue SMS and charge cards outside the
+  spec-required 8 AM-11 PM PT window. Same script also dropped its
+  unconditional `runDaily()` invocation on daemon boot; behind
+  `OVERDUE_DAEMON_RUN_ON_BOOT=1` env flag for dev/staging only.
+- State filter swap (`state: X` → `lastTransitions`) completed on
+  `sendOverdueReminders.js` and `sendReturnReminders.js`. NB:
+  `transition/privileged-apply-late-fees-non-return` is a self-loop on
+  `:state/accepted` (`process.edn:148-163`) — it MUST live in the
+  `accepted` allowlist. Initial draft put it under `delivered`, which
+  would have silently capped Scenario B late fees at one charge (the
+  tx no longer matched the accepted query after day 2, landed in the
+  delivered query as `:state/delivered`, hit POLICY SKIP for the
+  no-scan branch, days 3-6 charges + SMS would never fire). Caught in
+  code review; regression test added in
+  `sendOverdueReminders.atomic-skip.test.js` locking the self-loop
+  transition into the accepted allowlist.
+- Persistent Redis dedupe added to `server/api-util/sendSMS.js`
+  alongside the existing 60s in-memory Map. 7-day TTL, `SET NX`,
+  graceful fallback when Redis unavailable. Key is
+  `sms:dedupe:{txId}:{transition}:{role}:{tag}` — `tag` MUST be in the
+  key to avoid collisions where two distinct messages share
+  `(txId, transition, role)`, notably `accept_to_borrower` vs
+  `label_created_to_borrower` (both fire as `role=customer`,
+  `transition=transition/accept`).
+- `isEndOfShipByDay()` in `sendShippingReminders.js` now reads
+  PT-local hour via `Intl.DateTimeFormat` instead of
+  `now.getUTCHours() >= 22`. The UTC anchor drifted ~1h earlier in
+  PST (winter); v15 spec is PT-anchored "~3 PM PT".
+- `SMS_TAGS.DELIVERY_TO_BORROWER` value renamed to
+  `'item_delivered_to_borrower'` to match v15 row 6 (analytics only;
+  idempotency keys on the PD `shippingNotification.delivered.sent`
+  flag, not the tag string).
+- Borrower decline / expired reshop link in `transition-privileged.js`
+  + `sendLenderRequestReminders.js` now reads `BORROWER_RESHOP_URL`
+  env var with the existing hard-coded `/r/lyBUNc13c1` as default
+  fallback.
+
+**Outstanding follow-ups (non-blocking):**
+- v15 spec rows 3.2 and 3.2b still mention "~noon D+2 for Monday-start"
+  — strike that copy (Excel-only edit; code is already noon D+1 for
+  every day).
+- `sendOverdueReminders.js` boot-run guard means a deploy lands shortly
+  after 17:00 UTC skips that day's run entirely (next scheduled run is
+  +24h). Count-based late-fee cap makes this non-fatal but consider
+  adding a "deploy past today's scheduled time → run now (still
+  `withinSendWindow`-gated)" rule.
+- The PT decline-link `/r/lyBUNc13c1` is the v13 reshop redirect; if
+  it's eventually retired, point `BORROWER_RESHOP_URL` somewhere else
+  before merging the spec update.
+
+**What never to revert without checking this entry:**
+- The clamp in `transition-privileged.js` Step-3 SMS dispatch (NOT
+  inside `computeShipByDate`).
+- `lastTransitions` query filter in any of the four crons
+  (`sendShippingReminders.js`, `sendAutoCancelUnshipped.js`,
+  `sendReturnReminders.js`, `sendOverdueReminders.js`).
+- `transition/privileged-apply-late-fees-non-return` in the
+  `accepted` allowlist in `sendOverdueReminders.js`.
+- The `tag` segment of the Redis dedupe key in `sendSMS.js`.
+- The `providerPhone === customerPhone` scrub in every site that
+  reads `pd.providerPhone` for lender contact (currently:
+  `transition-privileged.js` accept handler, `sendShippingReminders.js`,
+  `sendAutoCancelUnshipped.js`, `shippoTracking.js getLenderPhone`).
+
 ### May 29, 2026 — IN-FLIGHT: end-to-end verification via intentionally-late test transaction
 
 **Status.** Code shipped to main as commit `cb08b4993` (lender-share split +
