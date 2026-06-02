@@ -400,21 +400,32 @@ async function sendReturnReminders(allowExitOnError = true) {
         const bookingKey = bookingRef ? `${bookingRef.type}/${bookingRef.id?.uuid || bookingRef.id}` : null;
         const booking = bookingKey ? included.get(bookingKey) : null;
         const bookingEndRaw = booking?.attributes?.end || null;
+        const bookingEndUTC = bookingEndRaw ? dayjs.utc(bookingEndRaw) : null;
         const bookingEndPT = bookingEndRaw ? dayjs(bookingEndRaw).tz(TZ) : null;
         const endsAtMidnight =
           bookingEndPT && bookingEndPT.format('HH:mm:ss') === '00:00:00';
+        // Sharetribe day-bookings store booking.end at UTC midnight,
+        // end-exclusive. For a 2-night booking displayed "Mon Jun 1 — Wed
+        // Jun 3", booking.end = "2026-06-03T00:00:00Z" — the day the borrower
+        // ships back. The previous bookingEndPT.format() converted to PT
+        // first, yielding "2026-06-02" (since UTC midnight = 5 PM PT prev
+        // day) and made T-1 fire Mon Jun 1 instead of Tue Jun 2.
+        const endsAtUTCMidnight =
+          bookingEndUTC && bookingEndUTC.format('HH:mm:ss') === '00:00:00';
 
         // Use the booking-end calendar date as the return due date so the day-of
         // (8-SMS) window aligns with the overdue script's due date and lands exactly
-        // one day before the first overdue reminder (9.1). The previous
-        // `endsAtMidnight ? subtract(1,'day')` shifted the due date a day early,
-        // which (combined with the inner TODAY check that used the un-subtracted
-        // booking end) meant the day-of reminder never fired.
-        const dueLocalDate = bookingEndPT
-          ? bookingEndPT.format('YYYY-MM-DD')
+        // one day before the first overdue reminder (9.1). For UTC-midnight
+        // day-bookings (Sharetribe default), read the UTC calendar date so the
+        // due date matches Sharetribe's "Booking end" display; otherwise fall
+        // through to the PT-converted date for any future non-midnight ends.
+        const dueLocalDate = bookingEndUTC
+          ? (endsAtUTCMidnight
+              ? bookingEndUTC.format('YYYY-MM-DD')
+              : bookingEndPT.format('YYYY-MM-DD'))
           : null;
 
-        const lateStartLocalDate = bookingEndPT ? bookingEndPT.format('YYYY-MM-DD') : null;
+        const lateStartLocalDate = dueLocalDate;
         
         // [RETURN-REMINDER-DEBUG] Log transaction details for debugging
         console.log(`[RETURN-REMINDER-DEBUG] tx=${tx?.id?.uuid || tx?.id || '(no id)'} bookingEndRaw=${bookingEndRaw} bookingEndPT=${bookingEndPT ? bookingEndPT.format() : null} endsAtMidnight=${endsAtMidnight} dueLocalDate=${dueLocalDate} deliveryEndRaw=${deliveryEndRaw} deliveryEndNormalized=${deliveryEndNormalized} today=${today} tomorrow=${tomorrow} lateStartLocalDate=${lateStartLocalDate}`);

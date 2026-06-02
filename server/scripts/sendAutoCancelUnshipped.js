@@ -53,19 +53,20 @@ const SCAN_LAG_GRACE_HOURS = 12;
 /**
  * Returns the cancel deadline as a moment in lender-local time.
  *
- * Base rule: 11:59pm lender-local on booking start date (D).
- * Monday grace: If D falls on a Monday, shift to 11:59pm Tuesday (D+1).
+ * Rule: 11:59pm lender-local on booking start date (D), for every day of
+ * the week. The previous Monday-only +24h grace was dropped — combined
+ * with the downstream 12h scan-lag grace it pushed Monday-start auto-
+ * cancels to Wed ~noon, which was too generous and didn't match the
+ * intent of the auto-cancel-for-non-shipment policy. Monday is now
+ * treated like any other start day → deadline Mon 23:59:59 PT, then
+ * scan-lag grace adds +12h → cron fires Tue ~noon PT.
  */
 function getCancelDeadline(bookingStartUtc, lenderTz) {
   const tz = lenderTz || DEFAULT_LENDER_TZ;
   const bookingStartDate = moment.utc(bookingStartUtc).format('YYYY-MM-DD');
   // End-of-day = 23:59:59 (not 23:59:00) so the "11:59pm" intent is honored
   // to the second rather than being 59s early.
-  let deadline = moment.tz(`${bookingStartDate} 23:59:59`, 'YYYY-MM-DD HH:mm:ss', tz);
-  if (deadline.day() === 1 /* Monday */) {
-    deadline = deadline.add(1, 'day');
-  }
-  return deadline;
+  return moment.tz(`${bookingStartDate} 23:59:59`, 'YYYY-MM-DD HH:mm:ss', tz);
 }
 
 function isPastCancelDeadline(now, bookingStartUtc, lenderTz) {
@@ -110,8 +111,17 @@ async function fetchAcceptedBookings(sdk) {
   // (incorrect for anyone outside PT). Fetching the full listing resource is
   // the safe default. `fields.provider`/`fields.customer` are fine because we
   // only read `profile` off those, which is whitelisted.
+  // The previous `state: 'accepted'` filter is silently ignored by the
+  // Marketplace API v2 query. Use lastTransitions instead so we only pull
+  // txs whose last transition left them in :state/accepted in the
+  // default-booking process (per ext/transaction-processes/default-
+  // booking/process.edn). Belt-and-suspenders idempotency + booking.status
+  // gates downstream catch anything that slips through.
   const res = await sdk.transactions.query({
-    state: 'accepted',
+    lastTransitions: [
+      'transition/accept',
+      'transition/operator-update-pd-accepted',
+    ],
     include: ['booking', 'listing', 'provider', 'customer'],
     'fields.provider': 'profile',
     'fields.customer': 'profile',
