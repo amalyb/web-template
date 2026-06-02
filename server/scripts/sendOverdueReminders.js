@@ -54,6 +54,40 @@ const {
 } = require('../lib/businessDays');
 const { sendTransactionalEmail } = require('../email/emailClient');
 const { buildOverdueMessage } = require('./messages/overdueMessages');
+const { withinSendWindow, getNow } = require('../util/time');
+
+// Last-transition allowlists for the two Sharetribe states this cron queries.
+// The previous `state: 'X'` query filter is silently ignored by Marketplace
+// API v2; using lastTransitions matches the transitions that leave a tx in
+// :state/accepted (Scenario B: never returned, still rented out, in late
+// window) or :state/delivered (Scenario A: returned, possibly with extra
+// late fees). Transitions sourced from
+// ext/transaction-processes/default-booking/process.edn.
+//
+// IMPORTANT: transition/privileged-apply-late-fees-non-return is a self-loop
+// :from :state/accepted :to :state/accepted (process.edn:148-163). It MUST
+// live in the accepted allowlist — placing it under delivered would silently
+// flip a never-returned tx into the delivered bucket after day-2's first
+// charge, hitting the "delivered && !hasScan → POLICY SKIP" branch and
+// capping late fees at one charge (days 3-6 SMS + charges would never fire).
+const LAST_TRANSITIONS_BY_STATE = {
+  accepted: [
+    'transition/accept',
+    'transition/operator-update-pd-accepted',
+    // Scenario B self-loop — keeps the tx in :state/accepted across
+    // successive late-fee charges (days 2-6).
+    'transition/privileged-apply-late-fees-non-return',
+  ],
+  delivered: [
+    'transition/complete-return',
+    'transition/complete-replacement',
+    'transition/operator-complete',
+    // Scenario A self-loop — keeps the tx in :state/delivered across
+    // successive return-late charges.
+    'transition/privileged-apply-late-fees',
+    'transition/operator-update-pd-delivered',
+  ],
+};
 
 // Redis SMS dedupe constants (mirrors sendShippingReminders.js pattern)
 const SENT_TTL_SEC     = 7 * 24 * 60 * 60; // 7 days
@@ -340,7 +374,10 @@ async function sendOverdueReminders() {
     
     for (const state of statesToQuery) {
       const query = {
-        state: state,
+        // `state` is silently ignored by Marketplace API v2 — use the
+        // explicit lastTransitions allowlist instead so we don't scan
+        // every transaction in the marketplace per cron tick.
+        lastTransitions: LAST_TRANSITIONS_BY_STATE[state],
         include: ['customer', 'listing', 'booking'],
         per_page: 100  // snake_case for Marketplace SDK
       };
@@ -599,6 +636,16 @@ async function sendOverdueReminders() {
           console.warn(`[OVERDUE][NO-LABEL] tx=${txId} day=${daysLate} — no returnQrUrl/returnLabelUrl and no Shippo re-fetch via returnTransactionId, skipping SMS`);
           continue;
         }
+      }
+
+      // Quiet-hours gate: 8 AM – 11 PM PT. Wraps BOTH the charge and
+      // the SMS so we never charge a borrower's card or text them
+      // outside the spec-required send window. Critical because the
+      // previous daemon-boot run (or any cron tick that lands outside
+      // window) would otherwise fire late-fee charges at 3 AM PT.
+      if (!withinSendWindow(getNow())) {
+        console.log(`[OVERDUE][QUIET-HOURS] tx=${txId || '(no id)'} day=${daysLate} — outside 8 AM–11 PM PT window, deferring charge + SMS to next run`);
+        continue;
       }
 
       // Apply charges (separate try/catch so charge failures don't block SMS)
@@ -970,9 +1017,19 @@ if (require.main === module) {
       // Then run every 24 hours
       setInterval(runDaily, 24 * 60 * 60 * 1000);
     }, msUntilNextRun);
-    
-    // Run immediately for testing
-    runDaily();
+
+    // NOTE: previously `runDaily()` was invoked here unconditionally
+    // immediately on daemon boot "for testing". On a Render restart at
+    // 3 AM PT that meant overdue late-fee SMS (9.1-9.6) AND $15 charges
+    // fired outside the spec-required 8 AM-11 PM PT send window. The
+    // initial run is now driven solely by the scheduled setTimeout above,
+    // and runDaily itself guards with withinSendWindow before sending or
+    // charging. Re-enable boot run only behind an explicit env flag for
+    // dev/staging diagnostics.
+    if (process.env.OVERDUE_DAEMON_RUN_ON_BOOT === '1') {
+      console.warn('[OVERDUE] OVERDUE_DAEMON_RUN_ON_BOOT=1 — running immediately on boot (diagnostics only; still gated by withinSendWindow per send)');
+      runDaily();
+    }
   } else {
     sendOverdueReminders()
       .then(() => {

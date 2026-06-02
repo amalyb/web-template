@@ -68,10 +68,18 @@ function makeIncluded({ withListing = true, withCustomer = true } = {}) {
 function makeSdk(acceptedTxs, included) {
   return {
     transactions: {
-      // Only 'accepted' returns candidates; 'delivered' returns none.
-      query: jest.fn(async (q) => ({
-        data: { data: q.state === 'accepted' ? acceptedTxs : [], included },
-      })),
+      // Only the "accepted-state" lastTransitions query returns candidates;
+      // the "delivered-state" query returns none. Mock updated when the cron
+      // switched from the silently-ignored `state: 'accepted'` filter to
+      // `lastTransitions: ['transition/accept', 'transition/operator-update-pd-accepted']`.
+      query: jest.fn(async (q) => {
+        const isAcceptedQuery =
+          Array.isArray(q.lastTransitions) &&
+          q.lastTransitions.includes('transition/accept');
+        return {
+          data: { data: isAcceptedQuery ? acceptedTxs : [], included },
+        };
+      }),
       show: jest.fn(),
       transition: jest.fn(),
     },
@@ -175,6 +183,38 @@ describe('sendOverdueReminders — atomic charge+SMS gating (Block A before Bloc
 
     expect(applyChargesMock).not.toHaveBeenCalled();
     expect(sendSMSMock).not.toHaveBeenCalled();
+  });
+
+  // Regression test for the Scenario-B self-loop bug surfaced in code review:
+  // transition/privileged-apply-late-fees-non-return is :from :state/accepted
+  // :to :state/accepted (see ext/transaction-processes/default-booking/
+  // process.edn:148-163). On day 2 the cron charges and the tx's lastTransition
+  // flips from transition/accept to the non-return late-fee transition. If the
+  // accepted allowlist doesn't include that self-loop transition, the cron
+  // will silently miss days 3-6 (the tx wouldn't be returned by either the
+  // accepted query OR be processable as Scenario B from the delivered query —
+  // delivered + !hasScan hits POLICY SKIP). This regression test locks the
+  // self-loop transition into the accepted allowlist.
+  test('Scenario B self-loop: tx with lastTransition=non-return late-fee still charges', async () => {
+    const tx = makeTx();
+    tx.attributes.lastTransition = 'transition/privileged-apply-late-fees-non-return';
+    const { sendOverdueReminders, applyChargesMock, sendSMSMock } = loadScript({
+      now: NOW_DAY2,
+      tx,
+      included: makeIncluded(),
+      labelUrl: 'https://label.example/return',
+    });
+    applyChargesMock.mockResolvedValue({
+      charged: true,
+      items: ['late-fee'],
+      lateDays: 2,
+      amounts: [{ code: 'late-fee', cents: 1500 }],
+    });
+
+    await sendOverdueReminders();
+
+    expect(applyChargesMock).toHaveBeenCalledTimes(1);
+    expect(sendSMSMock).toHaveBeenCalledTimes(1);
   });
 
   test('Happy path: all gates pass → applyCharges fires, THEN sendSMS fires', async () => {

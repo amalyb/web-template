@@ -499,7 +499,7 @@ async function sendLenderRequestReminders() {
     //      See sherbrt_transaction_comms_v13 → Log tab → 1c-SMS row.
     const WATCHDOG_LOOKBACK_MS = 30 * 60 * 1000;
     const expireWindow = new Date(Date.now() - WATCHDOG_LOOKBACK_MS);
-    const BORROWER_EXPIRED_RESHOP_LINK = 'https://www.sherbrt.com/r/lyBUNc13c1';
+    const BORROWER_EXPIRED_RESHOP_LINK = process.env.BORROWER_RESHOP_URL || 'https://www.sherbrt.com/r/lyBUNc13c1';
 
     try {
       const expiredResp = await sdk.transactions.query({

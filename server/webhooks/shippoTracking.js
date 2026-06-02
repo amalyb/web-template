@@ -495,7 +495,23 @@ function getLenderPhone(transaction) {
     const profileProtected =
       tx.relationships?.provider?.data?.attributes?.profile?.protectedData || {};
 
-    if (txProtected.providerPhone) {
+    // Defensive scrub for the lender-SMS-to-borrower bug family: pre-fix
+    // borrower checkout wrote currentUser's phone into pd.providerPhone.
+    // Legacy txs may still carry that polluted value, and getLenderPhone
+    // reads PD providerPhone FIRST below — so without this guard the
+    // return-shipped (row 10) and return-delivered (row 11) SMS would
+    // misroute to the borrower. If pd providerPhone matches pd customer
+    // phone, skip the PD branch entirely and resolve from profile.
+    const norm = v => (typeof v === 'string' ? v.trim().toLowerCase() : v);
+    const pdProviderPolluted =
+      txProtected.providerPhone &&
+      txProtected.customerPhone &&
+      norm(txProtected.providerPhone) === norm(txProtected.customerPhone);
+    if (pdProviderPolluted) {
+      console.warn('[shippo-webhook][SCRUB] pd.providerPhone matched pd.customerPhone — skipping PD branch, falling through to lender profile');
+    }
+
+    if (!pdProviderPolluted && txProtected.providerPhone) {
       const phone = txProtected.providerPhone;
       console.log(`📱 Found lender phone in transaction protectedData: ${phone}`);
       return normalizePhoneNumber(phone);
@@ -513,10 +529,19 @@ function getLenderPhone(transaction) {
       return normalizePhoneNumber(phone);
     }
 
-    if (txMetadata.providerPhone) {
+    // Same scrub as the PD branch above — metadata can mirror the
+    // polluted pre-fix providerPhone for legacy txs.
+    const metadataProviderPolluted =
+      txMetadata.providerPhone &&
+      txMetadata.customerPhone &&
+      norm(txMetadata.providerPhone) === norm(txMetadata.customerPhone);
+    if (!metadataProviderPolluted && txMetadata.providerPhone) {
       const phone = txMetadata.providerPhone;
       console.log(`📱 Found lender phone in transaction metadata: ${phone}`);
       return normalizePhoneNumber(phone);
+    }
+    if (metadataProviderPolluted) {
+      console.warn('[shippo-webhook][SCRUB] tx metadata.providerPhone matched metadata.customerPhone — skipping metadata branch');
     }
 
     console.warn('⚠️ No lender phone number found in any expected location');

@@ -18,7 +18,9 @@ const SMS_TAGS = {
   ITEM_SHIPPED_TO_BORROWER: 'item_shipped_to_borrower',
 
   // Step 6: Item delivered → borrower
-  DELIVERY_TO_BORROWER: 'delivery_to_borrower',
+  // Tag value renamed from 'delivery_to_borrower' to 'item_delivered_to_borrower'
+  // to match v15 spec row 6. Affects Twilio status-callback analytics only.
+  DELIVERY_TO_BORROWER: 'item_delivered_to_borrower',
 
   // Step 10: Return in transit → lender
   RETURN_FIRST_SCAN_TO_LENDER: 'return_first_scan_to_lender',
