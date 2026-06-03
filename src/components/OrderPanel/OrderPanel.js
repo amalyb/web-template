@@ -24,6 +24,7 @@ import {
 import { formatMoney } from '../../util/currency';
 import { parse, stringify } from '../../util/urlHelpers';
 import { userDisplayNameAsString } from '../../util/data';
+import { getDefaultTimeZoneOnBrowser } from '../../util/dates';
 import {
   INQUIRY_PROCESS_NAME,
   getSupportedProcessesInfo,
@@ -264,7 +265,12 @@ const OrderPanel = props => {
     );
   };
 
-  const timeZone = listing?.attributes?.availabilityPlan?.timezone || 'Etc/UTC';
+  // Day-shape plans (Sherbrt's marketplace default) carry no `timezone` key.
+  // The Round 2 duck/fetch layer falls back to browser TZ; this render/day-
+  // block layer MUST use the same fallback or fetch and render disagree by
+  // the user's UTC offset (off-by-one blocked/bookable day for US users).
+  const timeZone =
+    listing?.attributes?.availabilityPlan?.timezone || getDefaultTimeZoneOnBrowser();
   const isClosed = listing?.attributes?.state === LISTING_STATE_CLOSED;
   const isBooking = isBookingProcess(processName);
 

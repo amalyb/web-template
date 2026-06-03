@@ -10,6 +10,7 @@ import { denormalisedResponseEntities } from '../../util/data';
 import {
   bookingTimeUnits,
   findNextBoundary,
+  getDefaultTimeZoneOnBrowser,
   getStartOf,
   monthIdString,
   stringifyDateToISO8601,
@@ -547,28 +548,31 @@ export const sendInquiry = (listing, message) => (dispatch, getState, sdk) => {
     });
 };
 
-// Helper function to ensure listing has a proper availability plan
+// Helper function to ensure listing has a proper availability plan.
+// Sherbrt's marketplace is configured for Daily + oneSeat, so the default
+// shape is `availability-plan/day` with `{ dayOfWeek, seats }` entries only
+// (no startTime/endTime, no timezone — Sharetribe rejects the timezone key
+// on day-plans for this marketplace). This is the same shape the mobile
+// wizard writes.
 const ensureAvailabilityPlan = (listing) => {
-  const { availabilityPlan, publicData } = listing?.attributes || {};
-  
-  // If no availability plan exists, create a default 24/7 plan
+  const { availabilityPlan } = listing?.attributes || {};
+
   if (!availabilityPlan || !availabilityPlan.type) {
-    console.log('⚠️ [ListingPage.duck] No availability plan found, creating default 24/7 plan');
+    console.log('⚠️ [ListingPage.duck] No availability plan found, creating day-shape default');
     return {
-      type: 'availability-plan/time',
-      timezone: 'Etc/UTC',
+      type: 'availability-plan/day',
       entries: [
-        { dayOfWeek: 'mon', startTime: '00:00', endTime: '24:00', seats: 1 },
-        { dayOfWeek: 'tue', startTime: '00:00', endTime: '24:00', seats: 1 },
-        { dayOfWeek: 'wed', startTime: '00:00', endTime: '24:00', seats: 1 },
-        { dayOfWeek: 'thu', startTime: '00:00', endTime: '24:00', seats: 1 },
-        { dayOfWeek: 'fri', startTime: '00:00', endTime: '24:00', seats: 1 },
-        { dayOfWeek: 'sat', startTime: '00:00', endTime: '24:00', seats: 1 },
-        { dayOfWeek: 'sun', startTime: '00:00', endTime: '24:00', seats: 1 },
+        { dayOfWeek: 'mon', seats: 1 },
+        { dayOfWeek: 'tue', seats: 1 },
+        { dayOfWeek: 'wed', seats: 1 },
+        { dayOfWeek: 'thu', seats: 1 },
+        { dayOfWeek: 'fri', seats: 1 },
+        { dayOfWeek: 'sat', seats: 1 },
+        { dayOfWeek: 'sun', seats: 1 },
       ],
     };
   }
-  
+
   return availabilityPlan;
 };
 
@@ -580,7 +584,13 @@ const fetchMonthlyTimeSlots = (dispatch, listing) => {
   
   // Ensure listing has a proper availability plan
   const availabilityPlan = ensureAvailabilityPlan(listing);
-  const tz = availabilityPlan?.timezone;
+  // Day-shape plans (Sherbrt's marketplace default) don't carry a
+  // `timezone` key — Sharetribe rejects it on day-plans. Fall back to the
+  // browser TZ for query-boundary math; the timeslots query itself sends
+  // absolute Date instances and isn't sensitive to this fallback.
+  const tz =
+    availabilityPlan?.timezone ||
+    (typeof window !== 'undefined' ? getDefaultTimeZoneOnBrowser() : 'Etc/UTC');
 
   // Debug logging for availability plan
   console.log('📦 [ListingPage.duck] AvailabilityPlan on listing:', {
@@ -592,8 +602,11 @@ const fetchMonthlyTimeSlots = (dispatch, listing) => {
     publicData: publicData,
   });
 
-  // Fetch time-zones on client side only.
-  if (hasWindow && listing.id && !!tz) {
+  // Fetch on client side only. We no longer gate on `tz` directly — the
+  // fallback above guarantees we always have one. Day-shape listings would
+  // otherwise be silently skipped (no timeslot fetch → calendar shows the
+  // entire month as unavailable on the public listing page).
+  if (hasWindow && listing.id) {
     const { unitType, priceVariants, startTimeInterval } = publicData || {};
     const now = new Date();
     const startOfToday = getStartOf(now, 'day', tz);
