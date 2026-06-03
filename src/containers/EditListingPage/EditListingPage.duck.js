@@ -971,16 +971,16 @@ export const requestFetchAvailabilityExceptions = params => (dispatch, getState,
 // Helper function for loadData call.
 const fetchLoadDataExceptions = (dispatch, listing, search, firstDayOfWeek) => {
   const hasWindow = typeof window !== 'undefined';
-  // Listing could be ownListing entity too, so we just check if attributes key exists
-  const hasTimeZone = listing?.attributes?.availabilityPlan?.timezone;
 
-  // Fetch time-zones on client side only.
-  // Note: listing needs to have time zone set!
-  if (hasWindow && listing.id && hasTimeZone) {
+  // Fetch on client side only. Sherbrt's marketplace uses
+  // `availability-plan/day` plans which Sharetribe forbids carrying a
+  // `timezone` key — so we can't gate on plan.timezone here. Fall back to
+  // the browser timezone for the query-boundary math; the exception fetch
+  // itself uses UTC dates and isn't sensitive to this fallback.
+  if (hasWindow && listing.id) {
     const listingId = listing.id;
-    // If the listing doesn't have availabilityPlan yet
-    // use the defaul timezone
-    const timezone = listing.attributes.availabilityPlan?.timezone || getDefaultTimeZoneOnBrowser();
+    const timezone =
+      listing?.attributes?.availabilityPlan?.timezone || getDefaultTimeZoneOnBrowser();
     const todayInListingsTZ = getStartOf(new Date(), 'day', timezone);
 
     const locationSearch = parse(search);
