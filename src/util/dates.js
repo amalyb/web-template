@@ -32,13 +32,32 @@ export const MARKETPLACE_TZ = 'America/Los_Angeles';
  * different YMD than the visible one. This is the right way to construct
  * availability-exception start/end timestamps.
  *
+ * `day` may exceed the month's length (e.g. `day: 32` on a 31-day month
+ * to express "next-month-day-1") — implementation handles overflow by
+ * anchoring at `{ year, month, day: 1 }` and stepping forward via
+ * `.add('days')`. Both `moment.tz({ day: 32 })` object form and
+ * `moment.tz([y, m, 32])` array form return Invalid Date — neither
+ * normalizes overflow — so callers like `marketplaceDayStart(y, m, d+1)`
+ * (used to construct the EXCLUSIVE end of a "block this calendar day"
+ * exception) would otherwise throw on every month-end.
+ *
+ * `.add('days')` advances calendar days in the listing TZ, which is
+ * DST-safe: spring-forward and fall-back days in LA are 23 and 25 hours
+ * long, but adding one calendar day still lands on the next calendar
+ * midnight.
+ *
  * @param {number} year e.g. 2026
  * @param {number} month 0-indexed, like JS Date.getMonth()
- * @param {number} day 1-indexed, like JS Date.getDate()
- * @returns {Date} UTC instant of marketplace-TZ midnight on (year, month, day)
+ * @param {number} day 1-indexed, like JS Date.getDate(); may overflow
+ * @returns {Date} UTC instant of marketplace-TZ midnight on the
+ *   (year, month, day) calendar day, with day overflow normalized
  */
 export const marketplaceDayStart = (year, month, day) =>
-  moment.tz({ year, month, day }, MARKETPLACE_TZ).startOf('day').toDate();
+  moment
+    .tz({ year, month, day: 1 }, MARKETPLACE_TZ)
+    .startOf('day')
+    .add(day - 1, 'days')
+    .toDate();
 
 /**
  * Time unit configurations.
