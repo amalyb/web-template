@@ -15,6 +15,7 @@ import {
 
 import {
   getStartOf,
+  marketplaceDayStart,
   parseDateFromISO8601,
   stringifyDateToISO8601,
   isSameDate,
@@ -167,9 +168,18 @@ const CalendarDay = ({
       // Add exception (make unavailable)
       console.log('🧪 [DEBUG] Adding exception for date:', date.toISOString());
       if (onAddAvailabilityException) {
-        // Use UTC midnight for start and end (next day) to avoid timezone/DST issues
-        const startDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
-        const endDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate() + 1));
+        // Anchor to MARKETPLACE_TZ midnight so this exception means the same
+        // calendar day regardless of which device/coast clicked it. Using
+        // UTC midnight here used to bleed the block across two calendar days
+        // for any non-UTC viewer (Sherbrt has no UTC users). Building the
+        // end as a separate `marketplaceDayStart(y, m, d+1)` call is
+        // DST-safe — moment-tz lands on next-day midnight in the listing TZ
+        // even when the calendar day is 23 or 25 hours long.
+        const y = date.getFullYear();
+        const m = date.getMonth();
+        const d = date.getDate();
+        const startDate = marketplaceDayStart(y, m, d);
+        const endDate = marketplaceDayStart(y, m, d + 1);
         const startISO = startDate.toISOString();
         const endISO = endDate.toISOString();
         const exceptionParams = {

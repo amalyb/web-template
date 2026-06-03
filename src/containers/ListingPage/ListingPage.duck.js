@@ -8,9 +8,9 @@ import * as log from '../../util/log';
 import { toUuidString } from '../../util/id';
 import { denormalisedResponseEntities } from '../../util/data';
 import {
+  MARKETPLACE_TZ,
   bookingTimeUnits,
   findNextBoundary,
-  getDefaultTimeZoneOnBrowser,
   getStartOf,
   monthIdString,
   stringifyDateToISO8601,
@@ -585,12 +585,10 @@ const fetchMonthlyTimeSlots = (dispatch, listing) => {
   // Ensure listing has a proper availability plan
   const availabilityPlan = ensureAvailabilityPlan(listing);
   // Day-shape plans (Sherbrt's marketplace default) don't carry a
-  // `timezone` key — Sharetribe rejects it on day-plans. Fall back to the
-  // browser TZ for query-boundary math; the timeslots query itself sends
-  // absolute Date instances and isn't sensitive to this fallback.
-  const tz =
-    availabilityPlan?.timezone ||
-    (typeof window !== 'undefined' ? getDefaultTimeZoneOnBrowser() : 'Etc/UTC');
+  // `timezone` key — Sharetribe rejects it on day-plans. Fall back to
+  // MARKETPLACE_TZ so every reader interprets exception intervals against
+  // the same calendar-day boundaries. See MARKETPLACE_TZ in util/dates.
+  const tz = availabilityPlan?.timezone || MARKETPLACE_TZ;
 
   // Debug logging for availability plan
   console.log('📦 [ListingPage.duck] AvailabilityPlan on listing:', {

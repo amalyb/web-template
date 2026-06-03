@@ -183,30 +183,26 @@ const initialValuesForListingFields = (
  */
 const setAvailabilityPlanForListing = processAlias => {
   const isBooking = isBookingProcessAlias(processAlias);
-  
+
   if (isBooking) {
     // For bookable listings, don't set availability plan during creation
     // Let the availability panel handle it later to avoid API validation issues
     return {};
-  } else {
-    // For non-bookable listings, set availability-plan to seats=0
-    return {
-      availabilityPlan: {
-        type: 'availability-plan/time',
-        timezone: 'Etc/UTC',
-        entries: [
-          // Note: "no entries" is the same as seats=0 for every entry.
-          // { dayOfWeek: 'mon', startTime: '00:00', endTime: '00:00', seats: 0 },
-          // { dayOfWeek: 'tue', startTime: '00:00', endTime: '00:00', seats: 0 },
-          // { dayOfWeek: 'wed', startTime: '00:00', endTime: '00:00', seats: 0 },
-          // { dayOfWeek: 'thu', startTime: '00:00', endTime: '00:00', seats: 0 },
-          // { dayOfWeek: 'fri', startTime: '00:00', endTime: '00:00', seats: 0 },
-          // { dayOfWeek: 'sat', startTime: '00:00', endTime: '00:00', seats: 0 },
-          // { dayOfWeek: 'sun', startTime: '00:00', endTime: '00:00', seats: 0 },
-        ],
-      },
-    };
   }
+
+  // Non-bookable listings (e.g. purchase processes): empty day-shape plan.
+  // The previous time-shape default would be rejected by Sharetribe on
+  // Sherbrt's marketplace (Daily + oneSeat config). An empty `entries`
+  // array reads as "seats:0 for every day" — the correct "not bookable
+  // by default" starting state for a purchase listing. Sherbrt has no
+  // non-booking process today, so this branch is dead — but it's now
+  // safe rather than a 400-on-first-purchase-launch landmine.
+  return {
+    availabilityPlan: {
+      type: 'availability-plan/day',
+      entries: [],
+    },
+  };
 };
 
 /**

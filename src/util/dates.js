@@ -7,6 +7,40 @@ export const START_DATE = 'startDate';
 export const END_DATE = 'endDate';
 
 /**
+ * Marketplace-wide canonical timezone for availability math.
+ *
+ * Sherbrt is US-only and listings carry no plan-side `timezone` (Sharetribe
+ * rejects the key on `availability-plan/day` plans for this marketplace).
+ * To stop apps from each picking their own fallback (browser TZ on web,
+ * device-local on mobile, `Etc/UTC` in some classifiers), we anchor every
+ * availability date — exception writes, exception reads, calendar bucketing,
+ * day-gate logic — to a single fixed TZ. That makes "July 4 blocked" the
+ * same UTC interval regardless of who clicks it or where they're sitting.
+ *
+ * Picked `America/Los_Angeles` so that a US-Pacific lender's "July 4" is
+ * stored as exactly their local July 4. US-East lenders' "July 4" will be
+ * stored as PT-local July 4 (which spans most of their ET July 4 plus a
+ * sliver of ET July 5 evening), but that's the correct trade-off for
+ * Sherbrt's user mix. Re-anchor here if that mix shifts.
+ */
+export const MARKETPLACE_TZ = 'America/Los_Angeles';
+
+/**
+ * UTC `Date` representing the START of the given calendar day in
+ * `MARKETPLACE_TZ`. Pass the Y/M/D the user *clicked* (i.e. as labeled on
+ * the calendar), not a Date object whose UTC components might fall on a
+ * different YMD than the visible one. This is the right way to construct
+ * availability-exception start/end timestamps.
+ *
+ * @param {number} year e.g. 2026
+ * @param {number} month 0-indexed, like JS Date.getMonth()
+ * @param {number} day 1-indexed, like JS Date.getDate()
+ * @returns {Date} UTC instant of marketplace-TZ midnight on (year, month, day)
+ */
+export const marketplaceDayStart = (year, month, day) =>
+  moment.tz({ year, month, day }, MARKETPLACE_TZ).startOf('day').toDate();
+
+/**
  * Time unit configurations.
  * These contain custom time units as well as the time units that moment.js supports.
  */

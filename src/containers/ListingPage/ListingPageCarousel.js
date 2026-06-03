@@ -34,7 +34,7 @@ import {
   userDisplayNameAsString,
 } from '../../util/data';
 import { richText } from '../../util/richText';
-import { getDefaultTimeZoneOnBrowser } from '../../util/dates';
+import { MARKETPLACE_TZ } from '../../util/dates';
 import {
   isBookingProcess,
   isPurchaseProcess,
@@ -168,10 +168,11 @@ useEffect(() => {
     // Listings without an `availabilityPlan` (drafts, or any listing whose
     // plan was never persisted) would TypeError on this line under the old
     // non-optional access. Day-shape plans (Sherbrt's marketplace default)
-    // also have no `timezone` key, so we fall back to browser TZ — the same
-    // fallback the duck/fetch layer uses, to keep fetch and render aligned.
+    // also have no `timezone` key, so we fall back to MARKETPLACE_TZ — the
+    // same fallback every other availability code path uses, to keep
+    // fetch and render aligned on a single calendar-day basis.
     const timeZone =
-      currentListing?.attributes?.availabilityPlan?.timezone || getDefaultTimeZoneOnBrowser();
+      currentListing?.attributes?.availabilityPlan?.timezone || MARKETPLACE_TZ;
 
     console.log('🚀 Fetching time slots on mount:', {
       listingId: currentListing.id.uuid,
