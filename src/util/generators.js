@@ -321,9 +321,23 @@ const getEndTimeAsDate = (date, endTime, timeZone) =>
  * @param {String} timeZone IANA time zone key (e.g. "Europe/Helsinki")
  * @returns object literal like { start, end, seats } or null
  */
+// `availability-plan/day` entries are { dayOfWeek, seats } with no
+// startTime/endTime. Treat those as covering the whole local day —
+// [dayStart, nextDayStart) — so a day-shape plan ("every Mon: seats 1")
+// is interpreted as "available all day Monday." Sherbrt's marketplace is
+// configured for day-unit bookings and the mobile wizard saves plans in
+// this shape; without this branch the calendar shows every day as
+// "Not available". See sherbrt-mobile/CLAUDE_CONTEXT.md gotchas section.
+const isDayShapeEntry = e => e && (e.startTime == null || e.endTime == null);
+
 const findNextPlanEntryInfo = (date, dayEntries, timeZone) => {
   const dateInMillis = getMillis(date);
   const entry = dayEntries.find(e => {
+    if (isDayShapeEntry(e)) {
+      const dayStart = getMillis(getStartOf(date, 'day', timeZone));
+      const dayEnd = getMillis(getStartOf(date, 'day', timeZone, 1, 'days'));
+      return (dayStart <= dateInMillis && dateInMillis < dayEnd) || dayStart > dateInMillis;
+    }
     const start = getMillis(parseLocalizedTime(date, e.startTime, timeZone));
     const end = getMillis(getEndTimeAsDate(date, e.endTime, timeZone));
     // is inside entry or entry is after given date moment
@@ -331,6 +345,11 @@ const findNextPlanEntryInfo = (date, dayEntries, timeZone) => {
   });
 
   if (entry) {
+    if (isDayShapeEntry(entry)) {
+      const start = getStartOf(date, 'day', timeZone);
+      const end = getStartOf(date, 'day', timeZone, 1, 'days');
+      return { start, end, seats: entry.seats };
+    }
     const start = parseLocalizedTime(date, entry.startTime, timeZone);
     const end = getEndTimeAsDate(date, entry.endTime, timeZone);
     return { start, end, seats: entry.seats };

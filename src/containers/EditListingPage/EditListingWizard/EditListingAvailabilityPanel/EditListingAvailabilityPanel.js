@@ -197,24 +197,27 @@ const EditListingAvailabilityPanel = props => {
 
   const isPublished = listing?.id && listingAttributes?.state !== LISTING_STATE_DRAFT;
 
-  // Helper to generate a 24/7 plan for all days of the week
-  const getAllDaysAlwaysAvailable = (timezone) => {
+  // Default "every day, one seat" plan. Sherbrt's marketplace is configured
+  // for Daily + oneSeat bookings, and Sharetribe rejects `availability-plan/time`
+  // on day-unit listings as "Invalid value" (HTTP 400). We must use
+  // `availability-plan/day` with `{ dayOfWeek, seats }` entries only —
+  // no startTime/endTime, no timezone (the latter is rejected as
+  // "Disallowed key" on day-plans). This matches what the mobile wizard
+  // writes; see sherbrt-mobile/app/lending/new/availability.tsx.
+  const getAllDaysAlwaysAvailable = () => {
     // Use the same weekday keys as in generators.js
     const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
     return {
-      type: 'availability-plan/time',
-      timezone: timezone || defaultTimeZone(),
+      type: 'availability-plan/day',
       entries: WEEKDAYS.map(dayOfWeek => ({
         dayOfWeek,
-        startTime: '00:00',
-        endTime: '24:00',
         seats: 1,
       })),
     };
   };
 
-  // Use the new 24/7 plan for all listings by default
-  const defaultAvailabilityPlan = getAllDaysAlwaysAvailable(defaultTimeZone());
+  // Use the day-shape plan for all listings by default
+  const defaultAvailabilityPlan = getAllDaysAlwaysAvailable();
   const availabilityPlan = listingAttributes?.availabilityPlan || defaultAvailabilityPlan;
 
   // Debug: Log the availability plan and listing state
@@ -351,21 +354,14 @@ const EditListingAvailabilityPanel = props => {
     setNextTabError(null);
     setIsNextTabInProgress(true);
     try {
-      // Create the availability data payload - allow empty plan and exceptions
+      // Preserve the listing's existing plan shape. Sherbrt's marketplace is
+      // configured for Daily + oneSeat — the Sharetribe API rejects
+      // `availability-plan/time` writes on day-unit listings with HTTP 400
+      // ("Invalid value"). Only seed a default day-shape plan when the listing
+      // genuinely has no plan yet (mobile-created listings already have one).
       const availabilityData = {
-        availabilityPlan: listing?.attributes?.availabilityPlan || {
-          type: 'availability-plan/time',
-          timezone: 'Etc/UTC',
-          entries: [
-            { dayOfWeek: 'mon', startTime: '00:00', endTime: '24:00', seats: 1 },
-            { dayOfWeek: 'tue', startTime: '00:00', endTime: '24:00', seats: 1 },
-            { dayOfWeek: 'wed', startTime: '00:00', endTime: '24:00', seats: 1 },
-            { dayOfWeek: 'thu', startTime: '00:00', endTime: '24:00', seats: 1 },
-            { dayOfWeek: 'fri', startTime: '00:00', endTime: '24:00', seats: 1 },
-            { dayOfWeek: 'sat', startTime: '00:00', endTime: '24:00', seats: 1 },
-            { dayOfWeek: 'sun', startTime: '00:00', endTime: '24:00', seats: 1 },
-          ]
-        },
+        availabilityPlan:
+          listing?.attributes?.availabilityPlan || getAllDaysAlwaysAvailable(),
         exceptions: allExceptions || []
       };
       console.log("🟠 [DEBUG] About to call onNextTab with:", availabilityData);
