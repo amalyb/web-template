@@ -3,7 +3,7 @@ import omit from 'lodash/omit';
 import { types as sdkTypes, createImageVariantConfig } from '../../util/sdkLoader';
 import { denormalisedResponseEntities } from '../../util/data';
 import {
-  getDefaultTimeZoneOnBrowser,
+  MARKETPLACE_TZ,
   getStartOf,
   getStartOfWeek,
   monthIdString,
@@ -975,12 +975,12 @@ const fetchLoadDataExceptions = (dispatch, listing, search, firstDayOfWeek) => {
   // Fetch on client side only. Sherbrt's marketplace uses
   // `availability-plan/day` plans which Sharetribe forbids carrying a
   // `timezone` key — so we can't gate on plan.timezone here. Fall back to
-  // the browser timezone for the query-boundary math; the exception fetch
-  // itself uses UTC dates and isn't sensitive to this fallback.
+  // MARKETPLACE_TZ (the canonical marketplace-wide timezone) so every
+  // reader uses the same calendar-day boundaries.
   if (hasWindow && listing.id) {
     const listingId = listing.id;
     const timezone =
-      listing?.attributes?.availabilityPlan?.timezone || getDefaultTimeZoneOnBrowser();
+      listing?.attributes?.availabilityPlan?.timezone || MARKETPLACE_TZ;
     const todayInListingsTZ = getStartOf(new Date(), 'day', timezone);
 
     const locationSearch = parse(search);

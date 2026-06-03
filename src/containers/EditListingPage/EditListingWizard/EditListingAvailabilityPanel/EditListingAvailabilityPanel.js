@@ -4,7 +4,11 @@ import classNames from 'classnames';
 
 // Import configs and util modules
 import { FormattedMessage } from '../../../../util/reactIntl';
-import { getDefaultTimeZoneOnBrowser, timestampToDate } from '../../../../util/dates';
+import {
+  MARKETPLACE_TZ,
+  marketplaceDayStart,
+  timestampToDate,
+} from '../../../../util/dates';
 import { AVAILABILITY_MULTIPLE_SEATS, LISTING_STATE_DRAFT } from '../../../../util/types';
 import { DAY, isFullDay } from '../../../../transactions/transaction';
 
@@ -12,92 +16,16 @@ import { DAY, isFullDay } from '../../../../transactions/transaction';
 import { Button, H3, InlineTextButton, ListingLink, Modal, Form } from '../../../../components';
 
 // Import modules from this directory
-import EditListingAvailabilityPlanForm from './EditListingAvailabilityPlanForm';
 import EditListingAvailabilityExceptionForm from './EditListingAvailabilityExceptionForm';
 import MonthlyCalendar from './MonthlyCalendar/MonthlyCalendar';
 
 import css from './EditListingAvailabilityPanel.module.css';
 
-// This is the order of days as JavaScript understands them
-// The number returned by "new Date().getDay()" refers to day of week starting from sunday.
-const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-
-// This is the order of days as JavaScript understands them
-// The number returned by "new Date().getDay()" refers to day of week starting from sunday.
-const rotateDays = (days, startOfWeek) => {
-  return startOfWeek === 0 ? days : days.slice(startOfWeek).concat(days.slice(0, startOfWeek));
-};
-
-const defaultTimeZone = () =>
-  typeof window !== 'undefined' ? getDefaultTimeZoneOnBrowser() : 'Etc/UTC';
-
-///////////////////////////////////////////////////
-// EditListingAvailabilityExceptionPanel - utils //
-///////////////////////////////////////////////////
-
-// Create initial entry mapping for form's initial values
-const createEntryDayGroups = (entries = {}) => {
-  // Collect info about which days are active in the availability plan form:
-  let activePlanDays = [];
-  return entries.reduce((groupedEntries, entry) => {
-    const { startTime, endTime: endHour, dayOfWeek, seats } = entry;
-    const dayGroup = groupedEntries[dayOfWeek] || [];
-    activePlanDays = activePlanDays.includes(dayOfWeek)
-      ? activePlanDays
-      : [...activePlanDays, dayOfWeek];
-    return {
-      ...groupedEntries,
-      [dayOfWeek]: [
-        ...dayGroup,
-        {
-          startTime,
-          endTime: endHour === '00:00' ? '24:00' : endHour,
-          seats,
-        },
-      ],
-      activePlanDays,
-    };
-  }, {});
-};
-
-// Create initial values for the availability plan
-const createInitialPlanValues = availabilityPlan => {
-  const { timezone, entries } = availabilityPlan || {};
-  const tz = timezone || defaultTimeZone();
-  return {
-    timezone: tz,
-    ...createEntryDayGroups(entries),
-  };
-};
-
-// Create entries from submit values
-const createEntriesFromSubmitValues = values =>
-  WEEKDAYS.reduce((allEntries, dayOfWeek) => {
-    const dayValues = values[dayOfWeek] || [];
-    const dayEntries = dayValues.map(dayValue => {
-      const { startTime, endTime, seats } = dayValue;
-      // Note: This template doesn't support seats yet.
-      return startTime && endTime
-        ? {
-            dayOfWeek,
-            seats: seats ?? 1,
-            startTime,
-            endTime: endTime === '24:00' ? '00:00' : endTime,
-          }
-        : null;
-    });
-
-    return allEntries.concat(dayEntries.filter(e => !!e));
-  }, []);
-
-// Create availabilityPlan from submit values
-const createAvailabilityPlan = values => ({
-  availabilityPlan: {
-    type: 'availability-plan/time',
-    timezone: values.timezone,
-    entries: createEntriesFromSubmitValues(values),
-  },
-});
+// Note: the legacy `availability-plan/time` editor (createEntryDayGroups,
+// createInitialPlanValues, createEntriesFromSubmitValues, createAvailabilityPlan,
+// handlePlanSubmit) was removed in the TZ-basis cleanup. Sherbrt is a Daily +
+// oneSeat marketplace, and the plan-shape contract is `availability-plan/day`
+// — set once in handleNextTab below and otherwise immutable on this panel.
 
 //////////////////////////////////
 // EditListingAvailabilityPanel //
@@ -179,7 +107,6 @@ const EditListingAvailabilityPanel = props => {
   } = props;
   // Hooks
   const [isEditExceptionsModalOpen, setIsEditExceptionsModalOpen] = useState(false);
-  const [valuesFromLastSubmit, setValuesFromLastSubmit] = useState(null);
   const [nextTabError, setNextTabError] = useState(null);
   const [isNextTabInProgress, setIsNextTabInProgress] = useState(false);
 
@@ -231,32 +158,41 @@ const EditListingAvailabilityPanel = props => {
     allExceptions: allExceptions,
   });
 
-  // CRITICAL FIX: Utility function to format dates as UTC midnight ISO strings
-  const formatDateToUtcMidnight = (dateObj) => {
+  // Normalize an incoming start/end date to MARKETPLACE_TZ midnight, returned
+  // as an ISO 8601 string the SDK can parse. Accepts either:
+  //   * a JS Date with browser-local YMD components (from FieldDateRangeInput
+  //     in the exception modal), or
+  //   * an ISO 8601 string whose `YYYY-MM-DD` prefix represents the lender's
+  //     intended calendar day (from MonthlyCalendar's tap handler, which
+  //     already builds an LA-midnight ISO).
+  // Anchoring to MARKETPLACE_TZ (instead of UTC midnight, the previous
+  // anchor) means "July 4 blocked" stores the same UTC interval whether the
+  // lender clicked it on web or mobile. See src/util/dates.js MARKETPLACE_TZ.
+  const formatDateToMarketplaceDayStart = (dateObj) => {
     if (!dateObj) return null;
-    
-    // If it's already a string in the correct format, return it
-    if (typeof dateObj === 'string' && dateObj.includes('T00:00:00.000Z')) {
-      return dateObj;
-    }
-    
-    // If it's a string but not in the correct format, parse it
-    if (typeof dateObj === 'string') {
-      const date = new Date(dateObj);
-      if (isNaN(date.getTime())) {
-        console.error('Invalid date string:', dateObj);
+
+    if (dateObj instanceof Date) {
+      if (isNaN(dateObj.getTime())) {
+        console.error('Invalid Date:', dateObj);
         return null;
       }
-      const dateStr = date.toISOString().split('T')[0]; // Get YYYY-MM-DD
-      return `${dateStr}T00:00:00.000Z`;
+      return marketplaceDayStart(
+        dateObj.getFullYear(),
+        dateObj.getMonth(),
+        dateObj.getDate()
+      ).toISOString();
     }
-    
-    // If it's a Date object
-    if (dateObj instanceof Date) {
-      const dateStr = dateObj.toISOString().split('T')[0]; // Get YYYY-MM-DD
-      return `${dateStr}T00:00:00.000Z`;
+
+    if (typeof dateObj === 'string') {
+      const dateOnly = dateObj.split('T')[0];
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+        console.error('Invalid date string (expected YYYY-MM-DD or ISO):', dateObj);
+        return null;
+      }
+      const [y, m, d] = dateOnly.split('-').map(Number);
+      return marketplaceDayStart(y, m - 1, d).toISOString();
     }
-    
+
     console.error('Invalid date object:', dateObj);
     return null;
   };
@@ -272,8 +208,8 @@ const EditListingAvailabilityPanel = props => {
       // Ensure listingId is a string UUID (not a Sharetribe UUID object)
       const listingId = typeof listing.id === 'string' ? listing.id : listing.id.uuid;
       // Ensure start/end are properly formatted UTC midnight ISO strings
-      const startISO = formatDateToUtcMidnight(start);
-      const endISO = formatDateToUtcMidnight(end);
+      const startISO = formatDateToMarketplaceDayStart(start);
+      const endISO = formatDateToMarketplaceDayStart(end);
 
       console.log('🧪 [DEBUG] Processed values:', { listingId, startISO, endISO, seats });
       console.log('🧪 [DEBUG] Original start/end types:', { 
@@ -386,40 +322,6 @@ const EditListingAvailabilityPanel = props => {
     isNextTabInProgress,
     nextTabError
   });
-  const initialPlanValues = valuesFromLastSubmit
-    ? valuesFromLastSubmit
-    : createInitialPlanValues(availabilityPlan);
-
-  const handlePlanSubmit = values => {
-    setValuesFromLastSubmit(values);
-
-    // Get existing publicData to preserve retailPrice and other fields
-    const existingPublicData = listing?.attributes?.publicData || {};
-    
-    // Create availability plan data
-    const availabilityPlanData = createAvailabilityPlan(values);
-    
-    // Merge existing publicData with any new publicData to prevent overwriting
-    const updateValues = {
-      ...availabilityPlanData,
-      publicData: {
-        ...existingPublicData, // Preserve existing publicData including retailPrice
-        ...(availabilityPlanData.publicData || {}),
-      },
-    };
-    
-    console.debug('[EditListingAvailabilityPanel] handlePlanSubmit publicData=', updateValues.publicData);
-
-    // Final Form can wait for Promises to return.
-    return onSubmit(updateValues)
-      .then(() => {
-        // setIsEditPlanModalOpen(false); // REMOVED
-      })
-      .catch(e => {
-        // Don't close modal if there was an error
-      });
-  };
-
   const sortedAvailabilityExceptions = allExceptions;
 
   // Save exception click handler
@@ -444,8 +346,8 @@ const EditListingAvailabilityPanel = props => {
     const listingId = typeof listing.id === 'string' ? listing.id : listing.id.uuid;
     
     // CRITICAL FIX: Format dates as UTC midnight ISO strings as expected by the server
-    const startISO = formatDateToUtcMidnight(range.start);
-    const endISO = formatDateToUtcMidnight(range.end);
+    const startISO = formatDateToMarketplaceDayStart(range.start);
+    const endISO = formatDateToMarketplaceDayStart(range.end);
     
     // Validate that we have valid dates
     if (!startISO || !endISO) {
@@ -560,7 +462,7 @@ const EditListingAvailabilityPanel = props => {
                   firstDayOfWeek={firstDayOfWeek}
                   routeConfiguration={routeConfiguration}
                   history={history}
-                  timeZone={availabilityPlan.timezone}
+                  timeZone={availabilityPlan.timezone || MARKETPLACE_TZ}
                 />
               </>
             ) : null}
@@ -634,7 +536,7 @@ const EditListingAvailabilityPanel = props => {
                   fetchErrors={errors}
                   onFetchExceptions={onFetchExceptions}
                   onSubmit={saveException}
-                  timeZone={availabilityPlan.timezone}
+                  timeZone={availabilityPlan.timezone || MARKETPLACE_TZ}
                   unitType={unitType}
                   updateInProgress={updateInProgress}
                   useFullDays={useFullDays}
