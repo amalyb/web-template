@@ -24,6 +24,7 @@ import {
   fetchStripeAccount,
 } from '../../ducks/stripeConnectAccount.duck';
 import { fetchCurrentUser } from '../../ducks/user.duck';
+import { customEvent } from '../../util/metaPixel';
 
 const { UUID, Money } = sdkTypes;
 
@@ -805,6 +806,10 @@ export const requestPublishListingDraft = listingId => (dispatch, getState, sdk)
         dispatch(addMarketplaceEntities(response));
       }
       dispatch(publishListingSuccess(response));
+      // Meta Pixel: a draft listing was published. Fires on every publish (we
+      // don't distinguish first-vs-subsequent here); Meta still optimizes
+      // against "users likely to publish a listing."
+      customEvent('LenderActivated', { content_name: 'Listing Published' });
       return response;
     })
     .catch(e => {

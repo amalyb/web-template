@@ -17,3 +17,11 @@ export const googleAnalyticsId = process.env.REACT_APP_GOOGLE_ANALYTICS_ID;
 // You can add multiple domains separated by comma
 // E.g. REACT_APP_PLAUSIBLE_DOMAINS=example1.com,example2.com
 export const plausibleDomains = process.env.REACT_APP_PLAUSIBLE_DOMAINS;
+
+// Optional
+// Meta Pixel (Facebook Pixel) ID used to optimize Meta ad campaigns.
+// Override per-environment with REACT_APP_META_PIXEL_ID; falls back to the
+// sherbrt.com production pixel so tracking works without extra env setup.
+// The pixel loader/init lives in util/includeScripts.js and the SPA page-view
+// handler in analytics/handlers.js.
+export const metaPixelId = process.env.REACT_APP_META_PIXEL_ID || '838865308919724';

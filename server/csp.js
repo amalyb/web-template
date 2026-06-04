@@ -58,6 +58,10 @@ const defaultDirectives = {
     'plausible.io',
     '*.plausible.io',
 
+    // Meta Pixel (Facebook Pixel) — fbevents.js beacons/XHR
+    'connect.facebook.net',
+    'www.facebook.com',
+
     'fonts.googleapis.com',
 
     'sentry.io',
@@ -108,6 +112,9 @@ const defaultDirectives = {
     // Youtube (static image)
     '*.ytimg.com',
 
+    // Meta Pixel (Facebook Pixel) — noscript/tracking pixel image
+    'www.facebook.com',
+
     // Stripe
     'https://q.stripe.com',
     '*.stripe.com',
@@ -124,8 +131,11 @@ const defaultDirectives = {
     '*.g.doubleclick.net',
     'js.stripe.com',
     'plausible.io',
+
+    // Meta Pixel (Facebook Pixel)
+    'connect.facebook.net',
   ],
-  "script-src-elem": [self, blob, "https://js.stripe.com", "https://api.mapbox.com", "https://*.mapbox.com"],
+  "script-src-elem": [self, blob, "https://js.stripe.com", "https://api.mapbox.com", "https://*.mapbox.com", "https://connect.facebook.net"],
   "manifest-src": [self],
   "worker-src": [self, blob],
   styleSrc: [self, unsafeInline, 'fonts.googleapis.com', 'api.mapbox.com'],

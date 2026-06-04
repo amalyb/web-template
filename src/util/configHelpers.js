@@ -161,7 +161,12 @@ const mergeAnalyticsConfig = (hostedAnalyticsConfig, defaultAnalyticsConfig) => 
   const plausibleDomains = joinStrings(plausibleDomainsHosted, plausibleDomainsDefault);
   const plausibleDomainsMaybe = plausibleDomains ? { plausibleDomains } : {};
 
-  return { googleAnalyticsId, ...plausibleDomainsMaybe };
+  // Meta Pixel is configured locally (env / configAnalytics), not via the
+  // hosted analytics asset, so carry it through from the default config.
+  const metaPixelId = defaultAnalyticsConfig.metaPixelId;
+  const metaPixelIdMaybe = metaPixelId ? { metaPixelId } : {};
+
+  return { googleAnalyticsId, ...plausibleDomainsMaybe, ...metaPixelIdMaybe };
 };
 
 ////////////////////

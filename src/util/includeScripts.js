@@ -17,7 +17,7 @@ const GOOGLE_MAPS_SCRIPT_ID = 'GoogleMapsApi';
  */
 export const IncludeScripts = props => {
   const { marketplaceRootURL: rootURL, maps, analytics } = props?.config || {};
-  const { googleAnalyticsId, plausibleDomains } = analytics;
+  const { googleAnalyticsId, plausibleDomains, metaPixelId } = analytics;
 
   const { mapProvider, googleMapsAPIKey, mapboxAccessToken } = maps || {};
   const isGoogleMapsInUse = mapProvider === 'googleMaps';
@@ -106,6 +106,42 @@ export const IncludeScripts = props => {
         crossOrigin
       ></script>
     );
+  }
+
+  if (metaPixelId) {
+    // Meta Pixel (Facebook Pixel)
+    // NOTE: This template is a single-page application (SPA).
+    //       We fire the initial PageView here (once, on first client render)
+    //       and handle subsequent in-app navigation in src/analytics/handlers.js
+    //       (MetaPixelHandler). The fbevents.js script is host-whitelisted in
+    //       server/csp.js (connect.facebook.net), so it needs no nonce — same
+    //       as the gtag.js script above.
+    analyticsLibraries.push(
+      <script
+        key="meta-pixel-fbevents"
+        async
+        src="https://connect.facebook.net/en_US/fbevents.js"
+        crossOrigin
+      ></script>
+    );
+
+    // Define the fbq stub (queues calls until fbevents.js loads), then init +
+    // fire the initial PageView. Guarded so this runs exactly once per client
+    // session — re-renders of IncludeScripts (e.g. on navigation) are no-ops,
+    // which keeps the initial PageView from double-counting.
+    if (typeof window !== 'undefined' && !window.fbq) {
+      const n = (window.fbq = function fbq() {
+        n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments);
+      });
+      if (!window._fbq) window._fbq = n;
+      n.push = n;
+      n.loaded = true;
+      n.version = '2.0';
+      n.queue = [];
+
+      window.fbq('init', metaPixelId);
+      window.fbq('track', 'PageView');
+    }
   }
 
   const isBrowser = typeof window !== 'undefined';

@@ -2,6 +2,7 @@ import * as log from '../util/log';
 import { storableError } from '../util/errors';
 import { clearCurrentUser, fetchCurrentUser } from './user.duck';
 import { createUserWithIdp, post } from '../util/api';
+import { completeRegistration } from '../util/metaPixel';
 
 const authenticated = authInfo => authInfo?.isAnonymous === false;
 const loggedInAs = authInfo => authInfo?.isLoggedInAs === true;
@@ -216,6 +217,15 @@ export const signup = params => (dispatch, getState, sdk) => {
   return sdk.currentUser
     .create(params)
     .then(() => dispatch(signupSuccess()))
+    .then(() => {
+      // Meta Pixel: lender signup completed (email/password path)
+      completeRegistration({
+        method: 'email',
+        userType: params?.publicData?.userType,
+        value: 5,
+        currency: 'USD',
+      });
+    })
     .then(() => dispatch(login(params.email, params.password)))
     .then(() => {
       // After successful signup and login, ensure phone number is in protectedData
@@ -247,6 +257,15 @@ export const signupWithIdp = params => (dispatch, getState, sdk) => {
   return createUserWithIdp(params)
     .then(res => {
       return dispatch(confirmSuccess());
+    })
+    .then(() => {
+      // Meta Pixel: lender signup completed (social / IdP path)
+      completeRegistration({
+        method: params?.idpId || 'idp',
+        userType: params?.publicData?.userType,
+        value: 5,
+        currency: 'USD',
+      });
     })
     .then(() => dispatch(fetchCurrentUser()))
     .then(() => {
