@@ -295,10 +295,12 @@ const EditListingAvailabilityPanel = props => {
       // `availability-plan/time` writes on day-unit listings with HTTP 400
       // ("Invalid value"). Only seed a default day-shape plan when the listing
       // genuinely has no plan yet (mobile-created listings already have one).
+      // Exceptions are persisted at click-time via onAddAvailabilityException;
+      // they are not listing attributes and must NOT be sent on ownListings.update
+      // (Sharetribe rejects the `exceptions` key with HTTP 400).
       const availabilityData = {
         availabilityPlan:
           listing?.attributes?.availabilityPlan || getAllDaysAlwaysAvailable(),
-        exceptions: allExceptions || []
       };
       console.log("🟠 [DEBUG] About to call onNextTab with:", availabilityData);
       const result = await onNextTab(availabilityData);
