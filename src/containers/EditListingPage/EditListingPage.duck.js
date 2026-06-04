@@ -705,7 +705,7 @@ export function requestUpdateListing(tab, data, config) {
     
     try {
       dispatch(updateListingRequest(data));
-      const { id, stockUpdate, images, ...rest } = data;
+      const { id, stockUpdate, images, exceptions, ...rest } = data;
 
     // If images should be saved, create array out of the image UUIDs for the API call
     const imageProperty = typeof images !== 'undefined' ? { images: imageIds(images) } : {};

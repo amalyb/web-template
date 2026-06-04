@@ -5,6 +5,7 @@ import {
   getStartOf,
   stringifyDateToISO8601,
   parseDateTimeString,
+  MARKETPLACE_TZ,
 } from './dates.js';
 // NOTE: This file imports sanitize.js, which may lead to circular dependency
 
@@ -252,23 +253,13 @@ export const exceptionFreeSlotsPerDate = (start, end, exceptions, timeZone) => {
  * @param {String} timeZone IANA time zone key (e.g. "Europe/Helsinki")
  * @returns filtered list of exceptions or empty array
  */
-const getExceptionsOnDate = (dateRange, exceptions, timeZone) => {
+const getExceptionsOnDate = (dateRange, exceptions) => {
   const [dayStart, dayEnd] = dateRange;
-  // Use UTC midnight for dayStart
-  const dayUTC = new Date(Date.UTC(dayStart.getFullYear(), dayStart.getMonth(), dayStart.getDate()));
   return exceptions.filter(e => {
     const exStart = new Date(e.attributes.start);
     const exEnd = new Date(e.attributes.end);
-    // A day is covered if exStart <= dayUTC < exEnd
-    const isCovered = exStart <= dayUTC && dayUTC < exEnd;
-    console.log('[DEBUG] getExceptionsOnDate:', {
-      day: dayUTC.toISOString(),
-      exStart: exStart.toISOString(),
-      exEnd: exEnd.toISOString(),
-      isCovered,
-      exceptionId: e.id
-    });
-    return isCovered;
+    // standard [start, end) interval overlap
+    return exStart < dayEnd && dayStart < exEnd;
   });
 };
 
@@ -373,7 +364,7 @@ const toAvailabilityPerDate = (plan, exceptions, timeZone) => day => {
   const dayStart = getStartOf(day, 'day', timeZone);
   const dayEnd = getStartOf(day, 'day', timeZone, 1, 'day');
   const dateRange = [dayStart, dayEnd];
-  const exceptionsOnDate = getExceptionsOnDate(dateRange, exceptions, timeZone);
+  const exceptionsOnDate = getExceptionsOnDate(dateRange, exceptions);
 
   let hasAvailability = false;
   let ranges = [];
@@ -477,7 +468,7 @@ const toAvailabilityPerDate = (plan, exceptions, timeZone) => day => {
  * @returns hashmap of date info grouped by date id (e.g. "2023-01-01" )
  */
 export const availabilityPerDate = (start, end, plan, exceptions) => {
-  const timeZone = plan?.timezone;
+  const timeZone = plan?.timezone || MARKETPLACE_TZ;
   const s = getStartOf(start, 'day', timeZone);
   const e = getStartOf(end, 'day', timeZone);
   return pipe(
