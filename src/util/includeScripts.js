@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Helmet } from 'react-helmet-async';
 
 const MAPBOX_SCRIPT_ID = 'mapbox_GL_JS';
@@ -22,6 +22,35 @@ export const IncludeScripts = props => {
   const { mapProvider, googleMapsAPIKey, mapboxAccessToken } = maps || {};
   const isGoogleMapsInUse = mapProvider === 'googleMaps';
   const isMapboxInUse = mapProvider === 'mapbox';
+
+  // Meta Pixel (Facebook Pixel) bootstrap.
+  // Runs in the client bundle (useEffect never runs during SSR), so there is no
+  // inline <script> for the CSP to flag. Mirrors the GA4 approach: the external
+  // fbevents.js loader is added via Helmet below; here we define the fbq stub,
+  // init the pixel and fire the initial PageView. Subsequent SPA navigation is
+  // tracked by MetaPixelHandler in src/analytics/handlers.js.
+  useEffect(() => {
+    if (!metaPixelId || typeof window === 'undefined') return;
+    // Guard with a dedicated flag (not `window.fbq`): the async fbevents.js
+    // loader can define window.fbq before this effect runs, and we must still
+    // call init + PageView exactly once. Also covers re-renders / StrictMode.
+    if (window.__metaPixelInitialized) return;
+    window.__metaPixelInitialized = true;
+
+    if (!window.fbq) {
+      const n = (window.fbq = function fbq() {
+        n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments);
+      });
+      if (!window._fbq) window._fbq = n;
+      n.push = n;
+      n.loaded = true;
+      n.version = '2.0';
+      n.queue = [];
+    }
+
+    window.fbq('init', metaPixelId);
+    window.fbq('track', 'PageView');
+  }, [metaPixelId]);
 
   // Add Google Analytics script if correct id exists (it should start with 'G-' prefix)
   // See: https://developers.google.com/analytics/devguides/collection/gtagjs
@@ -109,39 +138,16 @@ export const IncludeScripts = props => {
   }
 
   if (metaPixelId) {
-    // Meta Pixel (Facebook Pixel)
-    // NOTE: This template is a single-page application (SPA).
-    //       We fire the initial PageView here (once, on first client render)
-    //       and handle subsequent in-app navigation in src/analytics/handlers.js
-    //       (MetaPixelHandler). The fbevents.js script is host-whitelisted in
-    //       server/csp.js (connect.facebook.net), so it needs no nonce — same
-    //       as the gtag.js script above.
+    // Meta Pixel (Facebook Pixel) loader: fbevents.js.
+    // IMPORTANT: do NOT set crossOrigin here. Facebook's CDN does not send
+    // Access-Control-Allow-Origin headers, so a crossorigin script tag is
+    // blocked by CORS. The standard Meta snippet loads this script without
+    // crossorigin. (This differs from the gtag.js/Stripe tags above, whose
+    // CDNs do serve CORS headers.) The init + initial PageView happen in the
+    // useEffect above. fbevents.js is host-whitelisted in server/csp.js.
     analyticsLibraries.push(
-      <script
-        key="meta-pixel-fbevents"
-        async
-        src="https://connect.facebook.net/en_US/fbevents.js"
-        crossOrigin
-      ></script>
+      <script key="meta-pixel-fbevents" async src="https://connect.facebook.net/en_US/fbevents.js"></script>
     );
-
-    // Define the fbq stub (queues calls until fbevents.js loads), then init +
-    // fire the initial PageView. Guarded so this runs exactly once per client
-    // session — re-renders of IncludeScripts (e.g. on navigation) are no-ops,
-    // which keeps the initial PageView from double-counting.
-    if (typeof window !== 'undefined' && !window.fbq) {
-      const n = (window.fbq = function fbq() {
-        n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments);
-      });
-      if (!window._fbq) window._fbq = n;
-      n.push = n;
-      n.loaded = true;
-      n.version = '2.0';
-      n.queue = [];
-
-      window.fbq('init', metaPixelId);
-      window.fbq('track', 'PageView');
-    }
   }
 
   const isBrowser = typeof window !== 'undefined';
