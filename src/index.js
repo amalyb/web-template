@@ -24,7 +24,11 @@ import './styles/marketplaceDefaults.css';
 // Configs and store setup
 import appSettings from './config/settings';
 import defaultConfig from './config/configDefault';
-import { LoggingAnalyticsHandler, GoogleAnalyticsHandler } from './analytics/handlers';
+import {
+  LoggingAnalyticsHandler,
+  GoogleAnalyticsHandler,
+  MetaPixelHandler,
+} from './analytics/handlers';
 import configureStore from './store';
 
 // Utils
@@ -101,7 +105,7 @@ const render = (store, shouldHydrate) => {
     });
 };
 
-const setupAnalyticsHandlers = googleAnalyticsId => {
+const setupAnalyticsHandlers = (googleAnalyticsId, metaPixelId) => {
   let handlers = [];
 
   // Log analytics page views and events in dev mode
@@ -118,6 +122,13 @@ const setupAnalyticsHandlers = googleAnalyticsId => {
     } else {
       handlers.push(new GoogleAnalyticsHandler());
     }
+  }
+
+  // Add Meta Pixel handler if a pixel ID is configured. This sends PageView on
+  // in-app navigation; the loader and initial PageView live in
+  // util/includeScripts.js.
+  if (metaPixelId) {
+    handlers.push(new MetaPixelHandler());
   }
 
   return handlers;
@@ -184,7 +195,9 @@ if (typeof window !== 'undefined') {
   // Note: on localhost:3000, you need to use environment variable.
   const googleAnalyticsIdFromSSR = initialState?.hostedAssets?.googleAnalyticsId;
   const googleAnalyticsId = googleAnalyticsIdFromSSR || process.env.REACT_APP_GOOGLE_ANALYTICS_ID;
-  const analyticsHandlers = setupAnalyticsHandlers(googleAnalyticsId);
+  // Meta Pixel is configured locally (see config/configAnalytics.js), not via
+  // the hosted analytics asset.
+  const analyticsHandlers = setupAnalyticsHandlers(googleAnalyticsId, defaultConfig.analytics?.metaPixelId);
   const store = configureStore(initialState, sdk, analyticsHandlers);
 
   require('./util/polyfills');

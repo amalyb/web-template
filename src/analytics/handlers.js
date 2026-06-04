@@ -1,6 +1,21 @@
+import { pageView } from '../util/metaPixel';
+
 export class LoggingAnalyticsHandler {
   trackPageView(url) {
     console.log('Analytics page view:', url);
+  }
+}
+
+// Meta Pixel (Facebook Pixel). The loader, init and initial PageView are set
+// up in util/includeScripts.js. Here we only send PageView for in-app SPA
+// navigation. Like GA4 below, we skip the very first location change
+// (previousPath is null right after page load) so we don't double-count the
+// initial PageView already fired by the loader.
+export class MetaPixelHandler {
+  trackPageView(canonicalPath, previousPath) {
+    if (previousPath) {
+      pageView();
+    }
   }
 }
 

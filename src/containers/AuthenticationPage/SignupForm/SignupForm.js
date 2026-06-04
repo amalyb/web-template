@@ -1,7 +1,9 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Form as FinalForm } from 'react-final-form';
 import arrayMutators from 'final-form-arrays';
 import classNames from 'classnames';
+
+import { lead } from '../../../util/metaPixel';
 
 import { FormattedMessage, useIntl } from '../../../util/reactIntl';
 import { propTypes } from '../../../util/types';
@@ -59,12 +61,22 @@ const getValuesForSubmission = (values, registeredFields, userFields, userType, 
   return { publicData: restOfPublicData, protectedData };
 };
 
-const SignupFormComponent = props => (
-  <FinalForm
-    {...props}
-    mutators={{ ...arrayMutators }}
-    initialValues={{ userType: props.preselectedUserType || getSoleUserTypeMaybe(props.userTypes) }}
-    render={formRenderProps => {
+const SignupFormComponent = props => {
+  // Meta Pixel: fire a single Lead event when the user first interacts with the
+  // signup form (focus bubbles up from any field to the <Form> element).
+  const hasFiredLead = useRef(false);
+  const handleSignupFormFocus = () => {
+    if (hasFiredLead.current) return;
+    hasFiredLead.current = true;
+    lead({ contentName: 'Signup Started', source: 'AuthenticationPage' });
+  };
+
+  return (
+    <FinalForm
+      {...props}
+      mutators={{ ...arrayMutators }}
+      initialValues={{ userType: props.preselectedUserType || getSoleUserTypeMaybe(props.userTypes) }}
+      render={formRenderProps => {
       const {
         rootClassName,
         className,
@@ -188,7 +200,7 @@ const SignupFormComponent = props => (
       console.log('SIGNUP PAYLOAD:', JSON.stringify(signupParams, null, 2));
 
       return (
-        <Form className={classes} onSubmit={handleSubmit}>
+        <Form className={classes} onSubmit={handleSubmit} onFocus={handleSignupFormFocus}>
           <FieldSelectUserType
             name="userType"
             userTypes={userTypes}
@@ -406,9 +418,10 @@ const SignupFormComponent = props => (
           </div>
         </Form>
       );
-    }}
-  />
-);
+      }}
+    />
+  );
+};
 
 /**
  * A component that renders the signup form.
