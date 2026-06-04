@@ -283,6 +283,85 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### June 3, 2026 — Availability shape + cross-app TZ basis (PRs #77, #78, #79, #80, #81)
+
+**The bug family.** A single listing — Tribeca Blazer Dress, `69160706-…` — surfaced four interlocking bugs that all stemmed from the same root cause: Sherbrt's marketplace is configured as **Daily + oneSeat** in the Sharetribe Console, which means listings MUST use `availability-plan/day` (entries `{ dayOfWeek, seats }` only — no `startTime`/`endTime`, no `timezone`). The web app was forked from the stock Sharetribe template that assumes `availability-plan/time` everywhere. The mobile wizard was already writing the correct day-shape, but only mobile-touched listings exposed the mismatch.
+
+Five PRs shipped:
+
+**PR #77 (`fix/web-availability-plan-day-shape`) — read & write of day-shape listings:**
+- `src/util/generators.js` — `findNextPlanEntryInfo` now detects day-shape entries (no `startTime`/`endTime`) and treats them as covering `[dayStart, nextDayStart)` in the listing TZ. Without this branch, every mobile-saved listing showed every day as "Not available" on the lender's edit calendar.
+- `src/containers/EditListingPage/EditListingWizard/EditListingAvailabilityPanel/EditListingAvailabilityPanel.js` — `getAllDaysAlwaysAvailable` emits day-shape (`{ dayOfWeek, seats: 1 }`, no timezone); `handleNextTab` preserves the existing plan instead of overwriting with a hard-coded time-shape payload (which Sharetribe rejects with HTTP 400 for Daily + oneSeat marketplaces).
+
+**PR #78 (`fix/web-availability-day-shape-tz-gates`) — stop gating fetches on `plan.timezone`:**
+- `EditListingPage.duck.js fetchLoadDataExceptions`, `ListingPage.duck.js fetchMonthlyTimeSlots` — removed `hasTimeZone` / `!!tz` early-returns. Day-shape plans never carry a timezone, so these gates silently no-op'd for every mobile-touched listing (lender's edit calendar showed no exceptions; public listing page showed the whole month unavailable).
+- `OrderPanel.js`, `ListingPageCarousel.js` — same fix, plus a nullsafe access on `ListingPageCarousel:167` that previously TypeError'd for any plan-less listing.
+
+**PR #79 (`fix/web-availability-tz-basis`) — single canonical TZ across both apps:**
+- New `MARKETPLACE_TZ = 'America/Los_Angeles'` constant in `src/util/dates.js`. **Keep in lockstep with `sherbrt-mobile/lib/availability.ts`.** Re-anchor here if the operator picks a different canonical TZ.
+- New `marketplaceDayStart(year, month, day)` helper in `src/util/dates.js`. Returns a UTC `Date` representing midnight on the given calendar day in `MARKETPLACE_TZ`. Implementation anchors at `day: 1` (always valid) and uses `moment.add(day - 1, 'days')` because **`moment.tz({ day: 32 })` and `moment.tz([y, m, 32])` BOTH return `Invalid Date`** — only `Date.UTC` normalizes day overflow, but we need TZ-aware output, so the workaround is the start-of-month + `.add('days')` pattern. DST-safe (LA spring-forward and fall-back days are 23h and 25h respectively).
+- `MonthlyCalendar.js` tap-handler writes `[marketplaceDayStart(y, m, d), marketplaceDayStart(y, m, d + 1))` instead of `Date.UTC(...)`. Same calendar cell now maps to the same UTC interval on web and mobile, regardless of which device/coast clicked it.
+- `EditListingAvailabilityPanel.js` — `formatDateToUtcMidnight` renamed/rewritten as `formatDateToMarketplaceDayStart`. Removed the dead legacy time-shape editor (`createEntryDayGroups`, `createInitialPlanValues`, `createEntriesFromSubmitValues`, `createAvailabilityPlan`, `handlePlanSubmit`, `valuesFromLastSubmit`, top-level `WEEKDAYS`/`rotateDays`/`defaultTimeZone`, unused `EditListingAvailabilityPlanForm` import). It was never wired up after the MonthlyCalendar migration but was a 400-on-write landmine if anyone rewired it.
+- All four read-path fallbacks (`EditListingPage.duck.js`, `ListingPage.duck.js`, `OrderPanel.js`, `ListingPageCarousel.js`) now fall back to `MARKETPLACE_TZ` instead of browser-TZ. Fetch and render now share one calendar-day basis — fixes an off-by-one bookable cell for any non-PT borrower that the post-PR-#78 audit caught.
+- `EditListingDetailsPanel.js setAvailabilityPlanForListing` — non-booking else-branch returns an empty day-shape plan instead of an empty time-shape one. No-op today (Sherbrt has no purchase process), but safe rather than a launch-day 400 if one is ever added.
+
+**PR #80 (`fix/web-availability-day-overflow`) — month-end blocks no longer throw:**
+- A hot-fix specifically to handle `marketplaceDayStart(y, m, d + 1)` when `d` is the last day of the month (e.g. `day = 32` on a 31-day month). See the implementation note above. Without this fix, tapping "block Jan 31" / "block Feb 28" / etc. threw `RangeError: Invalid time value` inside the MonthlyCalendar tap handler and no exception was created. Verified via empirical 1,095-day brute-force test across 2025–2027 that both web (`moment-tz`) and mobile (`Intl`) helpers produce **byte-identical UTC instants** for every valid in-month day AND every month-end overflow.
+
+**PR #81 (`fix/web-lender-calendar-render-and-save`) — post-deploy follow-up: lender wizard couldn't see blocks and couldn't save:**
+
+Surfaced within an hour of the PRs #77–#80 deploy. Two distinct bugs caught by manual smoke-testing on the live tribeca-blazer-dress listing.
+
+- **Symptom A — lender edit calendar showed every day as available, even on a listing with 4 stored exceptions** (June 3–6). Also, clicking any cell did NOT update the UI (no coral pill), but the click WAS persisted to the backend (visible immediately on mobile and in the borrower-side incognito view).
+- **Symptom B — "Save & continue" returned HTTP 400** with no diagnostic surfaced to the user.
+
+Three of four surfaces (web borrower, mobile lender, mobile borrower) rendered the blocks correctly — only the web lender wizard failed, because it's the only surface that recomputes calendar state client-side via `generators.js availabilityPerDate` rather than reading API-computed time slots. Empirical Node-based repro of the actual algorithm reproduced the symptom for both Pacific and Eastern browsers (each browser-local TZ producing a differently-shaped failure of the same root cause).
+
+Two coupled defects in `src/util/generators.js` (BUG-1):
+
+  * `availabilityPerDate` derived `timeZone = plan?.timezone`, which is `undefined` for day-shape plans (Sherbrt's never have one). The entire downstream pipeline — `getStartOf`, `getDayOfWeek`, `generateDates`, `isInRange`, `findNextPlanEntryInfo` — then ran in **browser-local TZ** instead of `MARKETPLACE_TZ`. PR #79 standardized the duck/render-fallback layers but missed this one.
+  * `getExceptionsOnDate` then constructed `dayUTC = Date.UTC(localY, M, D)` and tested `exStart <= dayUTC < exEnd`. For an LA-anchored exception (`07:00Z`/`08:00Z` start), `dayUTC = 00:00Z` was 7–8 hours too early — the exception was never recognized as covering the cell. **Both sub-edits required:** patching only `availabilityPerDate`'s TZ default OR only the overlap test leaves the other half broken (verified empirically).
+
+  Fix: default `availabilityPerDate`'s timeZone to `MARKETPLACE_TZ` AND replace `getExceptionsOnDate`'s UTC-midnight reconstruction with a clean `[start, end)` interval-overlap test against the dayStart/dayEnd interval the caller already builds in the right TZ. After both fixes, the computation is **browser-TZ-independent** — Pacific and Eastern viewers see byte-identical calendar state, as it should be.
+
+One regression in `EditListingAvailabilityPanel.js handleNextTab` (BUG-2):
+
+  * After the PR #79 cleanup that removed the `availability-plan/time` overwrite, `handleNextTab` still sent `{ availabilityPlan, exceptions: allExceptions }` to `onUpdateListing` → `sdk.ownListings.update`. The `exceptions` array is **not a valid attribute on `ownListings.update`** — availability exceptions are a separate resource (`sdk.availabilityExceptions.*`), persisted at click-time. Sharetribe rejected the unknown attribute with HTTP 400. The `availabilityPlan` itself was fine (day-shape, no timezone) — the 400 was specifically the `exceptions` field.
+
+  Fix: drop `exceptions` from the `handleNextTab` payload AND destructure it out of `data` in `EditListingPage.duck.js requestUpdateListing` (belt-and-suspenders for any other caller that might pass it).
+
+**Cross-cutting invariants.**
+- **TZ basis = `America/Los_Angeles` everywhere.** Web exception writes, web exception/timeslot reads, calendar bucketing, day-gate logic, and the borrower booking flow all bucket UTC instants against LA calendar days. The mobile app does the same (see `sherbrt-mobile/lib/availability.ts`).
+- **Shape contract = `availability-plan/day`.** The mobile wizard writes this. The web wizard `getAllDaysAlwaysAvailable` writes this. Anywhere the codebase still hard-codes `availability-plan/time` is dead code (test fixtures, the removed legacy editor) — flag and remove on sight.
+- **The `availability-plan/day` plan body must NOT include `timezone`.** Sharetribe rejects it as "Disallowed key" on day-plans for Daily + oneSeat marketplaces. This is why every reader has to fall back to `MARKETPLACE_TZ` instead of `plan.timezone`.
+
+**Backfill scripts (`server/scripts/`).**
+- `backfillAvailabilityPlan.js` — Integration API script that walks every listing and ensures it has a day-shape plan. Idempotent. Dry-run by default; `--apply` to write. Drafted but not yet run (every listing in the current marketplace already has a plan — the planless case was a hypothetical the code was protecting against).
+- `reanchorAvailabilityExceptions.js` — Integration API script that walks every listing's existing `availabilityExceptions` and re-writes them from whatever TZ they were originally stored in (UTC midnight, device-local midnight, etc.) to `MARKETPLACE_TZ` midnight. **Already run on the live marketplace (June 3, 2026).** Inference heuristic: the stored start's UTC hour-of-day signals which TZ the lender wrote from (`04:00Z` → EDT, `05:00Z` → EST, `07:00Z` → PDT/already-LA, `08:00Z` → PST/already-LA, `00:00Z` → old web UTC-midnight). Multi-day blocks preserve their day count. Two non-obvious safety properties baked in after first-run lessons learned:
+  - **Processes exceptions in reverse chronological order per listing.** Otherwise rewriting day N first creates a new LA-anchored range that overlaps the still-old day N+1's UTC-midnight range (because LA midnight on N+1 falls inside `[N+1 UTC 00:00Z, N+2 UTC 00:00Z)`). API rejects, original exception is deleted but new one isn't created → data loss.
+  - **Skips exceptions in the past** (start > 1 day ago). Flex's `availabilityExceptions.create` rejects "start more than 1 day in the past." If we did delete-then-create on a past exception, the delete would succeed but the create would fail → irretrievable data loss. Past exceptions are also booking-irrelevant.
+- `restoreLostExceptions.js` — One-shot recovery script for two specific future exceptions (`6/03/2026` and `7/01/2026` on listing `685eeceb-…`) that were lost by the FIRST `reanchorAvailabilityExceptions.js` run before the two safety properties above were added. Safe to delete once verified.
+
+**Live data state after June 3 backfill run.** 9 future-dated availability exceptions across the marketplace, all LA-anchored. 11 past-date exceptions (8/2025, 9/2025, 5/30, 5/31 2026) were lost during the first apply run before the past-date skip was added — functionally irrelevant since past dates can't be booked, but the data is gone if anyone needed the historical record.
+
+**Mobile cross-reference.** Mobile commit `00c63d9` on `main` (June 3, 2026) lands the same `MARKETPLACE_TZ` basis: `lib/availability.ts` gets a new `MARKETPLACE_TZ` constant + Intl-only `marketplaceDayStart` helper (no new dependency), `getListingTimeZone` fallback `'Etc/UTC'` → `MARKETPLACE_TZ`, `blockDate` writes LA-midnight intervals, `normalizeException` keys `ymd` in LA TZ. **NOT yet shipped to users** — waiting on a binary rebuild (build 13) since this app has no `expo-updates` / OTA capability. See `sherbrt-mobile/CLAUDE_CONTEXT.md` June 3 entry for the mobile-side detail.
+
+**Gotchas not to re-discover.**
+- **Don't use `moment.tz({ day: 32 })` or `moment.tz([y, m, 32])` to normalize day overflow** — both return `Invalid Date` (verified empirically). Use `Date.UTC(y, m, d)` for normalization OR the start-of-month + `.add('days')` pattern (which is what `marketplaceDayStart` does, so it gets it right for free).
+- **Don't re-add `expo-updates` / OTA without a re-build.** OTA only reaches users running a binary that has `expo-updates` baked in. Adding it to source doesn't help existing 1.1.0/1.1.1 users.
+- **`appVersionSource: remote` in `eas.json`** means EAS manages version numbers, not `app.json`. Don't manually bump `app.json` for a build — `eas build` auto-increments via the `autoIncrement: true` setting on the `production` profile.
+- **Flex's `availabilityExceptions.query` caps the range at 366 days.** Original `reanchorAvailabilityExceptions.js` tried a 2-year window and 400'd; current version splits into two 365-day windows (past + future) and dedupes.
+- **`marketplaceDayStart(y, m, d + 1)` to compute the EXCLUSIVE end of a single-day block** — DST-safe because moment's `.add('days')` counts calendar days, not absolute hours. Don't substitute `+ 24 * 60 * 60 * 1000` — that drifts on spring-forward and fall-back days.
+- **`availabilityPerDate` in `src/util/generators.js` MUST default `timeZone` to `MARKETPLACE_TZ`** when `plan?.timezone` is undefined (which it always is for day-shape plans). Without this default, the entire downstream pipeline runs in browser-local TZ and silently mis-buckets every exception. PR #79 missed this; PR #81 caught it post-deploy. If a future refactor of `availabilityPerDate` reverts this default, the lender wizard will silently break again.
+- **`getExceptionsOnDate` in `src/util/generators.js` uses a `[start, end)` interval-overlap test** — it does NOT reconstruct a `Date.UTC(...)` reference instant. The old implementation built `dayUTC = Date.UTC(localY, M, D)` (UTC midnight) and compared `exStart <= dayUTC < exEnd`, which failed for any LA-anchored exception (off by 7-8 hours). The correct test is `exStart < dayEnd && dayStart < exEnd`, with `dayStart`/`dayEnd` constructed by the caller in `MARKETPLACE_TZ`.
+- **`exceptions` is NOT a valid attribute on `sdk.ownListings.update`.** Don't include it in any update payload — availability exceptions are a separate Sharetribe resource (`sdk.availabilityExceptions.*`), persisted at click-time. Sharetribe rejects unknown attributes with HTTP 400. Both `EditListingAvailabilityPanel.handleNextTab` and `EditListingPage.duck.js requestUpdateListing` strip it out as of PR #81.
+
+**Empirical verification artifacts** (from the pre-merge audit, June 3, 2026):
+- 1,095-day brute-force across 2025–2027: web and mobile `marketplaceDayStart` produce byte-identical UTC instants.
+- DST boundary trace: March 8 2026 (spring-forward, 23h day), November 1 2026 (fall-back, 25h day). Both apps land on the same UTC instant at LA midnight of each day; consecutive-day diff is 23h and 25h respectively (correct).
+- Hawaii trace: a lender on HST blocking July 4 stores `[LA midnight Jul 4, LA midnight Jul 5)`. The wizard's `serverByYMD` map keys against `ymdInTZ(start, MARKETPLACE_TZ)` = `"2026-07-04"`, matching what a re-tap on the calendar cell would produce. No phantom duplicate on re-tap. No B5 race.
+- **PR #81 post-deploy repro:** the actual `toAvailabilityPerDate` algorithm run in Node against the 4 LA-anchored exceptions on `69160706-…` produces the bug's exact "all available" shape on a Pacific browser and a differently-shifted "mixed" shape on an Eastern browser BEFORE the fix; AFTER the fix, both browsers produce identical output with June 3–6 → `hasAvailability=false` and June 2/7/8 → `hasAvailability=true`. Production smoke test confirmed: lender wizard now shows blocks correctly, clicks toggle pills immediately, Save & continue advances without 400.
+
 ### May 29, 2026 — IN-FLIGHT: end-to-end verification via intentionally-late test transaction
 
 **Status.** Code shipped to main as commit `cb08b4993` (lender-share split +
