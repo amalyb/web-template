@@ -428,16 +428,20 @@ async function sendReturnReminders(allowExitOnError = true) {
         const endsAtUTCMidnight =
           bookingEndUTC && bookingEndUTC.format('HH:mm:ss') === '00:00:00';
 
-        // Use the booking-end calendar date as the return due date so the day-of
-        // (8-SMS) window aligns with the overdue script's due date and lands exactly
-        // one day before the first overdue reminder (9.1). For UTC-midnight
-        // day-bookings (Sharetribe default), read the UTC calendar date so the
-        // due date matches Sharetribe's "Booking end" display; otherwise fall
-        // through to the PT-converted date for any future non-midnight ends.
-        const dueLocalDate = bookingEndUTC
-          ? (endsAtUTCMidnight
-              ? bookingEndUTC.format('YYYY-MM-DD')
-              : bookingEndPT.format('YYYY-MM-DD'))
+        // Return due date = booking end resolved in Pacific time, matching the
+        // late-fee engine (server/lib/businessDays.js `ymd()` and the overdue
+        // script, which both convert booking.end via .tz('America/Los_Angeles')).
+        // Sharetribe day-bookings store booking.end at UTC midnight, end-exclusive
+        // (e.g. "Sat Jun 6 — Tue Jun 9" => booking.end = 2026-06-09T00:00:00Z).
+        // In PT that midnight resolves to the prior calendar day (Mon Jun 8 = the
+        // last booked day / ship-back day), so the day-of (8-SMS) reminder fires
+        // Monday and T-1 fires Sunday — exactly one day before the first overdue
+        // reminder (9.1). Previously this read the UTC calendar date (Tue Jun 9),
+        // which put the day-of reminder one day AFTER the late-fee engine's due
+        // date and produced contradictory same-day "today's the day" + "ended
+        // yesterday" texts.
+        const dueLocalDate = bookingEndPT
+          ? bookingEndPT.format('YYYY-MM-DD')
           : null;
 
         const lateStartLocalDate = dueLocalDate;
@@ -450,7 +454,13 @@ async function sendReturnReminders(allowExitOnError = true) {
           continue;
         }
 
-        const tMinus1ForTx = dayjs(dueLocalDate).tz(TZ).subtract(1, 'day').format('YYYY-MM-DD');
+        // Derive T-1 from the booking-end PT instant directly (bookingEndPT),
+        // NOT by re-parsing the dueLocalDate string. dayjs('YYYY-MM-DD') parses in
+        // the server's local TZ, and a subsequent .tz(TZ) re-shifts the instant,
+        // which would land T-1 on the wrong calendar day when the server runs in
+        // UTC. Anchoring to bookingEndPT keeps day-of and T-1 exactly one PT day
+        // apart regardless of server timezone.
+        const tMinus1ForTx = bookingEndPT.subtract(1, 'day').format('YYYY-MM-DD');
         // getFirstChargeableLateDate is not exported by businessDays.js; this stays
         // null and is retained only for the debug logs below (see CLAUDE_CONTEXT
         // May 22 follow-up). Late-fee day counting lives in computeChargeableLateDays.
