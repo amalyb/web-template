@@ -2,7 +2,7 @@ import * as log from '../util/log';
 import { storableError } from '../util/errors';
 import { clearCurrentUser, fetchCurrentUser } from './user.duck';
 import { createUserWithIdp, post } from '../util/api';
-import { completeRegistration } from '../util/metaPixel';
+import { completeRegistration, newEventId } from '../util/metaPixel';
 
 const authenticated = authInfo => authInfo?.isAnonymous === false;
 const loggedInAs = authInfo => authInfo?.isLoggedInAs === true;
@@ -214,19 +214,36 @@ export const signup = params => (dispatch, getState, sdk) => {
 
   // We must login the user if signup succeeds since the API doesn't
   // do that automatically.
+  const regEventId = newEventId();
   return sdk.currentUser
     .create(params)
     .then(() => dispatch(signupSuccess()))
     .then(() => {
-      // Meta Pixel: lender signup completed (email/password path)
+      // Meta Pixel (browser): lender signup completed (email/password path).
+      // Shares regEventId with the server Conversions API for deduplication.
       completeRegistration({
         method: 'email',
         userType: params?.publicData?.userType,
         value: 5,
         currency: 'USD',
+        eventId: regEventId,
       });
     })
     .then(() => dispatch(login(params.email, params.password)))
+    .then(() => {
+      // Meta Conversions API (server): fire after login so the trusted SDK can
+      // read authoritative user data. Non-blocking; never fails signup.
+      return post('/api/meta/complete-registration', {
+        eventId: regEventId,
+        eventSourceUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+        email: params?.email,
+        firstName: params?.firstName,
+        lastName: params?.lastName,
+        phone: params?.protectedData?.phoneNumber,
+      }).catch(err => {
+        console.warn('⚠️ [auth.duck] Meta CAPI CompleteRegistration failed:', err?.message);
+      });
+    })
     .then(() => {
       // After successful signup and login, ensure phone number is in protectedData
       const phoneNumber = params.protectedData?.phoneNumber;
@@ -254,20 +271,35 @@ export const signup = params => (dispatch, getState, sdk) => {
 
 export const signupWithIdp = params => (dispatch, getState, sdk) => {
   dispatch(confirmRequest());
+  const regEventId = newEventId();
   return createUserWithIdp(params)
     .then(res => {
       return dispatch(confirmSuccess());
     })
     .then(() => {
-      // Meta Pixel: lender signup completed (social / IdP path)
+      // Meta Pixel (browser): lender signup completed (social / IdP path).
       completeRegistration({
         method: params?.idpId || 'idp',
         userType: params?.publicData?.userType,
         value: 5,
         currency: 'USD',
+        eventId: regEventId,
       });
     })
     .then(() => dispatch(fetchCurrentUser()))
+    .then(() => {
+      // Meta Conversions API (server): fire after the user is fetched/logged in.
+      return post('/api/meta/complete-registration', {
+        eventId: regEventId,
+        eventSourceUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+        email: params?.email,
+        firstName: params?.firstName,
+        lastName: params?.lastName,
+        phone: params?.protectedData?.phoneNumber,
+      }).catch(err => {
+        console.warn('⚠️ [auth.duck] Meta CAPI CompleteRegistration failed (IdP):', err?.message);
+      });
+    })
     .then(() => {
       // After successful IdP signup, ensure phone number is in protectedData
       const phoneNumber = params.protectedData?.phoneNumber;

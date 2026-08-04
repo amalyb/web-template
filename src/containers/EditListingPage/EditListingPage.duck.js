@@ -24,7 +24,8 @@ import {
   fetchStripeAccount,
 } from '../../ducks/stripeConnectAccount.duck';
 import { fetchCurrentUser } from '../../ducks/user.duck';
-import { customEvent } from '../../util/metaPixel';
+import { customEvent, newEventId } from '../../util/metaPixel';
+import { post } from '../../util/api';
 
 const { UUID, Money } = sdkTypes;
 
@@ -806,10 +807,30 @@ export const requestPublishListingDraft = listingId => (dispatch, getState, sdk)
         dispatch(addMarketplaceEntities(response));
       }
       dispatch(publishListingSuccess(response));
-      // Meta Pixel: a draft listing was published. Fires on every publish (we
-      // don't distinguish first-vs-subsequent here); Meta still optimizes
-      // against "users likely to publish a listing."
-      customEvent('LenderActivated', { content_name: 'Listing Published' });
+      // Meta LenderActivated: fire ONLY on a lender's first published listing.
+      // The server verifies the listing is live, enforces once-per-user
+      // idempotency, and sends the Conversions API event. The browser Pixel is
+      // fired here only when the server confirms this is the first activation,
+      // sharing the same event id so Meta deduplicates the browser + server pair.
+      try {
+        const laEventId = newEventId();
+        const publishedId = (listingId && listingId.uuid) || listingId;
+        post('/api/meta/lender-activated', {
+          eventId: laEventId,
+          listingId: publishedId,
+          eventSourceUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+        })
+          .then(resp => {
+            if (resp && resp.firstActivation) {
+              customEvent('LenderActivated', {}, { eventID: resp.eventId || laEventId });
+            }
+          })
+          .catch(err => {
+            console.warn('⚠️ [EditListing] Meta CAPI LenderActivated failed:', err?.message);
+          });
+      } catch (e) {
+        console.warn('⚠️ [EditListing] LenderActivated dispatch error:', e?.message);
+      }
       return response;
     })
     .catch(e => {
