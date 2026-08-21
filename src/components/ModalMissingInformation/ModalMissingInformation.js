@@ -20,7 +20,15 @@ const MISSING_INFORMATION_MODAL_WHITELIST = [
   'EmailVerificationPage',
   'PasswordResetPage',
   'StripePayoutPage',
+  'NewListingPage',
+  'WelcomeLenderPage',
 ];
+
+// The edit-listing wizard lives on parameterised routes, so it can't go in the
+// name-based whitelist above (pathByRouteName needs concrete params). Match the
+// pathname instead, so the verify-your-email nudge never interrupts a lender
+// midway through creating their first listing.
+const EDIT_LISTING_PATH_RE = /^\/l\/[^/]+\/[^/]+\/(new|draft|edit)(\/|$)/;
 
 const EMAIL_VERIFICATION = 'EMAIL_VERIFICATION';
 
@@ -58,7 +66,9 @@ class ModalMissingInformation extends Component {
     );
 
     // Is the current page whitelisted?
-    const isPageWhitelisted = whitelistedPaths.includes(newLocation.pathname);
+    const isPageWhitelisted =
+      whitelistedPaths.includes(newLocation.pathname) ||
+      EDIT_LISTING_PATH_RE.test(newLocation.pathname);
 
     // Track if path changes inside Page level component
     const pathChanged = newLocation.pathname !== this.props.location.pathname;

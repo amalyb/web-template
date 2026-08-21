@@ -1,0 +1,198 @@
+/* Sherbrt — post-signup welcome page.
+ * Palette matches the lender-nurture email (coral / peach / mint).
+ * Type deliberately stays on the site's --fontFamily stack.
+ */
+
+.root {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 32px 16px 56px;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .root {
+    padding: 56px 24px 72px;
+  }
+}
+
+.eyebrow {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: #e08a5b;
+}
+
+@media (min-width: 768px) {
+  .eyebrow {
+    font-size: 13px;
+  }
+}
+
+/* Fluid size + nowrap keeps the headline on a single line at every width. */
+.heading {
+  margin: 0;
+  font-size: clamp(15px, 4.1vw, 24px);
+  line-height: 1.45;
+  font-weight: 500;
+  letter-spacing: -0.1px;
+  color: #2b2b2b;
+  white-space: nowrap;
+}
+
+.cta {
+  display: block;
+  width: 100%;
+  max-width: 380px;
+  margin: 26px auto 0 auto;
+  padding: 20px 24px;
+  background-color: #ffad86;
+  color: #2b2b2b;
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  text-align: center;
+  text-decoration: none;
+  border-radius: 40px;
+  box-shadow: 0 6px 18px rgba(224, 138, 91, 0.26);
+  transition: all 0.12s ease;
+}
+
+.cta:hover {
+  filter: brightness(0.97);
+  box-shadow: 0 8px 22px rgba(224, 138, 91, 0.32);
+  text-decoration: none;
+}
+
+.cta:active {
+  transform: translateY(1px);
+}
+
+@media (min-width: 768px) {
+  .cta {
+    margin-top: 32px;
+    padding: 22px 28px;
+    font-size: 18px;
+  }
+}
+
+.ctaNote {
+  margin: 12px 0 0 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: #9a9a9a;
+}
+
+.sectionLabel {
+  margin: 38px 0 14px 0;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+  letter-spacing: 0.9px;
+  text-transform: uppercase;
+  color: #1f6f5c;
+}
+
+@media (min-width: 768px) {
+  .sectionLabel {
+    margin-top: 48px;
+    font-size: 13px;
+  }
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-gap: 8px;
+}
+
+.tile {
+  background-color: #94eed5;
+  border-radius: 14px;
+  padding: 14px 6px;
+}
+
+@media (min-width: 768px) {
+  .tile {
+    border-radius: 16px;
+    padding: 18px 8px;
+  }
+}
+
+.tileList {
+  margin: 0;
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #1f6f5c;
+}
+
+.tileKeep {
+  margin: 5px 0;
+  font-size: 19px;
+  line-height: 22px;
+  font-weight: 600;
+  color: #2b2b2b;
+}
+
+.tileEquals {
+  margin: 0;
+  font-size: 11px;
+  line-height: 15px;
+  color: #1f6f5c;
+}
+
+@media (min-width: 768px) {
+  .tileList {
+    font-size: 12px;
+  }
+  .tileKeep {
+    font-size: 24px;
+    line-height: 28px;
+  }
+  .tileEquals {
+    font-size: 12px;
+    line-height: 16px;
+  }
+}
+
+.kicker {
+  margin: 34px 0 0 0;
+  font-size: 15px;
+  line-height: 23px;
+  font-weight: 500;
+  color: #2b2b2b;
+}
+
+@media (min-width: 768px) {
+  .kicker {
+    margin-top: 44px;
+    font-size: 17px;
+    line-height: 26px;
+  }
+}
+
+.skip {
+  display: inline-block;
+  margin-top: 30px;
+  font-size: 14px;
+  line-height: 20px;
+  color: #9a9a9a;
+  text-decoration: underline;
+}
+
+.skip:hover {
+  color: #4a4a4a;
+}
+
+@media (min-width: 768px) {
+  .skip {
+    margin-top: 38px;
+  }
+}
