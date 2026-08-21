@@ -110,6 +110,7 @@ const pickRenderableImages = (
  * @param {Function} props.onManageDisableScrolling - The on manage disable scrolling function
  * @param {Function} props.onPayoutDetailsChange - The on payout details change function
  * @param {Function} props.onPayoutDetailsSubmit - The on payout details submit function
+ * @param {Function} props.onSaveLenderMeasurements - Saves lender measurements to profile publicData
  * @param {Function} props.onGetStripeConnectAccountLink - The get StripeConnectAccountLink function
  * @param {Object} props.history - The history object
  * @param {Function} props.history.push - The push function
@@ -150,6 +151,7 @@ export const EditListingPageComponent = props => {
     onRemoveListingImage,
     onManageDisableScrolling,
     onPayoutDetailsSubmit,
+    onSaveLenderMeasurements,
     onPayoutDetailsChange,
     onGetStripeConnectAccountLink,
     page,
@@ -293,6 +295,7 @@ export const EditListingPageComponent = props => {
           onPublishListingDraft={onPublishListingDraft}
           onPayoutDetailsChange={onPayoutDetailsChange}
           onPayoutDetailsSubmit={onPayoutDetailsSubmit}
+          onSaveLenderMeasurements={onSaveLenderMeasurements}
           onGetStripeConnectAccountLink={onGetStripeConnectAccountLink}
           getAccountLinkInProgress={getAccountLinkInProgress}
           onImageUpload={onImageUpload}

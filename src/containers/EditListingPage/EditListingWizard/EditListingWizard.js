@@ -533,9 +533,17 @@ class EditListingWizard extends Component {
         : acc;
     }, {});
 
+    if (typeof onSaveLenderMeasurements !== 'function') {
+      // Defensive: if the dispatch prop ever fails to reach us, surface an
+      // error rather than leaving the submit button spinning forever.
+      console.error('[EditListingWizard] onSaveLenderMeasurements prop is missing');
+      this.setState({ measurementsSaveInProgress: false, measurementsSaveError: true });
+      return Promise.resolve();
+    }
+
     this.setState({ measurementsSaveInProgress: true, measurementsSaveError: false });
 
-    return onSaveLenderMeasurements(publicData)
+    return Promise.resolve(onSaveLenderMeasurements(publicData))
       .then(() => {
         this.setState({
           measurementsSaveInProgress: false,
