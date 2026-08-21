@@ -1,0 +1,39 @@
+.wrapper {
+  padding: 24px 0 40px 0;
+}
+
+@media (min-width: 768px) {
+  .wrapper {
+    padding: 12px 0 48px 0;
+  }
+}
+
+.title {
+  margin: 0 0 8px 0;
+}
+
+.message {
+  margin: 0 0 24px 0;
+  font-size: 15px;
+  line-height: 24px;
+  color: #4a4a4a;
+}
+
+.fields {
+  margin-bottom: 24px;
+}
+
+.fields > * {
+  margin-bottom: 16px;
+}
+
+.submitButton {
+  margin-top: 8px;
+}
+
+.error {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: #ff0000;
+}
