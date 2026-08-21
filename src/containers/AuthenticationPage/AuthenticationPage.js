@@ -624,10 +624,24 @@ export const AuthenticationPageComponent = props => {
     [css.hideOnMobile]: showEmailVerification,
   });
 
+  // Sherbrt: a lender who has just signed up (authenticated, email not yet
+  // verified) used to land on the "check your email" interstitial below. That
+  // is a dead end at the exact moment intent is highest, so send them to the
+  // welcome page instead, which pushes them into the listing wizard.
+  // Scoped to !emailVerified so a returning, verified lender who happens to
+  // hit /signup still falls through to the landing page as before.
+  const signedUpUserType = user?.attributes?.profile?.publicData?.userType || null;
+  const shouldRedirectToWelcome =
+    isAuthenticated &&
+    currentUserLoaded &&
+    !isLogin &&
+    signedUpUserType === 'lender' &&
+    !user.attributes.emailVerified;
+
   const shouldRedirectToFrom = isAuthenticated && from;
   const shouldRedirectToLandingPage =
     isAuthenticated && currentUserLoaded && !showEmailVerification;
-  if (!mounted && shouldRedirectToLandingPage) {
+  if (!mounted && (shouldRedirectToLandingPage || shouldRedirectToWelcome)) {
     // Show a blank page for already authenticated users,
     // when the first rendering on client side is not yet done
     // This is done to avoid hydration issues when full page load is happening.
@@ -643,6 +657,9 @@ export const AuthenticationPageComponent = props => {
   if (shouldRedirectToFrom) {
     // Already authenticated, redirect back to the page the user tried to access
     return <Redirect to={from} />;
+  } else if (shouldRedirectToWelcome) {
+    // Freshly signed-up lender: straight to the welcome page / listing wizard
+    return <NamedRedirect name="WelcomeLenderPage" />;
   } else if (shouldRedirectToLandingPage) {
     // Already authenticated, redirect to the landing page (this was direct access to /login or /signup)
     return <NamedRedirect name="LandingPage" />;
