@@ -58,6 +58,13 @@ import EditListingWizardTab, {
   AVAILABILITY,
   PHOTOS,
 } from './EditListingWizardTab';
+import MeasurementsForm, {
+  MEASUREMENT_KEYS,
+  hasAllMeasurements,
+  initialMeasurementValues,
+} from './MeasurementsModal';
+import measurementsCss from './MeasurementsModal/MeasurementsModal.module.css';
+
 import css from './EditListingWizard.module.css';
 
 // You can reorder these panels.
@@ -421,12 +428,19 @@ class EditListingWizard extends Component {
     this.state = {
       draftId: null,
       showPayoutDetails: false,
+      showMeasurements: false,
+      measurementsSaveInProgress: false,
+      measurementsSaveError: false,
+      pendingPublishId: null,
       selectedListingType: null,
       mounted: false,
     };
     this.handleCreateFlowTabScrolling = this.handleCreateFlowTabScrolling.bind(this);
     this.handlePublishListing = this.handlePublishListing.bind(this);
     this.handlePayoutModalClose = this.handlePayoutModalClose.bind(this);
+    this.handleMeasurementsModalClose = this.handleMeasurementsModalClose.bind(this);
+    this.handleMeasurementsSubmit = this.handleMeasurementsSubmit.bind(this);
+    this.publishDraft = this.publishDraft.bind(this);
   }
 
   componentDidMount() {
@@ -445,6 +459,26 @@ class EditListingWizard extends Component {
   }
 
   handlePublishListing(id) {
+    const { currentUser } = this.props;
+
+    // Sherbrt: the five lender measurements came off the signup form to cut
+    // ad drop-off, so we collect them here instead — at publish, once the
+    // lender has already invested effort in the listing. Nothing can go live
+    // without them, since the listing page's "About the lender" block reads
+    // them straight off the author's profile.
+    if (!hasAllMeasurements(currentUser)) {
+      this.setState({
+        pendingPublishId: id,
+        showMeasurements: true,
+        measurementsSaveError: false,
+      });
+      return;
+    }
+
+    this.publishDraft(id);
+  }
+
+  publishDraft(id) {
     const { onPublishListingDraft, currentUser, stripeAccount, listing, config } = this.props;
     const processName = listing?.attributes?.publicData?.transactionProcessAlias.split('/')[0];
     const isInquiryProcess = processName === INQUIRY_PROCESS_NAME;
@@ -478,6 +512,43 @@ class EditListingWizard extends Component {
 
   handlePayoutModalClose() {
     this.setState({ showPayoutDetails: false });
+  }
+
+  handleMeasurementsModalClose() {
+    // Closing without saving leaves the listing as a draft — the lender can
+    // come back to it, and the draft is a warm lead for a follow-up email.
+    this.setState({ showMeasurements: false, pendingPublishId: null });
+  }
+
+  handleMeasurementsSubmit(values) {
+    const { onSaveLenderMeasurements } = this.props;
+    const pendingId = this.state.pendingPublishId;
+
+    // CustomExtendedDataField namespaces user fields as `pub_<key>`; strip that
+    // back off before writing to profile publicData.
+    const publicData = MEASUREMENT_KEYS.reduce((acc, key) => {
+      const value = values[`pub_${key}`];
+      return value !== undefined && value !== null && value !== ''
+        ? { ...acc, [key]: value }
+        : acc;
+    }, {});
+
+    this.setState({ measurementsSaveInProgress: true, measurementsSaveError: false });
+
+    return onSaveLenderMeasurements(publicData)
+      .then(() => {
+        this.setState({
+          measurementsSaveInProgress: false,
+          showMeasurements: false,
+          pendingPublishId: null,
+        });
+        if (pendingId) {
+          this.publishDraft(pendingId);
+        }
+      })
+      .catch(() => {
+        this.setState({ measurementsSaveInProgress: false, measurementsSaveError: true });
+      });
   }
 
   render() {
@@ -718,6 +789,31 @@ class EditListingWizard extends Component {
             );
           })}
         </Tabs>
+        <Modal
+          id="EditListingWizard.measurementsModal"
+          isOpen={this.state.showMeasurements}
+          onClose={this.handleMeasurementsModalClose}
+          onManageDisableScrolling={onManageDisableScrolling}
+          usePortal
+        >
+          <div className={measurementsCss.wrapper}>
+            <Heading as="h2" rootClassName={measurementsCss.title}>
+              One last thing
+            </Heading>
+            <p className={measurementsCss.message}>
+              Add your sizing so borrowers know how this piece fit you. It shows on every
+              listing you post, so you only have to do this once.
+            </p>
+            <MeasurementsForm
+              onSubmit={this.handleMeasurementsSubmit}
+              initialValues={initialMeasurementValues(currentUser)}
+              inProgress={this.state.measurementsSaveInProgress}
+              saveError={this.state.measurementsSaveError}
+              userFields={config.user?.userFields}
+              userType={currentUser?.attributes?.profile?.publicData?.userType}
+            />
+          </div>
+        </Modal>
         <Modal
           id="EditListingWizard.payoutModal"
           isOpen={this.state.showPayoutDetails}

@@ -1055,6 +1055,27 @@ const fetchLoadDataExceptions = (dispatch, listing, search, firstDayOfWeek) => {
   return Promise.all([]);
 };
 
+/**
+ * Save the lender's measurement fields onto their own profile publicData.
+ *
+ * These are USER fields, not listing fields — the listing page reads them off
+ * the listing's author (ListingPageCarousel.js "About the lender"). They are
+ * collected here, at publish time, because they came off the signup form to
+ * reduce ad drop-off. See EditListingWizard.handlePublishListing.
+ */
+export const saveLenderMeasurements = values => (dispatch, getState, sdk) => {
+  return sdk.currentUser
+    .updateProfile({ publicData: values }, { expand: true })
+    .then(response => {
+      const entities = denormalisedResponseEntities(response);
+      if (entities.length !== 1) {
+        throw new Error('Expected a resource in the sdk.currentUser.updateProfile response');
+      }
+      dispatch(fetchCurrentUser());
+      return response;
+    });
+};
+
 export const savePayoutDetails = (values, isUpdateCall) => (dispatch, getState, sdk) => {
   const upsertThunk = isUpdateCall ? updateStripeAccount : createStripeAccount;
   dispatch(savePayoutDetailsRequest());
