@@ -37,6 +37,7 @@ const SearchPageWithGrid = loadable(() => import(/* webpackChunkName: "SearchPag
 const StripePayoutPage = loadable(() => import(/* webpackChunkName: "StripePayoutPage" */ '../containers/StripePayoutPage/StripePayoutPage'));
 const PaymentsReturnPage = loadable(() => import(/* webpackChunkName: "PaymentsReturnPage" */ '../containers/PaymentsReturnPage/PaymentsReturnPage'));
 const TermsOfServicePage = loadable(() => import(/* webpackChunkName: "TermsOfServicePage" */ '../containers/TermsOfServicePage/TermsOfServicePage'));
+const WelcomeLenderPage = loadable(() => import(/* webpackChunkName: "WelcomeLenderPage" */ '../containers/WelcomeLenderPage/WelcomeLenderPage'));
 const TransactionPage = loadable(() => import(/* webpackChunkName: "TransactionPage" */ '../containers/TransactionPage/TransactionPage'));
 const NoAccessPage = loadable(() => import(/* webpackChunkName: "NoAccessPage" */ '../containers/NoAccessPage/NoAccessPage'));
 
@@ -214,6 +215,13 @@ const routeConfiguration = (layoutConfig, accessControlConfig) => {
       component: AuthenticationPage,
       extraProps: { tab: 'signup' },
       loadData: pageDataLoadingAPI.AuthenticationPage.loadData,
+    },
+    {
+      path: '/welcome',
+      name: 'WelcomeLenderPage',
+      auth: true,
+      authPage: 'LoginPage',
+      component: WelcomeLenderPage,
     },
     {
       path: '/confirm',
