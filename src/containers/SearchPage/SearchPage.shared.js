@@ -309,7 +309,14 @@ export const pickSearchParamsOnly = (params, filterConfigs, sortConfig, isOrigin
   const originMaybe = isOriginInUse && origin ? { origin } : {};
   const filterParams = validFilterParams(rest, filterConfigs);
   const sort = rest[sortConfig.queryParamName];
-  const sortMaybe = sort ? { sort } : {};
+  // Sherbrt: with no explicit sort in the URL, fall back to sortConfig.defaultSort
+  // (highest retail price first). A sort of null means a conflicting filter
+  // (keyword relevance) deliberately cleared it -- don't override that.
+  const sortMaybe = sort
+    ? { sort }
+    : sort === null || !sortConfig.defaultSort
+    ? {}
+    : { sort: sortConfig.defaultSort };
 
   return {
     ...boundsMaybe,

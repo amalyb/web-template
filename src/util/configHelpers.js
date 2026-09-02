@@ -1280,7 +1280,17 @@ const validSortConfig = config => {
   const conflictingFilters = config.conflictingFilters || [];
   const optionsRaw = config.options || [];
   const options = optionsRaw.filter(o => !!o.key && !!(o.label || o.labelTranslationKey));
-  return { active, queryParamName, relevanceKey, relevanceFilter, conflictingFilters, options };
+  // Sherbrt: only honour a defaultSort that matches a real sort option.
+  const defaultSort = options.some(o => o.key === config.defaultSort) ? config.defaultSort : null;
+  return {
+    active,
+    queryParamName,
+    relevanceKey,
+    relevanceFilter,
+    conflictingFilters,
+    options,
+    defaultSort,
+  };
 };
 
 const mergeSearchConfig = (hostedSearchConfig, defaultSearchConfig, categoryConfiguration) => {

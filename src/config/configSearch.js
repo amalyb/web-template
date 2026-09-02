@@ -62,6 +62,11 @@ export const sortConfig = {
   // Internal key for the relevance option, see notes below.
   relevanceKey: 'relevance',
 
+  // Sherbrt: sort key applied when the URL has no explicit ?sort= param.
+  // Must match one of the option keys below. Leave empty ('') to fall back
+  // to the Marketplace API default, which is newest-first.
+  defaultSort: 'pub_retailPrice',
+
   // Relevance key is used with keywords filter.
   // Keywords filter also sorts results according to relevance.
   relevanceFilter: 'keywords',
@@ -77,6 +82,13 @@ export const sortConfig = {
     { key: '-createdAt', labelTranslationKey: 'SortBy.oldest' },
     { key: '-price', labelTranslationKey: 'SortBy.lowestPrice' },
     { key: 'price', labelTranslationKey: 'SortBy.highestPrice' },
+
+    // Sherbrt: sort by the lender-entered retail (original) price stored in
+    // publicData.retailPrice. NOTE: Sharetribe's sort prefix is inverted --
+    // no prefix = descending (high -> low), '-' prefix = ascending.
+    // Requires a search schema: `flex-cli search set --key retailPrice --type long --scope public`
+    { key: 'pub_retailPrice', label: 'Highest retail price' },
+    { key: '-pub_retailPrice', label: 'Lowest retail price' },
     // If you add own sort options, you can also use label key: { key: 'meta_rating', label: 'Highest rated' },
 
     // The relevance is only used for keyword search, but the
