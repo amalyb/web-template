@@ -283,6 +283,94 @@ Address mapping: `line1` → `customerStreet`, `postalCode` → `customerZip`.
 
 ## Recent Fixes & Gotchas
 
+### September 2, 2026 — Search results default-sorted by highest retail price (PR #90)
+
+`/s` used to open newest-first with no way to change the default. It now opens
+**highest retail (original) price first** — $2,998 Madison Dress down to $88 —
+and the Sort dropdown gained "Highest retail price" / "Lowest retail price".
+Merge commit `53ac4ce`, branch `sort-only-retail-price`, deployed on Render.
+
+**Two independent things were blocking this, and neither was where you'd look first.**
+
+**Blocker 1 — the Console "Listing search" sorting checkboxes do nothing in this
+template.** `mergeSearchConfig` in `src/util/configHelpers.js` explicitly discards
+the hosted sort config and substitutes the local one:
+
+```js
+// The sortConfig is not yet configurable through Console / hosted assets,
+// but other default search configs come from hosted assets
+const searchConfig = hostedSearchConfig?.mainSearch
+  ? { sortConfig: defaultSearchConfig.sortConfig, ...hostedSearchConfig }
+  : defaultSearchConfig;
+```
+
+Toggling Newest/Oldest/price in Console → Listings → Listing search is read and
+thrown away. **Sorting is a code-only setting** — edit `src/config/configSearch.js`.
+
+**Blocker 2 — `publicData.retailPrice` had no search schema, so the API silently
+ignored the sort key.** Sharetribe does not error on an unknown sort key; it
+returns 200 with default ordering. Confirmed by querying with a deliberately
+fake field name and getting byte-identical results. `retailPrice` was added as
+custom code, never registered as a searchable field. Fixed with the CLI:
+
+```
+flex-cli search set --key retailPrice --type long --scope public -m sherbrt
+```
+
+Reindex takes a few minutes. **Any future sort on a `publicData` field needs the
+same step** — and the failure mode is silence, not an error, so always verify by
+comparing against a nonsense field name.
+
+**Gotcha — Sharetribe's sort prefix is inverted from the usual convention.**
+No prefix = **descending**, `-` prefix = **ascending**. Verified empirically:
+
+| `sort=` | result |
+|---|---|
+| `price` | 20000, 20000, 10000, 9900 (high → low) |
+| `-price` | 2500, 2500, 2500 (low → high) |
+| `createdAt` | newest first |
+| `-createdAt` | oldest first |
+
+So highest-retail-first is `sort=pub_retailPrice`, **not** `-pub_retailPrice`.
+This is also why `configSearch.js` maps `-price` → "Lowest price" and `price` →
+"Highest price", which reads backwards but is correct.
+
+**Gotcha — the SearchPage builds its query in TWO places, and they must agree.**
+This caused a real bug that shipped: the dropdown read "Highest retail price"
+while results came back newest-first, and you had to pick another option and
+switch back to actually get retail ordering.
+
+- `loadData()` in `SearchPage.duck.js` builds the **actual API call**. It spreads
+  the parsed URL query straight through, so with no `?sort=` in the URL it sent
+  no sort at all and Sharetribe applied its own newest-first default.
+- `pickSearchParamsOnly()` in `SearchPage.shared.js` only feeds the
+  `searchParamsAreInSync` check — patching it changes nothing about what's fetched.
+- `SortBy.js` had `const defaultValue = 'createdAt'` hardcoded, which is what the
+  dropdown *displays*.
+
+All three now route through one helper, `getDefaultSortMaybe` in
+`src/util/search.js` (chosen because both the duck and `SearchPage.shared.js`
+already import from there — importing shared.js into the duck risks a circular
+dep). It skips the default when a `keywords` search is active so relevance
+ordering still wins, and treats `sort === null` (a conflicting filter deliberately
+clearing it) differently from `sort === undefined`. If you only patch one of the
+three, you get a dropdown that lies about what it's showing.
+
+**Configuring the default sort now:** set `defaultSort` in `sortConfig`
+(`src/config/configSearch.js`). It must match one of the `options` keys —
+`validSortConfig` drops it otherwise. Empty string falls back to the API default.
+
+**Also in this PR:** `SortBy.lowestPrice` / `SortBy.highestPrice` in
+`src/translations/en.json` renamed to "Lowest borrow price" / "Highest borrow
+price", to disambiguate from the new retail-price options. Note Console →
+Content → Marketplace texts overrides `en.json`, so check there if a label
+change doesn't take.
+
+**Consequence to remember:** `publicData.retailPrice` is now load-bearing for
+discovery, not just display. Anything that changes how it's collected or stored
+changes catalog ordering. (It is a required field, so blank values are not a
+live concern — but a listing that somehow lacked it would sort to the bottom.)
+
 ### June 11, 2026 — Return-reminder TZ off-by-one (8-SMS) + shortlinks falling back to raw URLs on workers
 
 Surfaced by an intentionally-late test transaction: `6a21f7cf-028e-4ced-a771-dda7e4d3bd0d` (Faille Halter Mini Dress, booking **Sat Jun 6 — Tue Jun 9**, so `booking.end = 2026-06-09T00:00:00Z`, end-exclusive → last booked day / ship-back day is **Mon Jun 8 PT**). Two unrelated bugs fell out of it.
