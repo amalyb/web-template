@@ -9,7 +9,12 @@ import {
   daysBetween,
   getStartOf,
 } from '../../util/dates';
-import { constructQueryParamName, isOriginInUse, isStockInUse } from '../../util/search';
+import {
+  constructQueryParamName,
+  getDefaultSortMaybe,
+  isOriginInUse,
+  isStockInUse,
+} from '../../util/search';
 import { hasPermissionToViewData, isUserAuthorized } from '../../util/userHelpers';
 import { parse } from '../../util/urlHelpers';
 
@@ -328,6 +333,8 @@ export const loadData = (params, search, config) => (dispatch, getState, sdk) =>
   const searchListingsCall = searchListings(
     {
       ...rest,
+      // Sherbrt: apply sortConfig.defaultSort when the URL has no ?sort= param
+      ...getDefaultSortMaybe(rest, config.search.sortConfig),
       ...originMaybe,
       page,
       perPage: RESULT_PAGE_SIZE,

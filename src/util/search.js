@@ -121,6 +121,34 @@ export const isMainSearchTypeKeywords = config =>
 /**
  * Check if the origin parameter is currently active.
  */
+/**
+ * Sherbrt: resolve the sort param to use when the URL carries none.
+ *
+ * The SearchPage has two independent paths that build the API query --
+ * loadData() in SearchPage.duck.js (the actual fetch) and pickSearchParamsOnly()
+ * in SearchPage.shared.js (the in-sync check). Both must agree, or the page
+ * shows one sort in the dropdown while the API returns another.
+ *
+ * @param {Object} urlQueryParams parsed search params
+ * @param {Object} sortConfig config.search.sortConfig
+ * @returns {Object} either {} or { [queryParamName]: defaultSort }
+ */
+export const getDefaultSortMaybe = (urlQueryParams, sortConfig) => {
+  const paramName = sortConfig?.queryParamName || 'sort';
+  const defaultSort = sortConfig?.defaultSort;
+  const currentSort = urlQueryParams?.[paramName];
+
+  // An explicit sort wins. null means a conflicting filter deliberately cleared it.
+  if (currentSort || currentSort === null || !defaultSort) {
+    return {};
+  }
+  // Keyword search sorts by relevance -- don't clobber it with the default.
+  if (urlQueryParams?.keywords) {
+    return {};
+  }
+  return { [paramName]: defaultSort };
+};
+
 export const isOriginInUse = config =>
   config.search?.mainSearch?.searchType === 'location' && config.maps?.search?.sortSearchByDistance;
 
