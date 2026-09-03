@@ -34,7 +34,7 @@ const SortBy = props => {
     ...rest
   } = props;
 
-  const { relevanceKey, relevanceFilter, queryParamName } = config.search.sortConfig;
+  const { relevanceKey, relevanceFilter, queryParamName, defaultSort } = config.search.sortConfig;
 
   const mobileClassesMaybe =
     mode === 'mobile'
@@ -87,7 +87,9 @@ const SortBy = props => {
           },
         ];
   }, []);
-  const defaultValue = 'createdAt';
+  // Sherbrt: the dropdown must show whatever pickSearchParamsOnly actually
+  // sends to the API when the URL carries no ?sort= param.
+  const defaultValue = defaultSort || 'createdAt';
   const isRelevanceSortActive = isRelevanceOptionActive && !sort;
   const relevanceValue =
     isRelevanceSortActive && selectedFilters[relevanceFilter]?.length > 0 ? relevanceKey : null;
