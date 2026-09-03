@@ -4,6 +4,7 @@ import { SCHEMA_TYPE_ENUM, SCHEMA_TYPE_MULTI_ENUM } from '../../util/types';
 import { createResourceLocatorString } from '../../util/routes';
 import {
   isAnyFilterActive,
+  getDefaultSortMaybe,
   parseSelectFilterOptions,
   constructQueryParamName,
 } from '../../util/search';
@@ -309,14 +310,8 @@ export const pickSearchParamsOnly = (params, filterConfigs, sortConfig, isOrigin
   const originMaybe = isOriginInUse && origin ? { origin } : {};
   const filterParams = validFilterParams(rest, filterConfigs);
   const sort = rest[sortConfig.queryParamName];
-  // Sherbrt: with no explicit sort in the URL, fall back to sortConfig.defaultSort
-  // (highest retail price first). A sort of null means a conflicting filter
-  // (keyword relevance) deliberately cleared it -- don't override that.
-  const sortMaybe = sort
-    ? { sort }
-    : sort === null || !sortConfig.defaultSort
-    ? {}
-    : { sort: sortConfig.defaultSort };
+  // Sherbrt: must match what loadData() sends, or searchParamsAreInSync goes false.
+  const sortMaybe = sort ? { sort } : getDefaultSortMaybe(rest, sortConfig);
 
   return {
     ...boundsMaybe,
