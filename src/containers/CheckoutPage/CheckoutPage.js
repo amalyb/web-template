@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { compose } from 'redux';
 import { connect } from 'react-redux';
 import { useHistory } from 'react-router-dom';
@@ -65,6 +65,11 @@ const getDiscountedPriceFromVariants = (priceVariants, nights) => {
 const EnhancedCheckoutPage = props => {
   const [pageData, setPageData] = useState({});
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  // Speculation dedupe keys. These must live here (stable across renders)
+  // rather than being recreated inside loadInitialDataForStripePayments,
+  // where a throwaway `{ current: null }` defeated the guard entirely.
+  const speculateKeyRef = useRef(null);
+  const failedSpeculateKeyRef = useRef(null);
   const config = useConfiguration();
   const routeConfiguration = useRouteConfiguration();
   const intl = useIntl();
@@ -92,6 +97,8 @@ const EnhancedCheckoutPage = props => {
           fetchSpeculatedTransaction,
           fetchStripeCustomer,
           config,
+          speculateKeyRef,
+          failedSpeculateKeyRef,
         });
       }
     }
