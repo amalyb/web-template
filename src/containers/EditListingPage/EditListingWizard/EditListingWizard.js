@@ -32,6 +32,7 @@ import {
   pickCategoryFields,
 } from '../../../util/fieldHelpers';
 import { ensureCurrentUser, ensureListing } from '../../../util/data';
+import { isBookableAvailabilityPlan } from '../../../util/availabilityPlan';
 import {
   INQUIRY_PROCESS_NAME,
   isBookingProcess,
@@ -261,13 +262,14 @@ const tabCompleted = (tab, listing, config) => {
         hasAvailabilityPlan: !!availabilityPlan,
         listingId: listing?.id?.uuid 
       });
-      // TEMPORARY OVERRIDE FOR TESTING - FORCE AVAILABILITY TAB TO BE COMPLETED
-      const forceCompleted = true; // Set to false to disable override
-      if (forceCompleted) {
-        console.log('[DEBUG] 🔧 TEMPORARY OVERRIDE: Forcing availability tab to be completed for testing');
-        return true;
-      }
-      return !!availabilityPlan;
+      // A listing is only publishable once it carries a plan that can
+      // actually take a booking. The previous unconditional `return true`
+      // (a "TEMPORARY OVERRIDE FOR TESTING" from 2025-07-31) let lenders
+      // publish with no plan at all, which 409s at checkout. Details-panel
+      // creation now seeds the plan, so this gate passes without the lender
+      // having to visit the availability tab — it just no longer lies when
+      // the plan is missing or is the wrong (day-grid) shape.
+      return isBookableAvailabilityPlan(availabilityPlan);
     case PHOTOS:
       return images && images.length > 0;
     default:

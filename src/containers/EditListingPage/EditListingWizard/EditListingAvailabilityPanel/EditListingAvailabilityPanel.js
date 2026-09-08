@@ -9,6 +9,10 @@ import {
   marketplaceDayStart,
   timestampToDate,
 } from '../../../../util/dates';
+import {
+  createDefaultAvailabilityPlan,
+  isBookableAvailabilityPlan,
+} from '../../../../util/availabilityPlan';
 import { AVAILABILITY_MULTIPLE_SEATS, LISTING_STATE_DRAFT } from '../../../../util/types';
 import { DAY, isFullDay } from '../../../../transactions/transaction';
 
@@ -124,27 +128,12 @@ const EditListingAvailabilityPanel = props => {
 
   const isPublished = listing?.id && listingAttributes?.state !== LISTING_STATE_DRAFT;
 
-  // Default "every day, one seat" plan. Sherbrt's marketplace is configured
-  // for Daily + oneSeat bookings, and Sharetribe rejects `availability-plan/time`
-  // on day-unit listings as "Invalid value" (HTTP 400). We must use
-  // `availability-plan/day` with `{ dayOfWeek, seats }` entries only —
-  // no startTime/endTime, no timezone (the latter is rejected as
-  // "Disallowed key" on day-plans). This matches what the mobile wizard
-  // writes; see sherbrt-mobile/app/lending/new/availability.tsx.
-  const getAllDaysAlwaysAvailable = () => {
-    // Use the same weekday keys as in generators.js
-    const WEEKDAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-    return {
-      type: 'availability-plan/day',
-      entries: WEEKDAYS.map(dayOfWeek => ({
-        dayOfWeek,
-        seats: 1,
-      })),
-    };
-  };
-
-  // Use the day-shape plan for all listings by default
-  const defaultAvailabilityPlan = getAllDaysAlwaysAvailable();
+  // Default "every day, one seat" plan. The claim that Sharetribe rejects
+  // `availability-plan/time` on day-unit listings was wrong — 20 day-unit
+  // listings run that shape in production today, and it is the only shape
+  // whose slots a marketplace-TZ-midnight booking can actually land in.
+  // See src/util/availabilityPlan.js for the full reasoning.
+  const defaultAvailabilityPlan = createDefaultAvailabilityPlan();
   const availabilityPlan = listingAttributes?.availabilityPlan || defaultAvailabilityPlan;
 
   // Debug: Log the availability plan and listing state
@@ -290,17 +279,19 @@ const EditListingAvailabilityPanel = props => {
     setNextTabError(null);
     setIsNextTabInProgress(true);
     try {
-      // Preserve the listing's existing plan shape. Sherbrt's marketplace is
-      // configured for Daily + oneSeat — the Sharetribe API rejects
-      // `availability-plan/time` writes on day-unit listings with HTTP 400
-      // ("Invalid value"). Only seed a default day-shape plan when the listing
-      // genuinely has no plan yet (mobile-created listings already have one).
+      // Upgrade, don't preserve. A listing arriving here on a day-shape plan
+      // (or with none) came from the old web wizard or the mobile app, and
+      // that shape 409s at checkout. Writing the working plan through on
+      // "next" repairs those listings as their owners edit them, rather than
+      // faithfully preserving a broken configuration.
       // Exceptions are persisted at click-time via onAddAvailabilityException;
       // they are not listing attributes and must NOT be sent on ownListings.update
       // (Sharetribe rejects the `exceptions` key with HTTP 400).
+      const existingPlan = listing?.attributes?.availabilityPlan;
       const availabilityData = {
-        availabilityPlan:
-          listing?.attributes?.availabilityPlan || getAllDaysAlwaysAvailable(),
+        availabilityPlan: isBookableAvailabilityPlan(existingPlan)
+          ? existingPlan
+          : createDefaultAvailabilityPlan(),
       };
       console.log("🟠 [DEBUG] About to call onNextTab with:", availabilityData);
       const result = await onNextTab(availabilityData);

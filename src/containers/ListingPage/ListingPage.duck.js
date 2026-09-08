@@ -7,6 +7,7 @@ import { transactionLineItems } from '../../util/api';
 import * as log from '../../util/log';
 import { toUuidString } from '../../util/id';
 import { denormalisedResponseEntities } from '../../util/data';
+import { createDefaultAvailabilityPlan } from '../../util/availabilityPlan';
 import {
   MARKETPLACE_TZ,
   bookingTimeUnits,
@@ -549,28 +550,18 @@ export const sendInquiry = (listing, message) => (dispatch, getState, sdk) => {
 };
 
 // Helper function to ensure listing has a proper availability plan.
-// Sherbrt's marketplace is configured for Daily + oneSeat, so the default
-// shape is `availability-plan/day` with `{ dayOfWeek, seats }` entries only
-// (no startTime/endTime, no timezone — Sharetribe rejects the timezone key
-// on day-plans for this marketplace). This is the same shape the mobile
-// wizard writes.
+//
+// This synthesized plan is CLIENT-SIDE ONLY — it never reaches the API.
+// Its sole job is to supply a timezone for slot bucketing and to keep the
+// timeslot fetch below from being skipped for plan-less listings. The real
+// availability always comes from what Sharetribe returns for the listing.
+// See src/util/availabilityPlan.js for the canonical shape.
 const ensureAvailabilityPlan = (listing) => {
   const { availabilityPlan } = listing?.attributes || {};
 
   if (!availabilityPlan || !availabilityPlan.type) {
-    console.log('⚠️ [ListingPage.duck] No availability plan found, creating day-shape default');
-    return {
-      type: 'availability-plan/day',
-      entries: [
-        { dayOfWeek: 'mon', seats: 1 },
-        { dayOfWeek: 'tue', seats: 1 },
-        { dayOfWeek: 'wed', seats: 1 },
-        { dayOfWeek: 'thu', seats: 1 },
-        { dayOfWeek: 'fri', seats: 1 },
-        { dayOfWeek: 'sat', seats: 1 },
-        { dayOfWeek: 'sun', seats: 1 },
-      ],
-    };
+    console.log('⚠️ [ListingPage.duck] No availability plan found, using client-side default');
+    return createDefaultAvailabilityPlan();
   }
 
   return availabilityPlan;

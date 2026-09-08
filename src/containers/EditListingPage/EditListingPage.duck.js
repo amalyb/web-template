@@ -977,11 +977,11 @@ export const requestFetchAvailabilityExceptions = params => (dispatch, getState,
 const fetchLoadDataExceptions = (dispatch, listing, search, firstDayOfWeek) => {
   const hasWindow = typeof window !== 'undefined';
 
-  // Fetch on client side only. Sherbrt's marketplace uses
-  // `availability-plan/day` plans which Sharetribe forbids carrying a
-  // `timezone` key — so we can't gate on plan.timezone here. Fall back to
-  // MARKETPLACE_TZ (the canonical marketplace-wide timezone) so every
-  // reader uses the same calendar-day boundaries.
+  // Fetch on client side only. Listings on the current plan shape
+  // (`availability-plan/time`) do carry a `timezone`; legacy day-plan
+  // listings do not, and Sharetribe forbids adding the key to them. Fall
+  // back to MARKETPLACE_TZ so both generations of listing resolve to the
+  // same calendar-day boundaries.
   if (hasWindow && listing.id) {
     const listingId = listing.id;
     const timezone =

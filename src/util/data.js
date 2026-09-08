@@ -312,15 +312,11 @@ export const ensureTimeSlot = timeSlot => {
   return { ...empty, ...timeSlot };
 };
 
-/**
- * Create shell objects to ensure that attributes etc. exists.
- *
- * @param {Object} availability exception entity object, which is to be ensured against null values
- */
-export const ensureDayAvailabilityPlan = availabilityPlan => {
-  const empty = { type: 'availability-plan/day', entries: [] };
-  return { ...empty, ...availabilityPlan };
-};
+// `ensureDayAvailabilityPlan` used to live here. It had zero callers and
+// defaulted to `availability-plan/day`, the shape that produces a
+// UTC-midnight day grid and fails checkout with HTTP 409. Removed rather
+// than fixed so nothing reaches for it by accident — use
+// `createDefaultAvailabilityPlan` from src/util/availabilityPlan.js.
 
 /**
  * Create shell objects to ensure that attributes etc. exists.

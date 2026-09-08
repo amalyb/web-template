@@ -9,8 +9,10 @@ export const END_DATE = 'endDate';
 /**
  * Marketplace-wide canonical timezone for availability math.
  *
- * Sherbrt is US-only and listings carry no plan-side `timezone` (Sharetribe
- * rejects the key on `availability-plan/day` plans for this marketplace).
+ * Sherbrt is US-only. Listings now carry a plan-side `timezone` via
+ * `availability-plan/time` (see util/availabilityPlan.js); the key is
+ * genuinely rejected on `availability-plan/day` plans, which is one of
+ * the reasons day-plans were abandoned.
  * To stop apps from each picking their own fallback (browser TZ on web,
  * device-local on mobile, `Etc/UTC` in some classifiers), we anchor every
  * availability date — exception writes, exception reads, calendar bucketing,
