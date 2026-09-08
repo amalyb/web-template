@@ -15,6 +15,7 @@ import {
   pickCategoryFields,
 } from '../../../../util/fieldHelpers';
 import { isBookingProcessAlias } from '../../../../transactions/transaction';
+import { createDefaultAvailabilityPlan } from '../../../../util/availabilityPlan';
 
 // Import shared components
 import { H3, ListingLink } from '../../../../components';
@@ -185,9 +186,13 @@ const setAvailabilityPlanForListing = processAlias => {
   const isBooking = isBookingProcessAlias(processAlias);
 
   if (isBooking) {
-    // For bookable listings, don't set availability plan during creation
-    // Let the availability panel handle it later to avoid API validation issues
-    return {};
+    // Bookable listings get the working plan at creation. Deferring this to
+    // the availability panel is what produced 20 published listings with no
+    // plan at all — the panel's "next" handler only fires if the lender walks
+    // that tab, and the wizard let them publish without it. A listing with no
+    // plan exposes a UTC-midnight day grid and 409s at checkout.
+    // See src/util/availabilityPlan.js for why this shape and not day-shape.
+    return { availabilityPlan: createDefaultAvailabilityPlan() };
   }
 
   // Non-bookable listings (e.g. purchase processes): empty day-shape plan.

@@ -1,0 +1,476 @@
+{
+  "capturedAt": "2026-09-08T22:25:25.821Z",
+  "note": "Original availabilityPlan values before convertToTimePlan.js. availabilityPlan:null means the listing had NO plan (not restorable via API).",
+  "listings": [
+    {
+      "id": "6a9111aa-af93-4f8d-8cc8-8cbd7d377f9d",
+      "title": "Party dress",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6a8d2b5e-d00b-4038-a2e7-fd777b552368",
+      "title": "One Shoulder Bridesmaid Custom Gown",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6a8c3f3c-1daa-4980-abec-e26b1fd42ae9",
+      "title": "Off Shoulder Beaded Mini",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6a87567f-e4b5-41ce-8ad1-9c9139c815b1",
+      "title": "Lune Dress",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6a8736aa-2176-480b-8f4b-796592fffb8d",
+      "title": "Aryana Bow Mini",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6a62601f-aa42-42b9-8d6f-8c509aeb7a6b",
+      "title": "Ivy City Layla Dress in Pink Floral",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6a2044a4-d0a4-413d-a68d-c02ddee63481",
+      "title": "Cabo Dress",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "69d7edba-7791-4df0-afe0-85a2db40f9d1",
+      "title": "Cindy Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "69b6a545-42d6-49bd-bf31-1b1e19fa1dbd",
+      "title": "Sheer Black Maxi Anya Gown",
+      "availabilityPlan": null
+    },
+    {
+      "id": "69274619-306b-401d-ac31-05cef5d01711",
+      "title": "Sleeveless Grace Mini Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6918e750-3dd0-4f8f-8beb-32b6854a3bce",
+      "title": "Annika Maxi Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6918e2bf-0b78-4b50-8dd7-ab2dd65faf0e",
+      "title": "Elena Maxi Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6918e0c1-4b75-4e39-8fa2-d538fe1eee5b",
+      "title": "Lexie Maxi Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6918c97e-6360-40d4-86de-3fe8bee1ee16",
+      "title": "X Revolve Essentials Jennan Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6917778b-0d6b-4830-8841-1fd7cee85cd9",
+      "title": "Ola Maxi",
+      "availabilityPlan": null
+    },
+    {
+      "id": "69160706-f857-4d72-b663-9cd3a705b1cb",
+      "title": "Tribeca Blazer Dress",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6914bf7f-136e-4db3-ba98-850854fe0327",
+      "title": "Kenya Mini Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "691396be-515c-4251-8398-d31a96efa71b",
+      "title": "Lucy Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6913917a-ab25-4917-8f71-95b98c69006f",
+      "title": "Backless High Neck Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "69024355-47cc-47c1-8e56-13a792a5d2b2",
+      "title": "Averie Gown",
+      "availabilityPlan": null
+    },
+    {
+      "id": "69013e37-f0ce-420a-b3a8-5ba5afb9541e",
+      "title": "x REVOLVE Sicilia Midi Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6901352c-d9b7-4ff0-b335-1efb2f5446e4",
+      "title": "Eva Midi Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "690127c9-61a7-41f4-9239-4f1c3ae25515",
+      "title": "x REVOLVE Fringe Dress",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "6901262b-a425-445b-9897-14839288a77b",
+      "title": "Kayla Maxi Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "690124a5-4435-4232-9fd8-75a6ddece499",
+      "title": "Stellar Mini Dress",
+      "availabilityPlan": {
+        "type": "availability-plan/day",
+        "entries": [
+          {
+            "dayOfWeek": "mon",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "tue",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "wed",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "thu",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "fri",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sat",
+            "seats": 1
+          },
+          {
+            "dayOfWeek": "sun",
+            "seats": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "690122c4-950e-4abf-a6e8-d8b5aa637faa",
+      "title": "X REVOLVE Bustier Gown",
+      "availabilityPlan": null
+    },
+    {
+      "id": "690110f0-e18e-4e8f-bb91-5c845d3e6215",
+      "title": "Double Loop Bandeau Long Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "69010b9f-2813-44ba-93be-12c1cc88464f",
+      "title": "Mahala Dress",
+      "availabilityPlan": null
+    },
+    {
+      "id": "6900ff96-7079-46e4-a1e2-72dea550a449",
+      "title": "X REVOLVE Wolfe Gown",
+      "availabilityPlan": null
+    },
+    {
+      "id": "68cda4c2-ab66-4b42-8a79-143058536dab",
+      "title": "x REVOLVE Dahlia Gown Deme by Gabriella",
+      "availabilityPlan": null
+    }
+  ]
+}

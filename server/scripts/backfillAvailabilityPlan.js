@@ -1,5 +1,52 @@
 #!/usr/bin/env node
 /**
+ * backfillAvailabilityPlan.js — DISABLED. DO NOT RUN.
+ *
+ * This script writes `availability-plan/day` with no `timezone`. That is
+ * the shape that BREAKS checkout: Sharetribe exposes it as a UTC-midnight
+ * day grid (`time-slot/day`, 00:00Z boundaries), and the client sends
+ * booking dates at marketplace-TZ midnight (07:00Z), which lands mid-slot
+ * and is rejected with HTTP 409 `transaction-booking-time-not-available`.
+ *
+ * Worse, `planNeedsBackfill` below classifies `availability-plan/time` as
+ * "wrong type" — so running this with --apply CONVERTS EVERY WORKING
+ * LISTING BACK TO BROKEN. It is the most likely cause of the 11 day-plan
+ * listings found broken in production on 2026-09-08.
+ *
+ * The premise in the original header — that Sharetribe rejects
+ * `availability-plan/time` on day-unit listings with HTTP 400 — is false.
+ * 20 day-unit listings run that shape in production today.
+ *
+ * USE INSTEAD: server/scripts/convertToTimePlan.js, which writes the
+ * shape that actually takes bookings, backs up every original plan, and
+ * can verify the resulting time slots.
+ *
+ * Kept in the tree only so the historical reasoning is greppable. The
+ * guard below hard-exits before the SDK is ever constructed; delete this
+ * file once nothing references it.
+ */
+
+console.error(
+  [
+    '',
+    'backfillAvailabilityPlan.js is DISABLED and will not run.',
+    '',
+    'It writes availability-plan/day (no timezone) — the shape that causes',
+    'HTTP 409 transaction-booking-time-not-available at checkout — and it',
+    'treats availability-plan/time as "wrong type", so --apply would convert',
+    'every working listing back to broken.',
+    '',
+    'Use: node server/scripts/convertToTimePlan.js --apply --verify',
+    '',
+  ].join('\n')
+);
+process.exit(1);
+
+/* eslint-disable */
+/* ---------------------------------------------------------------------------
+ * ORIGINAL IMPLEMENTATION BELOW — UNREACHABLE, RETAINED FOR HISTORY ONLY.
+ * ------------------------------------------------------------------------ */
+/**
  * backfillAvailabilityPlan.js
  *
  * One-time backfill: ensures every listing in the marketplace has the
@@ -210,3 +257,4 @@ main().catch(err => {
   console.error('[backfill] fatal:', err?.data?.errors || err);
   process.exit(1);
 });
+
