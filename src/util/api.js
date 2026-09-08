@@ -182,6 +182,30 @@ export const transactionLineItems = (params) =>
     return result;
   });
 
+// Can a borrower actually complete a booking on this listing?
+//
+// Only the Integration API can see a lender's Stripe status — the public
+// Marketplace API omits `stripeConnected` from a listing author entirely —
+// so this has to round-trip through our own server.
+//
+// FAILS OPEN at every layer: the endpoint returns `bookable: true` on any
+// internal error, and this wrapper resolves to `bookable: true` if the request
+// itself fails. A borrower is never blocked because a lookup broke; Sharetribe's
+// 409 at checkout remains the real backstop. Never make this call blocking —
+// the listing page must paint without waiting for it.
+export const listingBookable = listingId => {
+  const id = typeof listingId === 'string' ? listingId : listingId?.uuid;
+  if (!id) return Promise.resolve({ bookable: true, reason: 'missing-listing-id' });
+
+  return window
+    .fetch(`${apiBaseUrl()}/api/listing-bookable?listingId=${encodeURIComponent(id)}`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    })
+    .then(res => (res.ok ? res.json() : { bookable: true, reason: 'lookup-failed' }))
+    .catch(() => ({ bookable: true, reason: 'lookup-failed' }));
+};
+
 // Initiate a privileged transaction.
 //
 // With privileged transitions, the transactions need to be created

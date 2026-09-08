@@ -25,6 +25,7 @@ import { formatMoney } from '../../util/currency';
 import { parse, stringify } from '../../util/urlHelpers';
 import { userDisplayNameAsString } from '../../util/data';
 import { MARKETPLACE_TZ } from '../../util/dates';
+import { listingBookable } from '../../util/api';
 import {
   INQUIRY_PROCESS_NAME,
   getSupportedProcessesInfo,
@@ -209,6 +210,36 @@ const OrderPanel = props => {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Can the lender actually take payment? Only the Integration API can see a
+  // lender's Stripe status, so this round-trips through our own server.
+  //
+  // Deliberately NOT part of loadData: the listing page must paint immediately
+  // and resolve bookability afterwards. Default is `true` so the booking form
+  // renders right away, and it only ever flips to `false` on a positive answer
+  // that the lender has no connected Stripe account. Any failure keeps it
+  // `true` — Sharetribe's 409 at checkout is the backstop, and blocking the
+  // storefront because one lookup broke would be far worse.
+  const [providerCanBeBooked, setProviderCanBeBooked] = useState(true);
+  const [bookabilityReason, setBookabilityReason] = useState(null);
+  // Read from `props` directly: `listing` is destructured below this point,
+  // so referencing it here would hit the temporal dead zone.
+  const listingIdForBookability = props.listing?.id?.uuid;
+
+  useEffect(() => {
+    if (!listingIdForBookability) {
+      return undefined;
+    }
+    let cancelled = false;
+    listingBookable(listingIdForBookability).then(result => {
+      if (cancelled) return;
+      setProviderCanBeBooked(result?.bookable !== false);
+      setBookabilityReason(result?.reason || null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [listingIdForBookability]);
   const {
     rootClassName,
     className,
@@ -294,7 +325,15 @@ const OrderPanel = props => {
 
   const shouldHaveBookingDates =
     isBooking && [LINE_ITEM_DAY, LINE_ITEM_NIGHT].includes(lineItemUnitType);
-  const showBookingDatesForm = mounted && shouldHaveBookingDates && !isClosed && timeZone;
+  // `providerCanBeBooked` defaults to true and only flips false on a positive
+  // "lender has no Stripe account" answer, so this never gates on a slow or
+  // failed lookup.
+  const showBookingDatesForm =
+    mounted && shouldHaveBookingDates && !isClosed && timeZone && providerCanBeBooked;
+  // Booking is the only thing gated. The listing stays visible and inquiries
+  // still work — and publishing without Stripe Connect remains supported.
+  const showProviderNotBookableNotice =
+    mounted && shouldHaveBookingDates && !isClosed && !providerCanBeBooked;
 
   // The listing resource has a relationship: `currentStock`,
   // which you should include when making API calls.
@@ -422,6 +461,10 @@ const OrderPanel = props => {
             timeZone={timeZone}
             {...sharedProps}
           />
+        ) : showProviderNotBookableNotice ? (
+          <div className={css.notBookableNotice} data-reason={bookabilityReason || undefined}>
+            <FormattedMessage id="OrderPanel.providerNotBookable" />
+          </div>
         ) : showBookingDatesForm ? (
           <BookingDatesForm
             seatsEnabled={seatsEnabled}
