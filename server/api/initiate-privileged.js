@@ -223,10 +223,26 @@ module.exports = (req, res) => {
         .end();
     })
     .catch(e => {
+      // Sharetribe returns the actionable detail inside `data.errors[]`. Node's
+      // default console formatting collapses that to `{ errors: [ [Object] ] }`
+      // at depth 2, which is what shipped to Render — so a 409 for
+      // `transaction-booking-time-not-available` and a 409 for
+      // `transaction-missing-stripe-account` were indistinguishable in the logs.
+      // Pull the codes out flat, and keep the full payload as JSON.
+      const apiErrors = e?.data?.errors || e?.response?.data?.errors || [];
+      const errorCodes = apiErrors.map(err => err?.code).filter(Boolean);
+
       console.error('[initiate-privileged] failed', {
         status: e?.status,
         message: e?.message,
-        data: e?.data,
+        errorCodes,
+        errors: apiErrors.map(err => ({
+          code: err?.code,
+          title: err?.title,
+          details: err?.details,
+          source: err?.source,
+        })),
+        data: JSON.stringify(e?.data ?? null),
         stack: e?.stack,
         transition: bodyParams?.transition,
         listingId: bodyParams?.params?.listingId,

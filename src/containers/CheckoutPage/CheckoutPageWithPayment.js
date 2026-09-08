@@ -190,7 +190,41 @@ const getOrderParams = (pageData, shippingDetails, optionalPaymentParams, config
   return orderParams;
 };
 
-const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef) => {
+/**
+ * Diff two specParams JSON strings and name the fields that differ.
+ *
+ * INSTRUMENTATION — deliberately kept in production. The 2026-09-08 retry
+ * loop re-fired `/api/initiate-privileged` about once per second, and the
+ * dedupe key below *looked* stable by inspection while demonstrably not
+ * being stable at runtime. Rather than guess, this logs exactly which field
+ * changed on every pass. If `[speculate-key] changed fields:` never appears
+ * in prod after this ships, the key is genuinely stable and the loop was
+ * driven entirely by the `speculateStatus` cycle (which the terminal-state
+ * guard below now stops). If it does appear, it names the culprit.
+ */
+const diffSpecKeys = (prevJson, nextJson) => {
+  if (!prevJson) return ['(first attempt)'];
+  try {
+    const a = JSON.parse(prevJson);
+    const b = JSON.parse(nextJson);
+    const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])];
+    return keys.filter(k => JSON.stringify(a[k]) !== JSON.stringify(b[k]));
+  } catch (e) {
+    return ['(unparseable)'];
+  }
+};
+
+const fetchSpeculatedTransactionIfNeeded = (
+  orderParams,
+  pageData,
+  fetchSpeculatedTransaction,
+  prevKeyRef,
+  options = {}
+) => {
+  // `failedKeyRef` holds the specParams that most recently FAILED. While the
+  // key is unchanged we must not re-attempt: a failed speculation is terminal
+  // until the user changes something (dates, listing) or explicitly retries.
+  const { failedKeyRef = null, speculateStatus = null } = options;
   const tx = pageData ? pageData.transaction : null;
   const pageDataListing = pageData.listing;
   const processName =
@@ -217,10 +251,39 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
       transactionId: tx?.id,
     });
 
+    // INSTRUMENTATION: name the fields that moved since the last attempt.
+    if (prevKeyRef.current !== specParams) {
+      console.log('[speculate-key] changed fields:', diffSpecKeys(prevKeyRef.current, specParams), {
+        prev: prevKeyRef.current,
+        next: specParams,
+      });
+    }
+
+    // TERMINAL FAILURE GUARD. `speculateStatus` is both a dependency of the
+    // effect that calls this and a value that this call sets ('running' ->
+    // 'failed'), so 'failed' used to re-satisfy the trigger condition and the
+    // cycle sustained itself at the request round-trip rate (~900ms). A failed
+    // speculation is now terminal for its key: only a change to the key
+    // (different dates/listing) or an explicit user retry starts a new attempt.
+    if (failedKeyRef && failedKeyRef.current === specParams) {
+      console.log('[speculate] suppressed retry — this exact request already failed', {
+        specParams,
+        speculateStatus,
+      });
+      return;
+    }
+    if (speculateStatus === 'failed' && failedKeyRef) {
+      // Record which request failed so the guard above can catch the re-entry
+      // even when the failure arrives before the next render.
+      failedKeyRef.current = specParams;
+      console.log('[speculate] marking failed key as terminal', { specParams });
+      return;
+    }
+
     // Only fetch if the key has changed (prevents loops)
     if (prevKeyRef.current !== specParams) {
       prevKeyRef.current = specParams;
-      
+
       const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
       const transactionId = tx ? tx.id : null;
       const isInquiryInPaymentProcess =
@@ -269,6 +332,8 @@ const fetchSpeculatedTransactionIfNeeded = (orderParams, pageData, fetchSpeculat
  * based on this initial data.
  */
 export const loadInitialDataForStripePayments = ({
+  speculateKeyRef,
+  failedSpeculateKeyRef,
   pageData,
   fetchSpeculatedTransaction,
   fetchStripeCustomer,
@@ -283,9 +348,18 @@ export const loadInitialDataForStripePayments = ({
   const optionalPaymentParams = {};
   const orderParams = getOrderParams(pageData, shippingDetails, optionalPaymentParams, config);
 
-  // Use a more robust guard to prevent duplicate calls
-  const prevKeyRef = { current: null };
-  fetchSpeculatedTransactionIfNeeded(orderParams, pageData, fetchSpeculatedTransaction, prevKeyRef);
+  // The dedupe guard must be a ref OWNED BY THE COMPONENT. This used to be a
+  // fresh `{ current: null }` created on every call, so `current` was always
+  // null and the "only fetch if the key changed" check below could never
+  // suppress anything. The caller now passes its `useRef`, so this path and
+  // the effect-driven path share one key and can't double-fire.
+  fetchSpeculatedTransactionIfNeeded(
+    orderParams,
+    pageData,
+    fetchSpeculatedTransaction,
+    speculateKeyRef,
+    { failedKeyRef: failedSpeculateKeyRef }
+  );
 };
 
 const handleSubmit = async (values, process, props, stripe, submitting, setSubmitting, contactEmail, contactPhone, elements, paymentElementComplete, stripePaymentIntentClientSecret, cardElementRef) => {
@@ -749,6 +823,10 @@ export const CheckoutPageWithPayment = props => {
   
   // Ref to prevent speculative transaction loops
   const prevSpecKeyRef = useRef(null);
+  // Holds the specParams of the most recent FAILED speculation. While the key
+  // is unchanged, no further attempt is made — a failed speculation is
+  // terminal until the user changes the request or retries explicitly.
+  const failedSpecKeyRef = useRef(null);
   // Ref to throttle disabled gates logging
   const lastReasonRef = useRef(null);
 
@@ -837,15 +915,23 @@ export const CheckoutPageWithPayment = props => {
       return;
     }
 
-    // Only trigger speculation if we don't have a valid tx and we're not currently running
-    // This allows retry after failure
+    // Trigger speculation only when we have no valid tx and none is in flight.
+    //
+    // This used to carry the comment "This allows retry after failure", which
+    // is exactly what made it loop: `speculateStatus` is in this effect's
+    // dependency list AND is set by the request this effect fires, so
+    // 'failed' re-satisfied the condition and re-fired immediately — about
+    // once per request round-trip, forever, with 4 Sharetribe calls per pass.
+    // `fetchSpeculatedTransactionIfNeeded` now treats a failure as terminal
+    // for that request's key; retrying requires a user action.
     if (!hasSpeculativeTx && speculateStatus !== 'running') {
       const orderParams = getOrderParams(pageData, {}, {}, config, {});
       fetchSpeculatedTransactionIfNeeded(
         orderParams,
         pageData,
         props.fetchSpeculatedTransaction,
-        prevSpecKeyRef // <-- use the stable ref
+        prevSpecKeyRef, // <-- use the stable ref
+        { failedKeyRef: failedSpecKeyRef, speculateStatus }
       );
     }
     // depend on listingId and bookingDates, so speculation triggers when data is ready
@@ -1004,6 +1090,13 @@ export const CheckoutPageWithPayment = props => {
 
   // Handler for retrying speculation after failure
   const handleRetrySpeculation = useCallback(() => {
+    // This is THE user action that clears the terminal-failure state. Reset
+    // both keys so the automatic path is armed again for this request; without
+    // this the reset would only work by accident, because `onReSpeculate`
+    // happens to bypass `fetchSpeculatedTransactionIfNeeded`.
+    failedSpecKeyRef.current = null;
+    prevSpecKeyRef.current = null;
+
     const orderParams = getOrderParams(pageData, {}, {}, config, {});
     const processAlias = pageData.listing.attributes.publicData?.transactionProcessAlias;
     const transactionId = existingTransaction ? existingTransaction.id : null;
