@@ -520,9 +520,15 @@ const OrderPanel = props => {
               history,
               location
             )}
-            disabled={isOutOfStock}
+            // The mobile CTA opens the panel that holds the booking form. When the
+            // lender has no Stripe account that form is replaced by a notice, so an
+            // enabled "Book now" here promises something the panel cannot deliver.
+            // Instagram traffic is overwhelmingly mobile, so this is the primary path.
+            disabled={isOutOfStock || !providerCanBeBooked}
           >
-            {isBooking ? (
+            {isBooking && !providerCanBeBooked ? (
+              <FormattedMessage id="OrderPanel.ctaButtonMessageNotBookable" />
+            ) : isBooking ? (
               <FormattedMessage id="OrderPanel.ctaButtonMessageBooking" />
             ) : isOutOfStock ? (
               <FormattedMessage id="OrderPanel.ctaButtonMessageNoStock" />
