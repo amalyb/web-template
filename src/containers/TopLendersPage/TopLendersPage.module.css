@@ -16,11 +16,10 @@
 }
 
 .headerTitle {
-  font-family: -apple-system, "system-ui", Inter, Helvetica, Arial, sans-serif, 
-    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  /* Editorial (brand) page title: font, weight, tracking and line-height come from the
+     global .editorialHeading class (Sherbrt typography tokens). */
+  composes: editorialHeading from global;
   font-size: 32px;
-  font-weight: 700;
-  line-height: 42.56px;
   color: rgb(25, 25, 26);
   text-align: center;
   margin: 0 0 1rem 0;

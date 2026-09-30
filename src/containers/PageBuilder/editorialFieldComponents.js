@@ -1,4 +1,18 @@
+import React from 'react';
+import { Helmet } from 'react-helmet-async';
 import { EditorialH1, EditorialH2 } from './Primitives/Heading';
+
+export const EDITORIAL_FONT_URL = '/static/fonts/bodoni-moda-latin-opsz-normal.woff2';
+
+/**
+ * Preloads the editorial font. Render it on pages that use editorial typography,
+ * so the font isn't downloaded on pages that don't.
+ */
+export const EditorialFontPreload = () => (
+  <Helmet>
+    <link rel="preload" href={EDITORIAL_FONT_URL} as="font" type="font/woff2" crossOrigin="anonymous" />
+  </Helmet>
+);
 
 // Same behavior as the pickers in ./Field/Field.helpers. Kept local so importing this
 // mapping from a page (e.g. LandingPage) doesn't pull the rest of Field.helpers into that chunk.
