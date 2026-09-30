@@ -51,6 +51,23 @@ export const H2 = React.forwardRef((props, ref) => {
 H2.displayName = 'H2';
 
 /**
+ * Editorial (brand) variants of H1 and H2. Same semantic element and sizes as H1/H2,
+ * but rendered with the editorial typography tokens. Opt-in only: used for marketing
+ * pages via PageBuilder options.fieldComponents (see editorialFieldComponents.js).
+ */
+export const EditorialH1 = React.forwardRef((props, ref) => {
+  const { className, ...otherProps } = props;
+  return <H1 className={classNames(css.editorial, className)} ref={ref} {...otherProps} />;
+});
+EditorialH1.displayName = 'EditorialH1';
+
+export const EditorialH2 = React.forwardRef((props, ref) => {
+  const { className, ...otherProps } = props;
+  return <H2 className={classNames(css.editorial, className)} ref={ref} {...otherProps} />;
+});
+EditorialH2.displayName = 'EditorialH2';
+
+/**
  * Render a h3 heading element
  *
  * @component

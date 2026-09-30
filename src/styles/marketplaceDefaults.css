@@ -71,8 +71,21 @@
   --colorSecondaryButtonLight: var(--colorWhite);
 
   /* ================ Font ================ */
-  --fontFamily: -apple-system, BlinkMacSystemFont, 'Inter', Helvetica, Arial, sans-serif,
+  /* UI / commerce layer: Inter first (loaded in public/index.html), system fonts as fallback */
+  --fontFamilyUI: 'Inter', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif,
     'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --fontFamily: var(--fontFamilyUI);
+
+  /* Editorial / brand layer: OPT-IN only (see .editorialHeading and the PageBuilder
+     Heading "editorial" variant). Never applied to headings globally. */
+  --fontFamilyEditorial: 'Bodoni Moda', 'Bodoni 72', Didot, Georgia, serif;
+  --fontWeightEditorial: 400;
+  --letterSpacingEditorial: -0.01em;
+  --lineHeightEditorial: 1.12;
+
+  /* Navigation labels (desktop topbar) */
+  --fontSizeNavLabel: 12px;
+  --letterSpacingNavLabel: 0.08em;
 
   --fontWeightRegular: 400;
   --fontWeightMedium: 500;
@@ -370,7 +383,7 @@ li,
 p,
 pre {
   font-family: var(--fontFamily);
-  font-weight: var(--fontWeightMedium);
+  font-weight: var(--fontWeightRegular);
 
   /* No margins for default font */
   font-size: 14px;
@@ -378,7 +391,7 @@ pre {
   padding: 0;
 
   @media (--viewportMedium) {
-    font-size: 16px;
+    font-size: 15px;
     line-height: 24px;
     padding: 5px 0 3px 0;
   }
@@ -752,7 +765,7 @@ textarea {
 .marketplaceBodyFontStyles,
 .marketplaceDefaultFontStyles {
   font-family: var(--fontFamily);
-  font-weight: var(--fontWeightMedium);
+  font-weight: var(--fontWeightRegular);
 
   /* No margins for default font */
   font-size: 14px;
@@ -760,7 +773,7 @@ textarea {
   padding: 0;
 
   @media (--viewportMedium) {
-    font-size: 16px;
+    font-size: 15px;
     line-height: 24px;
     padding: 5px 0 3px 0;
   }
@@ -804,6 +817,31 @@ textarea {
   font-size: 13px;
   line-height: 18px;
   font-weight: var(--fontWeightMedium);
+
+  @media (--viewportMedium) {
+    line-height: 16px;
+  }
+}
+
+/* ================ Sherbrt typography layers ================ */
+
+/* Editorial / brand headline. Opt-in: add to any marketing heading. */
+.editorialHeading {
+  font-family: var(--fontFamilyEditorial);
+  font-weight: var(--fontWeightEditorial);
+  letter-spacing: var(--letterSpacingEditorial);
+  line-height: var(--lineHeightEditorial);
+  text-wrap: pretty;
+}
+
+/* Fashion-commerce navigation label (uppercase, tracked, restrained) */
+.navLabel {
+  font-family: var(--fontFamilyUI);
+  font-weight: var(--fontWeightMedium);
+  font-size: var(--fontSizeNavLabel);
+  line-height: 18px;
+  letter-spacing: var(--letterSpacingNavLabel);
+  text-transform: uppercase;
 
   @media (--viewportMedium) {
     line-height: 16px;
@@ -985,7 +1023,7 @@ textarea {
   /*
    * Font: most font styles are defined earlier in this file
    */
-  font-weight: var(--fontWeightSemiBold);
+  font-weight: var(--fontWeightMedium);
 
   /* Button text styles */
   /* Default button text is centered without decorations */
@@ -1036,7 +1074,7 @@ textarea {
   /*
    * Font: most font styles are defined earlier in this file
    */
-  font-weight: var(--fontWeightSemiBold);
+  font-weight: var(--fontWeightMedium);
 
   /* Button text styles */
   /* Primary button text is centered without decorations */
@@ -1140,7 +1178,7 @@ textarea {
   /*
    * Font: most font styles are defined earlier in this file
    */
-  font-weight: var(--fontWeightSemiBold);
+  font-weight: var(--fontWeightMedium);
 
   /* Button text styles */
   /* Secondary button text is centered without decorations */

@@ -108,7 +108,7 @@
 .title {
   /* Font */
   composes: textSmall from global;
-  font-weight: var(--fontWeightBold);
+  font-weight: var(--fontWeightSemiBold);
   color: var(--colorGrey700);
   margin: 0;
 }

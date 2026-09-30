@@ -44,7 +44,7 @@
 }
 
 .priorityLinkLabel {
-  composes: textSmall from global;
+  composes: navLabel from global;
   display: inline-block;
   margin: 28px 0;
   text-decoration: inherit;
