@@ -101,3 +101,21 @@
     margin-top: 8px;
   }
 }
+
+/* Editorial variant (opt-in via EditorialH1 / EditorialH2).
+ * Declared last in this file so it overrides the default .h1/.h2 weight and spacing.
+ * Values come from the global editorial tokens in src/styles/marketplaceDefaults.css. */
+.editorial {
+  font-family: var(--fontFamilyEditorial);
+  font-weight: var(--fontWeightEditorial);
+  letter-spacing: var(--letterSpacingEditorial);
+  line-height: var(--lineHeightEditorial);
+  /* "pretty" avoids awkward breaks such as a line starting with an em dash */
+  text-wrap: pretty;
+  hyphens: manual;
+}
+
+/* Short display headlines (hero H1) read best balanced, as H1 already is by default */
+.h1.editorial {
+  text-wrap: balance;
+}

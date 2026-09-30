@@ -25,15 +25,12 @@
 }
 
 .linkMenuLabel {
+  composes: navLabel from global;
   flex-shrink: 0;
 
   border-bottom: 0px solid;
   transition: var(--transitionStyleButton);
 
-  font-weight: var(--fontWeightMedium);
-  font-size: 14px;
-  line-height: 18px;
-  letter-spacing: 0;
   color: var(--colorGrey700);
 
   display: inline;
