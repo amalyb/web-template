@@ -80,7 +80,7 @@
      Heading "editorial" variant). Never applied to headings globally. */
   --fontFamilyEditorial: 'Bodoni Moda', 'Bodoni 72', Didot, Georgia, serif;
   --fontWeightEditorial: 400;
-  --letterSpacingEditorial: -0.01em;
+  --letterSpacingEditorial: 0em;
   --lineHeightEditorial: 1.12;
 
   /* Navigation labels (desktop topbar) */

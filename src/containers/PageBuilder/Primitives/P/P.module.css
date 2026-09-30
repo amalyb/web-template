@@ -1,9 +1,17 @@
+@import '../../../../styles/customMediaQueries.css';
+
 .p {
   max-width: 80ch;
   line-height: 1.66;
   margin-top: 0;
   margin-bottom: 0;
   letter-spacing: 0;
+
+  /* Page Builder (marketing/content) body copy stays 16px on desktop, even though the
+     global UI paragraph size is 15px there. Mobile inherits the global 14px as before. */
+  @media (--viewportMedium) {
+    font-size: 16px;
+  }
 
   /* Handle margin-top of next adjacent element against this p element */
   & + p,
