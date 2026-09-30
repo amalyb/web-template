@@ -1,6 +1,5 @@
 import React from 'react';
 import loadable from '@loadable/component';
-import { Helmet } from 'react-helmet-async';
 
 import { bool, object } from 'prop-types';
 import { compose } from 'redux';
@@ -11,7 +10,10 @@ import { propTypes } from '../../util/types';
 
 import FallbackPage from './FallbackPage';
 import { ASSET_NAME } from './LandingPage.duck';
-import { editorialFieldComponents } from '../PageBuilder/editorialFieldComponents';
+import {
+  editorialFieldComponents,
+  EditorialFontPreload,
+} from '../PageBuilder/editorialFieldComponents';
 
 const PageBuilder = loadable(() =>
   import(/* webpackChunkName: "PageBuilder" */ '../PageBuilder/PageBuilder')
@@ -20,23 +22,13 @@ const PageBuilder = loadable(() =>
 // The landing page opts into editorial (brand) typography for its Console-managed
 // heading1/heading2 fields. Other Page Builder pages keep the default UI headings.
 const pageBuilderOptions = { fieldComponents: editorialFieldComponents };
-const EDITORIAL_FONT_URL = '/static/fonts/bodoni-moda-latin-opsz-normal.woff2';
 
 export const LandingPageComponent = props => {
   const { pageAssetsData, inProgress, error } = props;
 
   return (
     <>
-      <Helmet>
-        {/* Editorial font is only used on this page, so it's only preloaded here */}
-        <link
-          rel="preload"
-          href={EDITORIAL_FONT_URL}
-          as="font"
-          type="font/woff2"
-          crossOrigin="anonymous"
-        />
-      </Helmet>
+      <EditorialFontPreload />
       <PageBuilder
         pageAssetsData={pageAssetsData?.[camelize(ASSET_NAME)]?.data}
         inProgress={inProgress}
