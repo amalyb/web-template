@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, pickCheapestPreferredRate } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, applyShipByFloor, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, pickCheapestPreferredRate } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink, orderUrl, saleUrl } = require('../util/url');
@@ -913,7 +913,20 @@ async function createShippingLabels({
     {
       const rawTransit = Number(selectedRate?.estimated_days ?? selectedRate?.duration_terms);
       const transitDays = Number.isFinite(rawTransit) ? rawTransit : undefined;
+      const alreadyPersisted = !!transaction?.attributes?.protectedData?.outbound?.shipByDate;
       shipByDate = await computeShipByDate(transaction, { transitDays });
+      if (!alreadyPersisted) {
+        const floorResult = applyShipByFloor(shipByDate, new Date(timestamp()));
+        if (floorResult.floored) {
+          console.warn('[ship-by:floor] computed ship-by earlier than next business day after accept; using floor', {
+            txId,
+            computedISO: shipByDate?.toISOString?.() || null,
+            flooredISO: floorResult.shipByDate.toISOString(),
+            transitDays: transitDays ?? null,
+          });
+        }
+        shipByDate = floorResult.shipByDate;
+      }
       console.log('[ship-by:derived]', {
         transitDays: transitDays ?? null,
         shipByISO: shipByDate?.toISOString?.() || null,

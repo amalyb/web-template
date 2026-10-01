@@ -1,6 +1,6 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
-const { subtractBusinessDays } = require('./businessDays');
+const { subtractBusinessDays, nextBusinessDay } = require('./businessDays');
 
 // Buffer days added to `estimated_days` for shipBy derivation (10.0 PR-2).
 const SAFETY_BUFFER_DAYS = Number(process.env.SHIP_SAFETY_BUFFER || 1);
@@ -185,8 +185,14 @@ async function computeShipByDate(tx, opts = {}) {
   const start = new Date(startISO);
   if (Number.isNaN(+start)) return null;
 
-  // Normalize to UTC midnight to avoid timezone shifts
-  start.setUTCHours(0, 0, 0, 0);
+  // Resolve the booking's CALENDAR start date. Booking starts are stored as
+  // PT midnight (e.g. 2026-10-07T07:00Z for Oct 7). The previous code did
+  // `start.setUTCHours(0,0,0,0)`, which turned that into 2026-10-07T00:00Z
+  // = Oct 6 5 PM PT, so subtractBusinessDays (PT-based) started counting
+  // from the day BEFORE the booking and every lender got one extra lead
+  // day. Shifting +12h lands mid-day on the intended calendar date whether
+  // the start is stored as PT midnight or UTC midnight.
+  const calendarStart = new Date(start.getTime() + 12 * 60 * 60 * 1000);
 
   // Caller-provided transitDays (from selected Shippo rate) is the
   // authoritative path. Without it, fall back to static LEAD_FLOOR for
@@ -198,7 +204,7 @@ async function computeShipByDate(tx, opts = {}) {
 
   // subtractBusinessDays returns a dayjs object in PT; convert to native
   // Date before handing off to adjustIfSundayUTC (which uses Date.getUTCDay).
-  const shipByDayjs = subtractBusinessDays(start, leadDays);
+  const shipByDayjs = subtractBusinessDays(calendarStart, leadDays);
   const shipBy = shipByDayjs.toDate();
 
   // Existing Sunday → Saturday adjust preserved as belt-and-suspenders —
@@ -217,6 +223,48 @@ async function computeShipByDate(tx, opts = {}) {
   });
 
   return adjusted;
+}
+
+/**
+ * Ship-by floor: the lender always gets at least until the end of the next
+ * business day after acceptance (PT; Saturday counts, Sunday/USPS holidays
+ * don't). Applied only when a ship-by is freshly derived at label purchase —
+ * NOT inside computeShipByDate, because the reminder cron also calls that and
+ * must not have stale transactions pulled forward.
+ *
+ * @param {Date|null} shipByDate - computed ship-by (PT start-of-day)
+ * @param {Date} [now]
+ * @returns {{ shipByDate: Date|null, floored: boolean }}
+ */
+function applyShipByFloor(shipByDate, now = new Date()) {
+  if (!shipByDate) return { shipByDate, floored: false };
+  const floor = nextBusinessDay(now).toDate();
+  if (shipByDate.getTime() < floor.getTime()) {
+    return { shipByDate: floor, floored: true };
+  }
+  return { shipByDate, floored: false };
+}
+
+// Minimum hours between lender acceptance and the "ship by" reminder SMS.
+const REMINDER_MIN_HOURS_AFTER_ACCEPT = Number(
+  process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT || 12
+);
+
+/**
+ * True when the lender accepted too recently for a "Reminder: please ship"
+ * SMS to make sense (they just got the label-ready SMS). The cron retries
+ * every poll, so a suppressed reminder simply goes out later — typically the
+ * morning of the ship-by day once quiet hours end.
+ *
+ * @param {Date|string|null} acceptedAt
+ * @param {Date} [now]
+ * @param {number} [minHours]
+ */
+function isTooSoonAfterAccept(acceptedAt, now = new Date(), minHours = REMINDER_MIN_HOURS_AFTER_ACCEPT) {
+  if (!acceptedAt) return false;
+  const t = new Date(acceptedAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return now.getTime() - t < minHours * 60 * 60 * 1000;
 }
 
 /**
@@ -528,7 +576,9 @@ async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
     // servicelevel so the checkout-time caller can lock the exact rate
     // into protectedData.{outbound,return}.lockedRate and the accept flow
     // can purchase by object_id.
-    const estimatedDaysRaw = Number(chosen.estimated_days ?? chosen.duration_terms);
+    // Modern Shippo SDK returns camelCase (`estimatedDays`); REST returns
+    // snake_case. Reading only snake_case made lockedRate.estimatedDays null.
+    const estimatedDaysRaw = Number(chosen.estimatedDays ?? chosen.estimated_days);
     const result = {
       amountCents: Math.round(parseFloat(chosen.amount) * 100),
       currency: chosen.currency || 'USD',
@@ -825,6 +875,8 @@ module.exports = {
   shippo,
   computeShipBy,
   computeShipByDate,
+  applyShipByFloor,
+  isTooSoonAfterAccept,
   formatShipBy,
   getBookingStartISO,
   resolveZipsFromTx,

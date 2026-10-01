@@ -31,7 +31,7 @@ try {
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
 const { withinSendWindow } = require('../util/time');
-const { computeShipByDate, formatShipBy } = require('../lib/shipping');
+const { computeShipByDate, formatShipBy, isTooSoonAfterAccept } = require('../lib/shipping');
 const { getRedis } = require('../redis');
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -457,7 +457,11 @@ async function sendShippingReminders() {
       }
       const isIn24hWindow = nowMs >= reminderAt.getTime() && nowMs < shipByMs;
       if (isIn24hWindow) {
-        if (await isSent(redis, txId, '24h')) {
+        if (isTooSoonAfterAccept(acceptedAt, now)) {
+          // Lender just accepted and got the label-ready SMS; don't follow it
+          // with a "Reminder" minutes later. Retried on later polls.
+          if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — accepted too recently`);
+        } else if (await isSent(redis, txId, '24h')) {
           if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — already sent`);
         } else if (await isInFlight(redis, txId, '24h')) {
           if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — inFlight`);

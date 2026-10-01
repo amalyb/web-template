@@ -198,12 +198,30 @@ function subtractBusinessDays(fromDate, n, opts = {}) {
   return d;
 }
 
+/**
+ * Next shipping business day strictly AFTER `fromDate` (PT calendar).
+ * Skips Sundays and USPS holidays; Saturday counts (post offices open).
+ * Used as the floor for ship-by so a lender always gets at least one full
+ * day after accepting.
+ *
+ * @param {Date|string|dayjs.Dayjs} fromDate
+ * @returns {dayjs.Dayjs} start-of-day PT
+ */
+function nextBusinessDay(fromDate) {
+  let d = dayjs(fromDate).tz(TZ).startOf('day');
+  do {
+    d = d.add(1, 'day');
+  } while (d.day() === 0 || USPS_HOLIDAYS.has(d.format('YYYY-MM-DD')));
+  return d;
+}
+
 module.exports = {
   TZ,
   ymd,
   isNonChargeableDate,
   computeChargeableLateDays,
   subtractBusinessDays,
+  nextBusinessDay,
   USPS_HOLIDAYS,
   USPS_HOLIDAYS_EXPIRES_AT,
   NON_CHARGEABLE_WEEKDAYS,
