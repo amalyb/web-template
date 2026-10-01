@@ -593,7 +593,7 @@ async function createShippingLabels({
         // Surface to ops via the existing OPS_ALERT_EMAIL channel.
         try {
           await sendTransactionalEmail({
-            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
             subject: `[Sherbrt] Label blocked — ${reason} (tx ${txId?.slice(0, 8)})`,
             text: [
               `Label creation was blocked because USPS rejected the ${failedSide} address.`,
@@ -817,7 +817,7 @@ async function createShippingLabels({
 
         try {
           await sendTransactionalEmail({
-            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
             subject: `[Sherbrt] Label blocked — unprintable_at_accept (tx ${txId?.slice(0, 8)})`,
             text: [
               `Outbound label was blocked because the checkout-locked service-level (${lockedDesc}) is no longer offered for this shipment.`,
@@ -863,7 +863,7 @@ async function createShippingLabels({
       if (deltaCents != null && Math.abs(deltaCents) >= LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS) {
         try {
           await sendTransactionalEmail({
-            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
             subject: `[Sherbrt] Re-rate amount delta $${(deltaCents / 100).toFixed(2)} (tx ${txId?.slice(0, 8)})`,
             text: [
               `Outbound re-rate at accept produced a price delta of ${deltaCents} cents (>= ${LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS}c threshold).`,
@@ -1507,7 +1507,7 @@ async function createShippingLabels({
 
             try {
               await sendTransactionalEmail({
-                to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                 subject: `[Sherbrt] Return label blocked — ${reason} (tx ${txId?.slice(0, 8)})`,
                 text: [
                   `Return-label creation was blocked because USPS rejected the ${retFailedSide} address.`,
@@ -1686,7 +1686,7 @@ async function createShippingLabels({
 
               try {
                 await sendTransactionalEmail({
-                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Return label blocked — unprintable_at_accept (tx ${txId?.slice(0, 8)})`,
                   text: [
                     `Return-label was blocked because the checkout-locked return service-level (${lockedDesc}) is no longer offered for this shipment.`,
@@ -1730,7 +1730,7 @@ async function createShippingLabels({
             if (deltaCents != null && Math.abs(deltaCents) >= LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS) {
               try {
                 await sendTransactionalEmail({
-                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Return re-rate amount delta $${(deltaCents / 100).toFixed(2)} (tx ${txId?.slice(0, 8)})`,
                   text: [
                     `Return re-rate at accept produced a price delta of ${deltaCents} cents (>= ${LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS}c threshold).`,

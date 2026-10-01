@@ -175,7 +175,7 @@ async function fireOpsAlertSafely({ subject, text }) {
     // Lazy require to avoid circular imports and to let tests skip wiring.
     const { sendTransactionalEmail } = require('../email/emailClient');
     await sendTransactionalEmail({
-      to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+      to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
       subject,
       text,
     });
