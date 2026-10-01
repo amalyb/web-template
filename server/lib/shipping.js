@@ -1,6 +1,6 @@
 // server/lib/shipping.js
 const { haversineMiles, geocodeZip } = require('./geo');
-const { subtractBusinessDays, nextBusinessDay } = require('./businessDays');
+const { subtractBusinessDays, nextBusinessDay, addBusinessDays, ymd } = require('./businessDays');
 
 // Buffer days added to `estimated_days` for shipBy derivation (10.0 PR-2).
 const SAFETY_BUFFER_DAYS = Number(process.env.SHIP_SAFETY_BUFFER || 1);
@@ -245,10 +245,45 @@ function applyShipByFloor(shipByDate, now = new Date()) {
   return { shipByDate, floored: false };
 }
 
+/**
+ * Carrier transit estimate (days) from a Shippo rate, or null if unknown.
+ * Modern Shippo SDK returns camelCase (`estimatedDays`); the REST API
+ * returns snake_case (`estimated_days`). `duration_terms` is free text
+ * ("1-5 business days") and is intentionally not parsed. null/undefined
+ * stay null (Number(null) would otherwise become 0 transit days).
+ */
+function rateEstimatedDays(rate) {
+  const raw = rate?.estimatedDays ?? rate?.estimated_days;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+/**
+ * When the floor was applied, check whether shipping on the floored date
+ * still arrives by the booking start. Returns null when there's no risk
+ * (or not enough data to tell).
+ *
+ * @returns {null|{ arrivalYmd: string, startYmd: string, late: boolean, noBuffer: boolean }}
+ */
+function assessFloorLateRisk({ shipByDate, transitDays, bookingStartISO }) {
+  if (!shipByDate || !bookingStartISO || transitDays == null) return null;
+  const startMs = new Date(bookingStartISO).getTime();
+  if (Number.isNaN(startMs)) return null;
+  const startYmd = ymd(new Date(startMs + 12 * 60 * 60 * 1000)); // calendar day, PT or UTC midnight
+  const arrivalYmd = addBusinessDays(shipByDate, transitDays).format('YYYY-MM-DD');
+  const late = arrivalYmd > startYmd;
+  const noBuffer = arrivalYmd === startYmd;
+  if (!late && !noBuffer) return null;
+  return { arrivalYmd, startYmd, late, noBuffer };
+}
+
 // Minimum hours between lender acceptance and the "ship by" reminder SMS.
-const REMINDER_MIN_HOURS_AFTER_ACCEPT = Number(
-  process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT || 12
-);
+// Non-numeric env values fall back to 12 rather than silently disabling.
+const REMINDER_MIN_HOURS_AFTER_ACCEPT = (() => {
+  const n = Number(process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT);
+  return process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT !== undefined && Number.isFinite(n) && n >= 0 ? n : 12;
+})();
 
 /**
  * True when the lender accepted too recently for a "Reminder: please ship"
@@ -576,14 +611,12 @@ async function estimateOneWay({ fromZip, toZip, parcel }, retryCount = 0) {
     // servicelevel so the checkout-time caller can lock the exact rate
     // into protectedData.{outbound,return}.lockedRate and the accept flow
     // can purchase by object_id.
-    // Modern Shippo SDK returns camelCase (`estimatedDays`); REST returns
-    // snake_case. Reading only snake_case made lockedRate.estimatedDays null.
-    const estimatedDaysRaw = Number(chosen.estimatedDays ?? chosen.estimated_days);
+    const estimatedDaysRaw = rateEstimatedDays(chosen);
     const result = {
       amountCents: Math.round(parseFloat(chosen.amount) * 100),
       currency: chosen.currency || 'USD',
       rateObjectId: chosen.object_id || chosen.objectId || null,
-      estimatedDays: Number.isFinite(estimatedDaysRaw) ? estimatedDaysRaw : null,
+      estimatedDays: estimatedDaysRaw,
       provider: chosen.provider || chosen.carrier || null,
       servicelevel: {
         name: chosen.servicelevel?.name || chosen.service?.name || null,
@@ -876,7 +909,9 @@ module.exports = {
   computeShipBy,
   computeShipByDate,
   applyShipByFloor,
+  assessFloorLateRisk,
   isTooSoonAfterAccept,
+  rateEstimatedDays,
   formatShipBy,
   getBookingStartISO,
   resolveZipsFromTx,

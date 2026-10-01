@@ -30,8 +30,9 @@ try {
 // getFlexSdk() automatically uses Integration SDK when INTEGRATION_CLIENT_ID/SECRET are set
 const getFlexSdk = require('../util/getFlexSdk');
 const { shortLink } = require('../api-util/shortlink');
-const { withinSendWindow } = require('../util/time');
-const { computeShipByDate, formatShipBy, isTooSoonAfterAccept } = require('../lib/shipping');
+const { withinSendWindow, getNow } = require('../util/time');
+const { computeShipByDate, formatShipBy } = require('../lib/shipping');
+const { decideShippingReminders } = require('../lib/shipByReminderTiming');
 const { getRedis } = require('../redis');
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -170,42 +171,7 @@ function formatDateForSMS(date) {
   }
 }
 
-/**
- * Check if we're at the end of the ship-by date (23:50 UTC or later)
- * Uses UTC for consistency and is robust to 15-minute cron intervals
- */
-function isEndOfShipByDay(shipByDate) {
-  if (!shipByDate) return false;
-
-  const now = new Date();
-  const shipBy = new Date(shipByDate);
-
-  // Normalize to UTC midnight for date-only comparison
-  shipBy.setUTCHours(0, 0, 0, 0);
-  const today = new Date(now);
-  today.setUTCHours(0, 0, 0, 0);
-
-  // Must be the ship-by date
-  if (shipBy.getTime() !== today.getTime()) {
-    return false;
-  }
-
-  // "End of day" window: 3 PM PT onward on the ship-by date — anchored to
-  // PT-local hour so DST doesn't drift the fire time. Previously this
-  // used `now.getUTCHours() >= 22` which equals 3 PM PDT (summer) but
-  // 2 PM PST (winter), firing ~1 hour early for half the year. v15
-  // spec is "evening of ship-by day (after ~3 PM PT / 6 PM ET)" — PT
-  // is the authoritative anchor.
-  const ptHour = parseInt(
-    now.toLocaleString('en-US', {
-      timeZone: 'America/Los_Angeles',
-      hour: '2-digit',
-      hour12: false,
-    }),
-    10
-  );
-  return ptHour >= 15;
-}
+// isEndOfShipByDay moved to lib/shipByReminderTiming.js (PT-calendar based).
 
 async function sendShippingReminders() {
   console.log('[shipping-reminder] Starting shipping reminder SMS script...');
@@ -232,9 +198,7 @@ async function sendShippingReminders() {
     
     console.log('[shipping-reminder] SDKs initialized');
     
-    const now = new Date();
-    const today = new Date(now);
-    today.setUTCHours(0, 0, 0, 0);
+    const now = getNow(); // respects FORCE_NOW for dry-run simulation
     
     // Query transactions whose last transition is one of the "in accepted
     // state" set. The previous `state: 'accepted'` filter is silently
@@ -353,28 +317,11 @@ async function sendShippingReminders() {
         continue;
       }
 
-      // Anchor shipBy time-of-day to when the lender accepted.
-      // shipByDate from Sharetribe is typically a bare date at 00:00 UTC —
-      // using that directly makes the 24h reminder fire at midnight UTC
-      // (= late evening US time). Instead, use outbound.acceptedAt's hour/
-      // minute so the reminder goes out at the same time-of-day the lender
-      // first engaged. Falls back to 15:00 UTC (~11am ET / 8am PT) if
-      // acceptedAt is missing — a reasonable daytime default.
+      // Reminder timing (PT-calendar based; see lib/shipByReminderTiming.js).
       const acceptedAtRaw = outbound.acceptedAt || metadata.acceptedAt;
       const acceptedAt = acceptedAtRaw ? new Date(acceptedAtRaw) : null;
-      const shipBy = new Date(shipByDate);
-      if (acceptedAt && !Number.isNaN(+acceptedAt)) {
-        shipBy.setUTCHours(
-          acceptedAt.getUTCHours(),
-          acceptedAt.getUTCMinutes(),
-          0,
-          0
-        );
-      } else {
-        // Daytime default: 15:00 UTC = 11am EDT / 8am PDT
-        shipBy.setUTCHours(15, 0, 0, 0);
-      }
-      
+      const timing = decideShippingReminders({ shipByDate, acceptedAt, now });
+
       // Get provider phone — per-booking phone wins over account phone.
       // Precedence:
       //   1. tx.protectedData.providerPhone   (booking-specific, written at accept)
@@ -441,26 +388,15 @@ async function sendShippingReminders() {
       
       const shipByStr = formatDateForSMS(shipByDate);
 
-      const nowMs = now.getTime();
-      const shipByMs = shipBy.getTime();
-
-
-      // 1. 24-hour before ship-by reminder
-      // Normally the anchor is (shipBy - 24h). Mirror shipping.adjustIfSundayUTC:
-      // if that anchor lands on Sunday, roll back to Saturday same time-of-day
-      // so lenders aren't nudged on a day mail can't move. shipBy itself is
-      // already adjusted off Sunday upstream, so this branch only fires when
-      // shipBy is a Monday (→ natural anchor Sunday → shifted to Saturday).
-      let reminderAt = new Date(shipByMs - 24 * 60 * 60 * 1000);
-      if (reminderAt.getUTCDay() === 0) {
-        reminderAt = new Date(reminderAt.getTime() - 24 * 60 * 60 * 1000);
-      }
-      const isIn24hWindow = nowMs >= reminderAt.getTime() && nowMs < shipByMs;
-      if (isIn24hWindow) {
-        if (isTooSoonAfterAccept(acceptedAt, now)) {
-          // Lender just accepted and got the label-ready SMS; don't follow it
-          // with a "Reminder" minutes later. Retried on later polls.
-          if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — accepted too recently`);
+      // 1. 24-hour before ship-by reminder (window rolled back off Sunday;
+      //    deferred within SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT of accept and
+      //    on PT Sundays — the cron retries every poll).
+      if (timing.in24hWindow) {
+        if (timing.tooSoonAfterAccept || timing.sundayHold) {
+          console.log(`[shipping-reminder] Defer 24h for tx ${txId}`, {
+            reason: timing.tooSoonAfterAccept ? 'accepted-too-recently' : 'sunday',
+            acceptedAt: acceptedAt ? acceptedAt.toISOString() : null,
+          });
         } else if (await isSent(redis, txId, '24h')) {
           if (VERBOSE) console.log(`[shipping-reminder] Skip 24h for tx ${txId} — already sent`);
         } else if (await isInFlight(redis, txId, '24h')) {
@@ -500,10 +436,8 @@ async function sendShippingReminders() {
       }
       
       // 2. End-of-ship-by-day "not scanned" alert
-      // Compare date-only (shipBy now has time-of-day from acceptedAt anchor)
-      const shipByDay = new Date(shipBy); shipByDay.setUTCHours(0, 0, 0, 0);
-      const isShipByDay = shipByDay.getTime() === today.getTime();
-      if (isShipByDay && isEndOfShipByDay(shipByDate)) {
+      // PT ship-by day, 3 PM PT onward.
+      if (timing.dueEndOfDay) {
         if (await isSent(redis, txId, 'eod')) {
           if (VERBOSE) console.log(`[shipping-reminder] Skip end-of-day for tx ${txId} — already sent`);
         } else if (await isInFlight(redis, txId, 'eod')) {

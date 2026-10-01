@@ -161,3 +161,28 @@ describe('computeShipByDate — counts back from the booking calendar day', () =
     expect(r.toISOString()).toBe('2026-10-03T07:00:00.000Z');
   });
 });
+
+describe('computeShipByDate — more start formats, DST, holidays', () => {
+  let logSpy;
+  beforeEach(() => { logSpy = jest.spyOn(console, 'log').mockImplementation(() => {}); });
+  afterEach(() => { logSpy.mockRestore(); });
+
+  test('Monday start: PT, UTC and ET midnight all give the same ship-by', async () => {
+    const shapes = ['2026-10-05T07:00:00.000Z', '2026-10-05T00:00:00.000Z', '2026-10-05T04:00:00.000Z'];
+    const out = [];
+    for (const s of shapes) out.push((await computeShipByDate(makeTx({ bookingStartISO: s }), { transitDays: 2 })).toISOString());
+    // Mon Oct 5 − 3 BD: Sat 3 (1), Fri 2 (2), Thu 1 (3)
+    expect(new Set(out)).toEqual(new Set(['2026-10-01T07:00:00.000Z']));
+  });
+
+  test('Thanksgiving inside the window: start Fri Nov 27, 2 transit → Mon Nov 23 (PST)', async () => {
+    const r = await computeShipByDate(makeTx({ bookingStartISO: '2026-11-27T08:00:00.000Z' }), { transitDays: 2 });
+    expect(r.toISOString()).toBe('2026-11-23T08:00:00.000Z');
+  });
+
+  test('across fall-back: start Wed Nov 4, 2 transit → Sat Oct 31 PDT midnight', async () => {
+    // Tue 3 (1), Mon 2 (2), Sat Oct 31 (3) [skip Sun Nov 1]
+    const r = await computeShipByDate(makeTx({ bookingStartISO: '2026-11-04T08:00:00.000Z' }), { transitDays: 2 });
+    expect(r.toISOString()).toBe('2026-10-31T07:00:00.000Z');
+  });
+});

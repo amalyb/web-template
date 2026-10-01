@@ -264,6 +264,7 @@ See `.env.example` for the full list. Critical ones:
 | `LINK_SECRET` | Shortlink HMAC secret |
 | `REACT_APP_MARKETPLACE_ROOT_URL` | Public URL |
 | `SHIP_SAFETY_BUFFER` | Buffer days added to Shippo's `estimated_days` when computing ship-by. Default `1`. Only used when deriving shipByDate from a Shippo rate (10.0 PR-2). |
+| `SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT` | Lender Shipping Reminders cron: defer the 24h "Reminder: please ship" SMS until this many hours after `outbound.acceptedAt`. Default `12`; non-numeric falls back to 12. |
 | `SHIP_LEAD_DAYS` | Fallback lead-days value when no Shippo rate is available (outage, manual cron invocation, pre-10.0 tx). Default `2`. Before 10.0 this was the primary path; now demoted to fallback only. |
 
 ## Checkout Flow (Known Fix)

@@ -102,7 +102,11 @@ services:
   # time (10.0 PR-3) — no longer recomputes per-cron with its own
   # `SHIP_LEAD_DAYS` env var (env-drift class of bug eliminated).
   # Per-phase Redis dedupe keys: shippingReminder:{txId}:{24h|eod}:sent.
-  # 24h reminder anchored to outbound.acceptedAt time-of-day, not UTC midnight.
+  # 24h reminder anchored to outbound.acceptedAt PT time-of-day on the PT
+  # ship-by day; "not scanned" alert fires 3 PM PT onward on the PT ship-by
+  # day (lib/shipByReminderTiming.js). Optional env:
+  #   SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT (default 12) — 24h reminder is
+  #   deferred until this many hours after accept (and never sent on Sunday).
   # B3 deletion (April 21 2026): the legacy 48h auto-cancel branch in this
   # script is gone — sendAutoCancelUnshipped.js owns cancel policy now.
   # Integration SDK credentials (INTEGRATION_CLIENT_ID/SECRET) and Twilio
