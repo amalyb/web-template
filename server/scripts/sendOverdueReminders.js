@@ -250,7 +250,7 @@ async function sendLateFeeDigest(events) {
 
   try {
     await sendTransactionalEmail({
-      to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+      to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
       subject: `[Sherbrt] Late-fee digest ${ymdToday} — $${totalDollars} (${chargedEvents.length} charged)`,
       text: lines.join('\n'),
     });
@@ -908,7 +908,7 @@ async function sendOverdueReminders() {
 
               if (!DRY_RUN) {
                 sendTransactionalEmail({
-                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Day-6 overdue — manual replacement decision needed (tx ${tx?.id?.uuid?.slice(0, 8) || '??'})`,
                   text: emailBody,
                 }).catch(err => {

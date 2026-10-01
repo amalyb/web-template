@@ -182,20 +182,66 @@ function computeChargeableLateDays(refDate, returnDate) {
  *   Callers that need a native Date must call `.toDate()` on the result
  *   (see the computeShipByDate consumer in server/lib/shipping.js).
  */
+// DST-safe calendar stepping. Calling dayjs .add/.subtract on a
+// tz-aware value across a DST change keeps the old UTC offset, producing
+// 07:00Z (11 PM PST the previous day) instead of 08:00Z. We step on plain
+// UTC calendar dates (no DST) and rebuild PT midnight from the YMD string.
+function ptCalendarYmd(fromDate) {
+  return dayjs(fromDate).tz(TZ).format('YYYY-MM-DD');
+}
+function stepYmd(ymdStr, deltaDays) {
+  return dayjs.utc(ymdStr).add(deltaDays, 'day').format('YYYY-MM-DD');
+}
+function isShipDay(ymdStr, { skipSaturday = false } = {}) {
+  const dow = dayjs.utc(ymdStr).day(); // 0 = Sun
+  if (dow === 0) return false;
+  if (skipSaturday && dow === 6) return false;
+  return !USPS_HOLIDAYS.has(ymdStr);
+}
+function ptMidnight(ymdStr) {
+  return dayjs.tz(ymdStr, TZ);
+}
+
+/**
+ * Subtract n shipping business days from fromDate's PT calendar day.
+ * Skips Sundays and USPS holidays (and Saturdays if skipSaturday).
+ * @returns {dayjs.Dayjs} PT start-of-day
+ */
 function subtractBusinessDays(fromDate, n, opts = {}) {
-  const { skipSaturday = false } = opts;
-  let d = dayjs(fromDate).tz(TZ).startOf('day');
+  let d = ptCalendarYmd(fromDate);
   let remaining = n;
   while (remaining > 0) {
-    d = d.subtract(1, 'day');
-    const dayOfWeek = d.day(); // PT-based: 0 = Sun, 6 = Sat
-    const ymdStr = d.format('YYYY-MM-DD'); // PT-local YMD
-    if (dayOfWeek === 0) continue; // Sunday
-    if (skipSaturday && dayOfWeek === 6) continue;
-    if (USPS_HOLIDAYS.has(ymdStr)) continue;
-    remaining--;
+    d = stepYmd(d, -1);
+    if (isShipDay(d, opts)) remaining--;
   }
-  return d;
+  return ptMidnight(d);
+}
+
+/**
+ * Add n shipping business days to fromDate's PT calendar day.
+ * @returns {dayjs.Dayjs} PT start-of-day
+ */
+function addBusinessDays(fromDate, n, opts = {}) {
+  let d = ptCalendarYmd(fromDate);
+  let remaining = n;
+  while (remaining > 0) {
+    d = stepYmd(d, 1);
+    if (isShipDay(d, opts)) remaining--;
+  }
+  return ptMidnight(d);
+}
+
+/**
+ * Next shipping business day strictly AFTER `fromDate` (PT calendar).
+ * Skips Sundays and USPS holidays; Saturday counts (post offices open).
+ * Used as the floor for ship-by so a lender always gets at least one full
+ * day after accepting.
+ *
+ * @param {Date|string|dayjs.Dayjs} fromDate
+ * @returns {dayjs.Dayjs} start-of-day PT
+ */
+function nextBusinessDay(fromDate) {
+  return addBusinessDays(fromDate, 1);
 }
 
 module.exports = {
@@ -204,6 +250,8 @@ module.exports = {
   isNonChargeableDate,
   computeChargeableLateDays,
   subtractBusinessDays,
+  addBusinessDays,
+  nextBusinessDay,
   USPS_HOLIDAYS,
   USPS_HOLIDAYS_EXPIRES_AT,
   NON_CHARGEABLE_WEEKDAYS,

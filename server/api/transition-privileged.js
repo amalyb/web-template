@@ -10,7 +10,7 @@ const {
 const { getIntegrationSdk, txUpdateProtectedData } = require('../api-util/integrationSdk');
 const { upsertProtectedData } = require('../lib/txData');
 const { maskPhone } = require('../api-util/phone');
-const { computeShipBy, computeShipByDate, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, pickCheapestPreferredRate } = require('../lib/shipping');
+const { computeShipBy, computeShipByDate, applyShipByFloor, assessFloorLateRisk, rateEstimatedDays, formatShipBy, getBookingStartISO, keepStreet2, logShippoPayload, pickCheapestPreferredRate } = require('../lib/shipping');
 const { contactEmailForTx, contactPhoneForTx } = require('../util/contact');
 const { normalizePhoneE164 } = require('../util/phone');
 const { buildShipLabelLink, orderUrl, saleUrl } = require('../util/url');
@@ -256,7 +256,7 @@ function pickCheapestAllowedRate(availableRates, { daysUntilBookingStart, prefer
     token: r.servicelevel?.token || r.service?.token || '',
     name: nameOf(r),
     amount: Number(r.amount ?? r.amount_local ?? r.rate ?? 1e9),
-    estDays: Number(r.estimated_days ?? r.duration_terms ?? 999),
+    estDays: rateEstimatedDays(r) ?? 999,
     raw: r,
   }));
 
@@ -593,7 +593,7 @@ async function createShippingLabels({
         // Surface to ops via the existing OPS_ALERT_EMAIL channel.
         try {
           await sendTransactionalEmail({
-            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
             subject: `[Sherbrt] Label blocked — ${reason} (tx ${txId?.slice(0, 8)})`,
             text: [
               `Label creation was blocked because USPS rejected the ${failedSide} address.`,
@@ -817,7 +817,7 @@ async function createShippingLabels({
 
         try {
           await sendTransactionalEmail({
-            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
             subject: `[Sherbrt] Label blocked — unprintable_at_accept (tx ${txId?.slice(0, 8)})`,
             text: [
               `Outbound label was blocked because the checkout-locked service-level (${lockedDesc}) is no longer offered for this shipment.`,
@@ -863,7 +863,7 @@ async function createShippingLabels({
       if (deltaCents != null && Math.abs(deltaCents) >= LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS) {
         try {
           await sendTransactionalEmail({
-            to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+            to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
             subject: `[Sherbrt] Re-rate amount delta $${(deltaCents / 100).toFixed(2)} (tx ${txId?.slice(0, 8)})`,
             text: [
               `Outbound re-rate at accept produced a price delta of ${deltaCents} cents (>= ${LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS}c threshold).`,
@@ -911,9 +911,59 @@ async function createShippingLabels({
     // (existing persist block), read by all downstream consumers via the
     // persisted-first branch in computeShipByDate.
     {
-      const rawTransit = Number(selectedRate?.estimated_days ?? selectedRate?.duration_terms);
-      const transitDays = Number.isFinite(rawTransit) ? rawTransit : undefined;
+      const transitDays = rateEstimatedDays(selectedRate) ?? undefined;
+      // Defensive: createShippingLabels runs once per tx (non-speculative
+      // transition/accept), and the only shipByDate writer is the persist
+      // block later in this same call, so this is normally false. It
+      // guarantees the floor never moves an already-persisted date.
+      const alreadyPersisted = !!transaction?.attributes?.protectedData?.outbound?.shipByDate;
       shipByDate = await computeShipByDate(transaction, { transitDays });
+      if (!alreadyPersisted) {
+        const acceptNowISO = timestamp();
+        const floorResult = applyShipByFloor(shipByDate, new Date(acceptNowISO));
+        if (floorResult.floored) {
+          console.warn('[ship-by:floor] computed ship-by earlier than next business day after accept; using floor', {
+            txId,
+            acceptedAtISO: acceptNowISO,
+            computedISO: shipByDate?.toISOString?.() || null,
+            flooredISO: floorResult.shipByDate.toISOString(),
+            transitDays: transitDays ?? null,
+          });
+          const risk = assessFloorLateRisk({
+            shipByDate: floorResult.shipByDate,
+            transitDays,
+            bookingStartISO: getBookingStartISO(transaction),
+            provider: selectedRate?.provider,
+          });
+          if (risk) {
+            console.warn('[ship-by:floor:late-risk]', { txId, ...risk, transitDays });
+            if (risk.late) {
+              // Fire-and-forget: never delay label purchase / lender SMS on email.
+              Promise.resolve()
+                .then(() => sendTransactionalEmail({
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
+                  subject: `[Sherbrt] Late-arrival risk — ship-by floored (tx ${txId?.slice(0, 8)})`,
+                  text: [
+                    `Lender accepted too close to the booking start for the selected service to arrive on time.`,
+                    ``,
+                    `tx: ${txId}`,
+                    `accepted at: ${acceptNowISO}`,
+                    `booking start (calendar day): ${risk.startYmd}`,
+                    `ship-by (floored to next business day): ${floorResult.shipByDate.toISOString()}`,
+                    `transit days: ${transitDays}`,
+                    `expected arrival if shipped on ship-by: ${risk.arrivalYmd}`,
+                    ``,
+                    `Consider contacting the lender to ship today or upgrade shipping, and/or the borrower about timing.`,
+                  ].join('\n'),
+                }))
+                .catch(emailErr => {
+                  console.error('❌ [OPS-ALERT] Failed to send late-risk email:', emailErr?.message || emailErr);
+                });
+            }
+          }
+        }
+        shipByDate = floorResult.shipByDate;
+      }
       console.log('[ship-by:derived]', {
         transitDays: transitDays ?? null,
         shipByISO: shipByDate?.toISOString?.() || null,
@@ -1068,9 +1118,10 @@ async function createShippingLabels({
 
     // Reuse the shipByDate computed earlier (already logged above).
     //
-    // Display-only clamp: if the lender accepted within the lead-day window
-    // of the booking start, the computed shipByDate can already be in the
-    // past (e.g., accept Fri, booking start Mon, leadDays=2 → ship-by Thu).
+    // Safety net only: since fix/ship-by-lead-time, fresh accepts are floored
+    // to the next business day above, so this no longer fires for them. It
+    // remains for the persisted-date path. Original rationale: the computed
+    // shipByDate could already be in the past (accept Fri, start Mon).
     // The Step-3 SMS would otherwise read "Ship by [yesterday]" verbatim.
     // We clamp here at the SMS construction site only — NOT inside
     // computeShipByDate — because the shipping-reminder cron also calls
@@ -1458,7 +1509,7 @@ async function createShippingLabels({
 
             try {
               await sendTransactionalEmail({
-                to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                 subject: `[Sherbrt] Return label blocked — ${reason} (tx ${txId?.slice(0, 8)})`,
                 text: [
                   `Return-label creation was blocked because USPS rejected the ${retFailedSide} address.`,
@@ -1637,7 +1688,7 @@ async function createShippingLabels({
 
               try {
                 await sendTransactionalEmail({
-                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Return label blocked — unprintable_at_accept (tx ${txId?.slice(0, 8)})`,
                   text: [
                     `Return-label was blocked because the checkout-locked return service-level (${lockedDesc}) is no longer offered for this shipment.`,
@@ -1681,7 +1732,7 @@ async function createShippingLabels({
             if (deltaCents != null && Math.abs(deltaCents) >= LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS) {
               try {
                 await sendTransactionalEmail({
-                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Return re-rate amount delta $${(deltaCents / 100).toFixed(2)} (tx ${txId?.slice(0, 8)})`,
                   text: [
                     `Return re-rate at accept produced a price delta of ${deltaCents} cents (>= ${LOCKED_RATE_AMOUNT_DELTA_ALERT_CENTS}c threshold).`,
