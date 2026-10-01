@@ -939,7 +939,7 @@ async function createShippingLabels({
             if (risk.late) {
               try {
                 await sendTransactionalEmail({
-                  to: process.env.OPS_ALERT_EMAIL || 'amalyb@gmail.com',
+                  to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Late-arrival risk — ship-by floored (tx ${txId?.slice(0, 8)})`,
                   text: [
                     `Lender accepted too close to the booking start for the selected service to arrive on time.`,
