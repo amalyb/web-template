@@ -266,12 +266,14 @@ function rateEstimatedDays(rate) {
  *
  * @returns {null|{ arrivalYmd: string, startYmd: string, late: boolean, noBuffer: boolean }}
  */
-function assessFloorLateRisk({ shipByDate, transitDays, bookingStartISO }) {
+function assessFloorLateRisk({ shipByDate, transitDays, bookingStartISO, provider }) {
   if (!shipByDate || !bookingStartISO || transitDays == null) return null;
   const startMs = new Date(bookingStartISO).getTime();
   if (Number.isNaN(startMs)) return null;
   const startYmd = ymd(new Date(startMs + 12 * 60 * 60 * 1000)); // calendar day, PT or UTC midnight
-  const arrivalYmd = addBusinessDays(shipByDate, transitDays).format('YYYY-MM-DD');
+  // USPS delivers Saturdays; UPS Ground generally doesn't.
+  const skipSaturday = String(provider || '').toUpperCase() === 'UPS';
+  const arrivalYmd = addBusinessDays(shipByDate, transitDays, { skipSaturday }).format('YYYY-MM-DD');
   const late = arrivalYmd > startYmd;
   const noBuffer = arrivalYmd === startYmd;
   if (!late && !noBuffer) return null;
@@ -280,9 +282,12 @@ function assessFloorLateRisk({ shipByDate, transitDays, bookingStartISO }) {
 
 // Minimum hours between lender acceptance and the "ship by" reminder SMS.
 // Non-numeric env values fall back to 12 rather than silently disabling.
+// Blank/whitespace counts as unset (Number('') would be 0 = gate off).
 const REMINDER_MIN_HOURS_AFTER_ACCEPT = (() => {
-  const n = Number(process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT);
-  return process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT !== undefined && Number.isFinite(n) && n >= 0 ? n : 12;
+  const raw = process.env.SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT;
+  if (raw === undefined || String(raw).trim() === '') return 12;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 12;
 })();
 
 /**

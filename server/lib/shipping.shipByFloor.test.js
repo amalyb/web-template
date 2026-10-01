@@ -120,6 +120,12 @@ describe('assessFloorLateRisk', () => {
   test('enough time → null', () => {
     expect(assessFloorLateRisk({ shipByDate: fri, transitDays: 2, bookingStartISO: '2026-10-07T07:00:00.000Z' })).toBeNull();
   });
+  test('UPS skips Saturday: start Tue Oct 6, Fri ship-by + 2 transit → Tue: noBuffer (USPS would be Mon)', () => {
+    expect(assessFloorLateRisk({ shipByDate: fri, transitDays: 2, bookingStartISO: '2026-10-06T07:00:00.000Z', provider: 'UPS' }))
+      .toMatchObject({ arrivalYmd: '2026-10-06', noBuffer: true });
+    expect(assessFloorLateRisk({ shipByDate: fri, transitDays: 2, bookingStartISO: '2026-10-06T07:00:00.000Z', provider: 'USPS' }))
+      .toBeNull();
+  });
   test('unknown transit → null', () => {
     expect(assessFloorLateRisk({ shipByDate: fri, transitDays: undefined, bookingStartISO: '2026-10-03T07:00:00.000Z' })).toBeNull();
   });
@@ -152,6 +158,10 @@ describe('SHIP_REMINDER_MIN_HOURS_AFTER_ACCEPT parsing', () => {
   };
   test('invalid value falls back to 12 (gate still on)', () => {
     expect(load('abc').isTooSoonAfterAccept(accepted, at)).toBe(true);
+  });
+  test('blank value falls back to 12 (gate still on)', () => {
+    expect(load('').isTooSoonAfterAccept(accepted, at)).toBe(true);
+    expect(load('   ').isTooSoonAfterAccept(accepted, at)).toBe(true);
   });
   test('explicit 0 disables the gate', () => {
     expect(load('0').isTooSoonAfterAccept(accepted, at)).toBe(false);

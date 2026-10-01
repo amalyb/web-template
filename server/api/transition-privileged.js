@@ -933,12 +933,14 @@ async function createShippingLabels({
             shipByDate: floorResult.shipByDate,
             transitDays,
             bookingStartISO: getBookingStartISO(transaction),
+            provider: selectedRate?.provider,
           });
           if (risk) {
             console.warn('[ship-by:floor:late-risk]', { txId, ...risk, transitDays });
             if (risk.late) {
-              try {
-                await sendTransactionalEmail({
+              // Fire-and-forget: never delay label purchase / lender SMS on email.
+              Promise.resolve()
+                .then(() => sendTransactionalEmail({
                   to: process.env.OPS_ALERT_EMAIL || 'bestie@sherbrt.com',
                   subject: `[Sherbrt] Late-arrival risk — ship-by floored (tx ${txId?.slice(0, 8)})`,
                   text: [
@@ -953,10 +955,10 @@ async function createShippingLabels({
                     ``,
                     `Consider contacting the lender to ship today or upgrade shipping, and/or the borrower about timing.`,
                   ].join('\n'),
+                }))
+                .catch(emailErr => {
+                  console.error('❌ [OPS-ALERT] Failed to send late-risk email:', emailErr?.message || emailErr);
                 });
-              } catch (emailErr) {
-                console.error('❌ [OPS-ALERT] Failed to send late-risk email:', emailErr.message);
-              }
             }
           }
         }
